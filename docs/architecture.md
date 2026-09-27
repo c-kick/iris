@@ -1,0 +1,226 @@
+# hnl-notify — architecture
+
+Unified notification service for the LAN. Senders state *intent* (what, how
+urgent, for whom). hnl-notify owns routing, delivery, persistence, retries,
+status tracking and provider quirks. Pushover (phone push) is the first
+delivery path; nothing in the public REST or MCP interface is
+Pushover-specific.
+
+## Shape
+
+One Python process (FastAPI + uvicorn, single worker) in one container with
+one SQLite database (WAL, `synchronous=FULL`). No broker, no Redis: SQLite *is*
+the durable queue, and all background work (dispatch, receipt polling, webhook
+delivery, expiry sweeps) runs as asyncio tasks in the same process. Volume is
+household-scale (tens to hundreds of notifications a day); one process and one
+file keep the moving parts proportionate. Stack: Python 3.12, FastAPI, httpx,
+pydantic, plus the official MCP Python SDK.
+
+```
+ senders (HA, Node-RED, n8n, scripts, agents)
+   │  REST /v1/*             MCP /mcp  (same auth, same core)
+   ▼
+ ┌─────────────────────────── hnl-notify ───────────────────────────┐
+ │ auth ─► intake ─► router ─► deliveries (SQLite, 1 per device)    │
+ │                                  │                               │
+ │   dispatcher ◄───────────────────┘   (lease, retry/backoff)      │
+ │      │ provider adapter (pushover | later ntfy/HA/email/webpush) │
+ │      ▼                                                           │
+ │   receipt poller / inbound callbacks ─► state transitions        │
+ │                                      │                           │
+ │   events table (append-only cursor) ─┼─► SSE stream              │
+ │                                      └─► webhook outbox ─► POST  │
+ └──────────────────────────────────────────────────────────────────┘
+```
+
+## Logical model — intent is separate from routing
+
+| Concept | Meaning | Example |
+|---|---|---|
+| **provider** | A delivery backend: adapter + declared capabilities | `pushover` |
+| **device** (endpoint) | One concrete address on one provider | `alex-phone` = Pushover user key + device `iphone` |
+| **user** | A person; owns devices | `alex` |
+| **group** | A set of users/devices | `household` |
+| **channel** | A topic with subscribed targets and an optional severity floor | `infra` |
+
+Senders address `user:alex`, `device:alex-phone`, `group:household`,
+`channel:infra` (a bare name is accepted when unambiguous). The router expands
+targets to a de-duplicated set of devices, applies channel/device
+`min_severity`, and creates one **delivery** per device. Provider identifiers
+(Pushover user keys, device names, app tokens) exist only in configuration and
+inside the adapter.
+
+Configuration is managed in the **admin UI** (`/admin`) and stored in the
+same SQLite database (`settings` table). Fields each provider adapter declares
+secret (Pushover app token, user keys) plus the callback secret are stored as
+AES-256-GCM ciphertext; the 32-byte key is generated on first start in a
+separate 0600 file (`/secrets/master.key`, its own volume). The admin API never
+returns secrets, only "set, ends in …abcd"; a blank secret field on edit keeps
+the stored value. API client tokens are shown once and stored as SHA-256
+hashes. Every edit is validated as a whole (references between devices,
+people, groups and channels), persisted, and applied live: routing, providers
+and token checks switch over without a restart; queued deliveries keep their
+device names. A YAML file (`NOTIFY_CONFIG`, `${ENV}` references allowed) is an
+optional one-time import into an empty database.
+
+Admin authentication: first start logs a one-time setup code; entering it
+sets the admin password (scrypt). Sessions are random ids stored hashed,
+HttpOnly + SameSite=Strict cookies, 14 days. Browser mutations additionally
+require an `X-Notify-Admin` header and a same-origin `Origin`, login/setup are
+throttled per address, and `/admin` is served with a strict CSP
+(`script-src 'self'`, no framing). A bearer token with `admin` scope can call
+the admin API too. `python -m notify reset-admin` clears the password, signs
+everyone out and prints a new setup code.
+
+## Data model (SQLite)
+
+- `notifications` — the intent: id, client, idempotency key, source, title,
+  message, severity, url/url_title, actions, data (opaque JSON echoed back),
+  tags, targets, require_ack, expires_at, derived status, routing notes.
+- `deliveries` — one per (notification, device): state, attempt counters,
+  `next_attempt_at`, lease, provider message id, provider receipt,
+  `tracking` (`none`/`receipt`), **`observable_states`**,
+  **`capability_gaps`**, per-state timestamps (dispatched / delivered /
+  acknowledged / interacted / finalized), acknowledged_by, last error.
+- `attempts` — every provider call: start/finish, outcome
+  (`success`/`retryable`/`permanent`), HTTP status, redacted request summary,
+  truncated raw provider response, error text.
+- `events` — append-only log; its integer id is the global cursor for history,
+  SSE resume (`Last-Event-ID`) and webhook payloads.
+- `subscriptions` + `webhook_deliveries` — webhook subscriptions and their
+  durable outbox with its own retry state.
+
+## Lifecycle
+
+Delivery states:
+
+```
+queued ──► sending ──► dispatched ──► delivered ──► acknowledged
+  │  ▲        │            │                         (interacted)
+  │  └─retry──┘            └──► expired  (receipt expired without ack)
+  ├──► expired   (TTL passed before dispatch)
+  ├──► failed    (permanent error / retries exhausted)
+  └──► cancelled (before dispatch, or provider-side cancel of a receipt)
+```
+
+- `dispatched` means **the provider accepted the request** — nothing more.
+- `delivered`, `acknowledged`, `interacted` are only ever set from
+  provider-originated evidence (receipt poll or callback). Every delivery
+  carries its `observable_states`, so a reader can tell "not delivered yet"
+  from "this path can never report delivery".
+- Notification `status` is derived from its deliveries: `pending`,
+  `dispatched`, `delivered`, `acknowledged`, `partial`, `failed`, `expired`,
+  `cancelled`, or `suppressed` (routing produced no deliveries, e.g. below a
+  channel's severity floor).
+
+Durability: a submission is committed before `202` is returned. The dispatcher
+claims deliveries with a lease (`sending` + `lease_until`); at start-up, expired
+leases return to `queued`. Pushover has no idempotency key, so a crash in the
+milliseconds between Pushover accepting and our commit can cause **one
+duplicate**: the service is at-least-once, never silently at-most-once.
+
+Retry: network errors, 5xx and 429 are retried with exponential backoff and
+jitter (10 s × 3ⁿ, capped at 15 min, never below Pushover's 5 s, 8 attempts by
+default, never past `expires_at`). 4xx is permanent (Pushover: "repeating your
+same request will not work"). Manual retry re-queues `failed` deliveries.
+
+## Severity and capabilities
+
+Severity: `min`, `low`, `normal`, `high`, `critical`.
+
+Each provider declares a capability document; each device may narrow it.
+`GET /v1/targets` and MCP `list_targets` expose the effective capabilities.
+Requests a path cannot honour are **not silently dropped or faked**: they are
+recorded as `capability_gaps` on the delivery and returned in the submit
+response.
+
+Capability keys: `accept_confirmation`, `delivery_receipt`, `acknowledgement`,
+`interactions`, `actions` (max buttons), `links` (max URLs), `cancel_after_dispatch`,
+`ttl`, `severities`, `max_title_length`, `max_message_length`. Receipt-type
+capabilities state the condition under which they apply (e.g.
+`{"supported": true, "when": "severity=critical"}`).
+
+## What Pushover can and cannot report (pushover.net/api, checked 2026-09-27)
+
+| Question | Pushover | Modelled as |
+|---|---|---|
+| Request accepted? | HTTP 200 `{status:1, request}` | `dispatched` + provider `request` id |
+| Delivered to device? | **Priority 2 (emergency) only**: receipt `last_delivered_at`. No receipts for priorities −2…1 | `delivered` observable only at severity `critical` |
+| Read/opened? | Never | not modelled |
+| Acknowledged? | Priority 2 only: receipt `acknowledged(_at/_by/_by_device)`, or a callback POST to a **publicly reachable** URL | `acknowledged`; receipt polling by default (Pushover: ≤ once per 5 s; we poll every 30 s), callback only if `public_base_url` is set |
+| Emergency expired without ack? | Receipt `expired=1` | delivery `expired` (keeps `delivered_at`) |
+| Action buttons / interaction reports | None. One supplementary URL (`url`, `url_title`) opens on tap; HTML `<a>` links in the message text are tappable in the Pushover app (stripped from the lock-screen banner); no taps are reported | `links: 1`, `actions: 0` + `inline_links`; the first URL action is the tap link, further URL actions become links in the message text (`html=1`, text escaped), actions without URL → capability gap; `interactions: false` |
+| Recall after sending | Only the repeating emergency alert (`receipts/{r}/cancel.json`) | `cancel_after_dispatch: severity=critical` |
+| TTL | `ttl` seconds, auto-deletes from device; ignored for priority 2 | local expiry always; `ttl` forwarded when not critical |
+| Errors | 4xx + `errors[]` = invalid, don't retry; 429 = monthly quota exhausted; 5xx = retry after ≥ 5 s | `permanent` / `retryable` attempt outcome, raw body stored |
+| Limits | message 1024 chars, title 250, url 512, url_title 100; 10 000 msgs/month; ≤ 2 concurrent connections | truncation recorded as gap; adapter concurrency 2; quota headers surfaced in `/v1/providers` and `/metrics` |
+
+Severity → Pushover priority: `min`→−2, `low`→−1, `normal`→0, `high`→1,
+`critical`→2 (retry 60 s, expire = min(TTL, 3 h)). `require_ack` below
+`critical` is **not** silently escalated to an emergency alarm; it becomes the
+gap "acknowledgement on pushover requires severity=critical".
+
+## REST API (bearer tokens; scopes `send`, `read`, `manage`, `admin`)
+
+| Method & path | Purpose |
+|---|---|
+| `POST /v1/notifications` | Submit. 202; 200 on idempotent replay; `dry_run: true` returns the routing plan only |
+| `GET /v1/notifications` | History; filter by status/source/tag/since |
+| `GET /v1/notifications/{id}` | Full status: deliveries, attempts, events |
+| `POST /v1/notifications/{id}/cancel`, `/retry` | Where meaningful; 409 with reason otherwise |
+| `GET /v1/targets` | Users, devices, groups, channels + effective capabilities |
+| `GET /v1/providers` | Provider capabilities, health, quota |
+| `GET /v1/events`, `GET /v1/events/stream` | Event history by cursor; Server-Sent Events |
+| `POST/GET/DELETE /v1/subscriptions` | Webhook subscriptions |
+| `POST /v1/callbacks/{provider}/{secret}` | Inbound provider callbacks |
+| `GET /health/live`, `/health/ready`, `/metrics`, `/v1/whoami` | Operations |
+
+Clients see and manage only their own notifications unless they hold `admin`.
+
+## Self-registration
+
+`POST /v1/registrations` (unauthenticated, LAN) creates a pending request and
+returns a token immediately; only its SHA-256 is stored, in `registrations`,
+and the authenticator ignores it. Approval (admin UI or admin API) copies that
+hash into the API-client configuration with the granted scopes, so the app's
+token starts working without reconfiguration; denial or 7-day expiry leaves it
+inert forever. Admin scope can never be requested or granted this way. New
+requests alert the configured targets (default: every person) through
+hnl-notify itself. The alert's link opens `/admin/decide/{id}?k=<code>`: a
+login-free page for that one request with Approve/Deny buttons (POST; GET
+never decides). `<code>` is random, stored only as a hash, cleared by any
+decision (phone or admin UI), expires with the request, and wrong codes are
+throttled per address. The trade-off: the link transits Pushover, and whoever
+holds it can decide that single request. Optional auto-approval by
+source subnet, limited to a configured scope set. Abuse limits: 5 stored
+requests per source address per hour, 20 pending in total.
+
+## Events and subscriptions
+
+Event types: `notification.created`, `notification.status_changed`,
+`delivery.queued`, `delivery.attempt_failed`, `delivery.dispatched`,
+`delivery.delivered`, `delivery.acknowledged`, `delivery.interacted`,
+`delivery.failed`, `delivery.expired`, `delivery.cancelled`.
+
+- **SSE** `GET /v1/events/stream`: filterable, resumable with `Last-Event-ID`.
+- **Webhooks**: per-client subscriptions (event types plus optional
+  notification/source/tag filters), or a per-notification `webhook` shortcut
+  in the submit body. Sent from a durable outbox with retries, signed with
+  `X-Notify-Signature: t=<unix>,v1=<hex HMAC-SHA256(secret, "<t>.<body>")>`.
+
+## MCP
+
+Streamable HTTP at `/mcp` in the same process, same bearer tokens and scopes.
+Tools: `send_notification`, `preview_routing`, `get_notification`,
+`list_notifications`, `list_attention` (failed / pending / stuck / awaiting ack),
+`list_targets`, `retry_notification`, `cancel_notification`. Resources:
+`notify://targets`, `notify://notifications/{id}`. Everything is phrased in
+notification semantics — targets, severity, states — never Pushover keys or
+priorities.
+
+## Observability
+
+JSON logs to stdout (one object per line, carrying notification/delivery ids);
+`/health/live` (process up), `/health/ready` (DB writable, dispatcher heartbeat
+fresh, config loaded); `/metrics` in Prometheus text format (deliveries by
+state, queue depth, oldest queued age, webhook backlog, provider quota).

@@ -1,0 +1,11 @@
+.claude/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+data/
+config/notify.yaml
+.test-runs/
+secrets/
+compose.override.yaml

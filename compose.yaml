@@ -1,0 +1,39 @@
+services:
+  notify:
+    build: .
+    image: hnl-notify:0.3.0
+    container_name: hnl-notify
+    restart: unless-stopped
+    user: "1026:1026"
+    environment:
+      NOTIFY_DB: /data/notify.sqlite3
+      NOTIFY_KEY_FILE: /secrets/master.key
+      NOTIFY_LOG_LEVEL: INFO
+      # Base URL for links in alerts hnl-notify sends you (e.g. access requests). Set it here,
+      # in a local compose.override.yaml (git-ignored), or under Settings in the admin UI:
+      # NOTIFY_EXTERNAL_URL: http://notify.lan:8930
+      TZ: Europe/Amsterdam
+    ports:
+      - "8930:8930"
+    volumes:
+      - ./data:/data          # SQLite: queue, history, configuration (secrets encrypted)
+      - ./secrets:/secrets    # master.key, generated on first start (0600); back up separately
+      # Optional one-time import of a YAML config into an empty database:
+      # - ./config:/config:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 192m
+    memswap_limit: 192m
+    cpus: 0.5
+    pids_limit: 64
+    stop_grace_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

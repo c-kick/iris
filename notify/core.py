@@ -1,0 +1,784 @@
+"""Notification core: intake, state machine, events, queries.
+
+Every state change goes through `_transition`, which enforces the delivery
+state machine, appends an event, fans the event out to matching webhook
+subscriptions (same transaction) and re-derives the notification status.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+import secrets
+import sqlite3
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from typing import Any
+
+from .config import NotifyConfig
+from .db import Database, dumps, in_seconds, iso, loads, new_id, now_iso, parse_iso, utcnow
+from .models import (ACKNOWLEDGED, ACTIVE_STATES, CANCELLED, DELIVERED, DISPATCHED, EXPIRED,
+                     FAILED, INTERACTED, QUEUED, SENDING, TRANSITIONS, NotificationIn, Scope,
+                     Severity, SubscriptionIn, derive_notification_status, event_matches)
+from .providers.base import OutboundMessage, Provider, ReceiptStatus, SendResult
+from .routing import Router, RoutingError
+
+log = logging.getLogger("notify.core")
+
+FINAL_STATES = {FAILED, EXPIRED, CANCELLED, ACKNOWLEDGED, INTERACTED}
+
+
+class NotFound(Exception):
+    pass
+
+
+class Conflict(Exception):
+    def __init__(self, message: str, detail: Any = None):
+        super().__init__(message)
+        self.detail = detail
+
+
+class Invalid(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class Client:
+    id: str
+    scopes: frozenset[Scope]
+
+    @property
+    def admin(self) -> bool:
+        return Scope.admin in self.scopes
+
+    def can(self, scope: Scope) -> bool:
+        return self.admin or scope in self.scopes
+
+
+class EventBus:
+    """Wakes SSE streams when events are committed."""
+
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+
+    def notify(self) -> None:
+        self._event.set()
+        self._event = asyncio.Event()
+
+    async def wait(self, timeout: float) -> None:
+        ev = self._event
+        try:
+            await asyncio.wait_for(ev.wait(), timeout)
+        except TimeoutError:
+            pass
+
+
+def backoff_seconds(attempt: int, base: float, cap: float) -> float:
+    delay = min(cap, base * (3 ** max(0, attempt - 1)))
+    return max(5.0, delay * random.uniform(0.8, 1.2))
+
+
+class NotifyService:
+    def __init__(self, config: NotifyConfig, db: Database, providers: dict[str, Provider]):
+        self.config = config
+        self.db = db
+        self.providers = providers
+        self.router = Router(config)
+        self.bus = EventBus()
+        self.wake = asyncio.Event()
+        self.http: Any = None  # shared httpx client, set by the app
+
+    def reconfigure(self, config: NotifyConfig, providers: dict[str, Provider]) -> None:
+        """Swap in a new configuration (admin UI edits). Queued deliveries keep their device names."""
+        self.config = config
+        self.router = Router(config)
+        self.providers = providers
+        self.wake.set()
+
+    # ------------------------------------------------------------------ util
+    def _after_commit(self, dispatch: bool = False) -> None:
+        self.bus.notify()
+        if dispatch:
+            self.wake.set()
+
+    def _visible(self, client: Client, client_id: str) -> bool:
+        return client.admin or client.id == client_id
+
+    def _notification_row(self, client: Client, nid: str) -> sqlite3.Row:
+        row = self.db.one("SELECT * FROM notifications WHERE id=?", (nid,))
+        if row is None or not self._visible(client, row["client_id"]):
+            raise NotFound(f"notification {nid} not found")
+        return row
+
+    def callback_url(self, provider: str) -> str | None:
+        s = self.config.server
+        if s.public_base_url and s.callback_secret:
+            return f"{s.public_base_url.rstrip('/')}/v1/callbacks/{provider}/{s.callback_secret}"
+        return None
+
+    def message_for(self, n: sqlite3.Row | dict, delivery_id: str, provider: str) -> OutboundMessage:
+        return OutboundMessage(
+            notification_id=n["id"], delivery_id=delivery_id, title=n["title"], message=n["message"],
+            severity=Severity(n["severity"]), url=n["url"], url_title=n["url_title"],
+            actions=loads(n["actions_json"], []), tags=loads(n["tags_json"], []),
+            require_ack=bool(n["require_ack"]), created_at=parse_iso(n["created_at"]),  # type: ignore[arg-type]
+            expires_at=parse_iso(n["expires_at"]), callback_url=self.callback_url(provider),
+        )
+
+    # ---------------------------------------------------------------- events
+    def _emit(self, c: sqlite3.Connection, etype: str, n: sqlite3.Row | dict, delivery_id: str | None,
+              data: dict[str, Any]) -> int:
+        now = now_iso()
+        cur = c.execute(
+            "INSERT INTO events(type, notification_id, delivery_id, client_id, source, data_json, created_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (etype, n["id"], delivery_id, n["client_id"], n["source"], dumps(data), now))
+        event_id = int(cur.lastrowid)  # type: ignore[arg-type]
+        tags = loads(n["tags_json"], [])
+        for sub in c.execute("SELECT * FROM subscriptions WHERE active=1").fetchall():
+            owner = self.config.clients.get(sub["client_id"])
+            owner_admin = owner is not None and Scope.admin in owner.scopes
+            if not owner_admin and sub["client_id"] != n["client_id"]:
+                continue
+            if sub["notification_id"] and sub["notification_id"] != n["id"]:
+                continue
+            if sub["source"] and sub["source"] != n["source"]:
+                continue
+            if sub["tag"] and sub["tag"] not in tags:
+                continue
+            if not any(event_matches(p, etype) for p in loads(sub["events_json"], ["*"])):
+                continue
+            c.execute("INSERT OR IGNORE INTO webhook_deliveries(subscription_id, event_id, next_attempt_at, created_at)"
+                      " VALUES (?,?,?,?)", (sub["id"], event_id, now, now))
+        log.info("event", extra={"event_type": etype, "notification_id": n["id"], "delivery_id": delivery_id,
+                                 "event_id": event_id, **{f"e_{k}": v for k, v in data.items() if isinstance(v, (str, int, float, bool)) }})
+        return event_id
+
+    def _refresh_status(self, c: sqlite3.Connection, nid: str) -> str:
+        n = c.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
+        states = [r[0] for r in c.execute("SELECT state FROM deliveries WHERE notification_id=?", (nid,))]
+        new = derive_notification_status(states)
+        if new != n["status"]:
+            c.execute("UPDATE notifications SET status=?, updated_at=? WHERE id=?", (new, now_iso(), nid))
+            self._emit(c, "notification.status_changed", n, None, {"from": n["status"], "to": new})
+        return new
+
+    def _transition(self, c: sqlite3.Connection, d: sqlite3.Row, new_state: str,
+                    fields: dict[str, Any] | None = None, data: dict[str, Any] | None = None,
+                    event_type: str | None = None) -> None:
+        old = d["state"]
+        if new_state != old and new_state not in TRANSITIONS[old]:
+            raise Conflict(f"delivery {d['id']}: cannot go from {old} to {new_state}")
+        now = now_iso()
+        fields = dict(fields or {})
+        fields["state"] = new_state
+        fields["updated_at"] = now
+        tracking = fields.get("tracking", d["tracking"])
+        if new_state in FINAL_STATES or (new_state == DISPATCHED and tracking == "none"):
+            fields.setdefault("finalized_at", now)
+            fields.setdefault("next_poll_at", None)
+        if new_state != SENDING:
+            fields.setdefault("lease_until", None)
+        sets = ", ".join(f"{k}=?" for k in fields)
+        c.execute(f"UPDATE deliveries SET {sets} WHERE id=?", (*fields.values(), d["id"]))
+        n = c.execute("SELECT * FROM notifications WHERE id=?", (d["notification_id"],)).fetchone()
+        payload = {"device": d["device"], "provider": d["provider"], "from": old, "to": new_state, **(data or {})}
+        if event_type or new_state != SENDING:
+            self._emit(c, event_type or f"delivery.{new_state}", n, d["id"], payload)
+        self._refresh_status(c, d["notification_id"])
+
+    # ---------------------------------------------------------------- intake
+    def submit(self, client: Client, req: NotificationIn) -> tuple[dict[str, Any], bool]:
+        if req.idempotency_key and not req.dry_run:
+            row = self.db.one("SELECT id FROM notifications WHERE client_id=? AND idempotency_key=?",
+                              (client.id, req.idempotency_key))
+            if row:
+                return self.get(client, row["id"], detail=False), False
+
+        now = utcnow()
+        expires_at: datetime | None = None
+        if req.expires_at is not None:
+            expires_at = req.expires_at if req.expires_at.tzinfo else req.expires_at.replace(tzinfo=now.tzinfo)
+        if req.ttl_seconds is not None:
+            ttl_exp = now + timedelta(seconds=req.ttl_seconds)
+            expires_at = ttl_exp if expires_at is None else min(expires_at, ttl_exp)
+        if expires_at is not None and expires_at <= now:
+            raise Invalid("notification is already expired (expires_at/ttl_seconds in the past)")
+        try:
+            route = self.router.resolve(req.targets, req.severity)
+        except RoutingError as e:
+            raise Invalid(str(e)) from e
+
+        nid = new_id("ntf")
+        source = req.source or client.id
+        nrow = {
+            "id": nid, "client_id": client.id, "source": source, "title": req.title, "message": req.message,
+            "severity": req.severity.value, "url": req.url, "url_title": req.url_title,
+            "actions_json": dumps([a.model_dump() for a in req.actions]),
+            "data_json": dumps(req.data) if req.data is not None else None,
+            "tags_json": dumps(req.tags), "targets_json": dumps(req.targets),
+            "require_ack": int(req.require_ack), "expires_at": iso(expires_at),
+            "created_at": iso(now), "updated_at": iso(now), "idempotency_key": req.idempotency_key,
+        }
+        deliveries = []
+        for device_name, via in route.devices.items():
+            dev = self.config.devices[device_name]
+            provider = self.providers[dev.provider]
+            did = new_id("dlv")
+            plan = provider.plan(self.message_for(nrow, did, dev.provider), dev.address)
+            gaps = list(plan.capability_gaps)
+            problems = provider.config_problems() + provider.device_problems(dev.address)
+            if problems:
+                gaps.append("provider not ready (will retry until fixed): " + "; ".join(problems))
+            deliveries.append({"id": did, "device": device_name, "provider": dev.provider, "via": via,
+                               "tracking": plan.tracking, "observable_states": plan.observable_states,
+                               "capability_gaps": gaps})
+
+        if req.dry_run:
+            return {"dry_run": True, "severity": req.severity.value, "expires_at": iso(expires_at),
+                    "routing": route.as_dict(),
+                    "deliveries": [{k: v for k, v in d.items() if k != "id"} for d in deliveries]}, True
+
+        status = derive_notification_status([QUEUED] * len(deliveries))
+        routing = {"suppressed": route.suppressed, "via": {d["device"]: d["via"] for d in deliveries}}
+        webhook_secret = None
+        try:
+            with self.db.tx() as c:
+                c.execute(
+                    "INSERT INTO notifications(id, client_id, idempotency_key, source, title, message, severity, url,"
+                    " url_title, actions_json, data_json, tags_json, targets_json, require_ack, expires_at, status,"
+                    " routing_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (nid, client.id, req.idempotency_key, source, req.title, req.message, req.severity.value,
+                     req.url, req.url_title, nrow["actions_json"], nrow["data_json"], nrow["tags_json"],
+                     nrow["targets_json"], nrow["require_ack"], nrow["expires_at"], status, dumps(routing),
+                     nrow["created_at"], nrow["updated_at"]))
+                if req.webhook is not None:
+                    webhook_secret = req.webhook.secret or secrets.token_urlsafe(32)
+                    c.execute(
+                        "INSERT INTO subscriptions(id, client_id, url, secret, events_json, notification_id,"
+                        " description, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                        (new_id("sub"), client.id, req.webhook.url, webhook_secret, dumps(req.webhook.events), nid,
+                         "per-notification webhook", nrow["created_at"]))
+                n = c.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
+                self._emit(c, "notification.created", n, None,
+                           {"severity": req.severity.value, "targets": req.targets, "deliveries": len(deliveries),
+                            "suppressed": route.suppressed})
+                for d in deliveries:
+                    c.execute(
+                        "INSERT INTO deliveries(id, notification_id, device, provider, state, max_attempts,"
+                        " next_attempt_at, tracking, observable_states_json, capability_gaps_json, created_at,"
+                        " updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (d["id"], nid, d["device"], d["provider"], QUEUED, self.config.server.max_attempts,
+                         nrow["created_at"], d["tracking"], dumps(d["observable_states"]),
+                         dumps(d["capability_gaps"]), nrow["created_at"], nrow["created_at"]))
+                    self._emit(c, "delivery.queued", n, d["id"],
+                               {"device": d["device"], "provider": d["provider"], "to": QUEUED,
+                                "capability_gaps": d["capability_gaps"]})
+        except sqlite3.IntegrityError:
+            # concurrent submit with the same idempotency key won the race
+            row = self.db.one("SELECT id FROM notifications WHERE client_id=? AND idempotency_key=?",
+                              (client.id, req.idempotency_key))
+            if row:
+                return self.get(client, row["id"], detail=False), False
+            raise
+        self._after_commit(dispatch=True)
+        out = self.get(client, nid, detail=False)
+        if webhook_secret:
+            out["webhook_secret"] = webhook_secret
+        return out, True
+
+    # ------------------------------------------------------------ dispatcher
+    def recover_leases(self, all_sending: bool = False) -> int:
+        now = now_iso()
+        sql = "SELECT * FROM deliveries WHERE state=?" + ("" if all_sending else " AND lease_until < ?")
+        rows = self.db.query(sql, (SENDING,) if all_sending else (SENDING, now))
+        for d in rows:
+            with self.db.tx() as c:
+                self._transition(c, d, QUEUED, {"next_attempt_at": now},
+                                 {"reason": "send interrupted (lease expired or restart); may duplicate if the provider had accepted"},
+                                 event_type="delivery.queued")
+        if rows:
+            log.warning("recovered interrupted deliveries", extra={"count": len(rows)})
+            self._after_commit(dispatch=True)
+        return len(rows)
+
+    def expire_due(self) -> int:
+        now = now_iso()
+        rows = self.db.query(
+            "SELECT d.* FROM deliveries d JOIN notifications n ON n.id=d.notification_id"
+            " WHERE d.state=? AND n.expires_at IS NOT NULL AND n.expires_at <= ?", (QUEUED, now))
+        for d in rows:
+            with self.db.tx() as c:
+                self._transition(c, d, EXPIRED, {"last_error": d["last_error"]},
+                                 {"reason": "ttl elapsed before dispatch", "last_error": d["last_error"]})
+        if rows:
+            self._after_commit()
+        return len(rows)
+
+    def claim_due(self, provider: str, limit: int) -> list[sqlite3.Row]:
+        if limit <= 0:
+            return []
+        now = now_iso()
+        claimed = []
+        with self.db.tx() as c:
+            rows = c.execute(
+                "SELECT * FROM deliveries WHERE state=? AND provider=? AND next_attempt_at <= ?"
+                " ORDER BY next_attempt_at LIMIT ?", (QUEUED, provider, now, limit)).fetchall()
+            for d in rows:
+                c.execute("UPDATE deliveries SET state=?, attempts=attempts+1, lease_until=?, updated_at=? WHERE id=?",
+                          (SENDING, in_seconds(self.config.server.lease_seconds), now, d["id"]))
+                claimed.append(c.execute("SELECT * FROM deliveries WHERE id=?", (d["id"],)).fetchone())
+        return claimed
+
+    def next_due_in(self) -> float | None:
+        nxt = self.db.scalar("SELECT MIN(next_attempt_at) FROM deliveries WHERE state=?", (QUEUED,))
+        if not nxt:
+            return None
+        return max(0.0, (parse_iso(nxt) - utcnow()).total_seconds())  # type: ignore[operator]
+
+    def complete_send(self, d: sqlite3.Row, result: SendResult, started_at: str) -> None:
+        try:
+            self._complete_send(d, result, started_at)
+        finally:
+            self._after_commit()
+
+    def _complete_send(self, d: sqlite3.Row, result: SendResult, started_at: str) -> None:
+        s = self.config.server
+        now = utcnow()
+        with self.db.tx() as c:
+            c.execute(
+                "INSERT INTO attempts(delivery_id, attempt_no, kind, started_at, finished_at, outcome, http_status,"
+                " request_json, response_body, error) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (d["id"], d["attempts"], "send", started_at, iso(now), result.outcome, result.http_status,
+                 dumps(result.request_summary), result.response_body, result.error))
+            cur = c.execute("SELECT * FROM deliveries WHERE id=?", (d["id"],)).fetchone()
+            if cur["state"] != SENDING:
+                return  # lease was recovered meanwhile; the newer run owns it
+            n = c.execute("SELECT * FROM notifications WHERE id=?", (d["notification_id"],)).fetchone()
+            if result.outcome == "success":
+                fields: dict[str, Any] = {"dispatched_at": iso(now), "provider_message_id": result.provider_message_id,
+                                          "receipt": result.receipt, "last_error": None}
+                if cur["tracking"] == "receipt" and result.receipt:
+                    provider = self.providers.get(cur["provider"])
+                    fields["next_poll_at"] = in_seconds(provider.receipt_poll_seconds if provider else 30)
+                elif cur["tracking"] == "receipt":
+                    fields["tracking"] = "none"  # provider gave no receipt after all
+                self._transition(c, cur, DISPATCHED, fields,
+                                 {"provider_message_id": result.provider_message_id, "attempt": cur["attempts"]})
+                return
+            expires = parse_iso(n["expires_at"])
+            if result.outcome == "retryable" and cur["attempts"] < cur["max_attempts"]:
+                delay = backoff_seconds(cur["attempts"], s.retry_base_seconds, s.retry_max_seconds)
+                if result.retry_after:
+                    delay = max(delay, result.retry_after)
+                next_at = now + timedelta(seconds=delay)
+                if expires is not None and next_at >= expires:
+                    self._transition(c, cur, EXPIRED, {"last_error": result.error},
+                                     {"reason": "ttl would elapse before the next retry", "error": result.error})
+                    return
+                self._transition(c, cur, QUEUED, {"next_attempt_at": iso(next_at), "last_error": result.error},
+                                 {"attempt": cur["attempts"], "error": result.error, "http_status": result.http_status,
+                                  "next_attempt_at": iso(next_at)}, event_type="delivery.attempt_failed")
+                return
+            reason = "permanent provider error" if result.outcome == "permanent" else "retries exhausted"
+            self._transition(c, cur, FAILED, {"last_error": result.error},
+                             {"reason": reason, "error": result.error, "http_status": result.http_status,
+                              "attempts": cur["attempts"]})
+
+    def cancel_requested_after_dispatch(self, delivery_id: str) -> bool:
+        return bool(self.db.scalar("SELECT cancel_requested FROM deliveries WHERE id=?", (delivery_id,)))
+
+    # -------------------------------------------------------------- receipts
+    def due_polls(self, limit: int = 20) -> list[sqlite3.Row]:
+        return self.db.query(
+            "SELECT * FROM deliveries WHERE tracking='receipt' AND receipt IS NOT NULL AND next_poll_at IS NOT NULL"
+            " AND next_poll_at <= ? AND state IN (?,?) ORDER BY next_poll_at LIMIT ?",
+            (now_iso(), DISPATCHED, DELIVERED, limit))
+
+    def apply_receipt(self, delivery_id: str, st: ReceiptStatus, via: str) -> None:
+        with self.db.tx() as c:
+            d = c.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+            if d is None:
+                return
+            c.execute("UPDATE deliveries SET poll_errors=0 WHERE id=?", (delivery_id,))
+            provider = self.providers.get(d["provider"])
+            poll_every = provider.receipt_poll_seconds if provider else 30
+            evidence = {"via": via}
+            if st.delivered_at and d["state"] == DISPATCHED:
+                self._transition(c, d, DELIVERED, {"delivered_at": iso(st.delivered_at)},
+                                 {**evidence, "delivered_at": iso(st.delivered_at)})
+                d = c.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+            elif st.delivered_at and not d["delivered_at"]:
+                c.execute("UPDATE deliveries SET delivered_at=? WHERE id=?", (iso(st.delivered_at), delivery_id))
+            if st.acknowledged_at and d["state"] in (DISPATCHED, DELIVERED):
+                self._transition(c, d, ACKNOWLEDGED,
+                                 {"acknowledged_at": iso(st.acknowledged_at), "acknowledged_by": st.acknowledged_by},
+                                 {**evidence, "acknowledged_at": iso(st.acknowledged_at),
+                                  "acknowledged_by": st.acknowledged_by})
+            elif st.interaction and d["state"] in (DISPATCHED, DELIVERED, ACKNOWLEDGED):
+                self._transition(c, d, INTERACTED, {"interacted_at": now_iso(), "interaction_json": dumps(st.interaction)},
+                                 {**evidence, "interaction": st.interaction})
+            elif st.expired and d["state"] in (DISPATCHED, DELIVERED):
+                self._transition(c, d, EXPIRED, {"last_error": "expired without acknowledgement"},
+                                 {**evidence, "reason": "provider alert expired without acknowledgement",
+                                  "delivered_at": d["delivered_at"]})
+            elif d["state"] in (DISPATCHED, DELIVERED):
+                c.execute("UPDATE deliveries SET next_poll_at=? WHERE id=?", (in_seconds(poll_every), delivery_id))
+        self._after_commit()
+
+    def poll_failed(self, d: sqlite3.Row, error: str, http_status: int | None, body: str | None) -> None:
+        errors = d["poll_errors"] + 1
+        n = self.db.one("SELECT expires_at, created_at FROM notifications WHERE id=?", (d["notification_id"],))
+        horizon = parse_iso(d["dispatched_at"]) or utcnow()
+        horizon += timedelta(seconds=10800 + 3600)  # provider max expire window + margin
+        give_up = utcnow() > horizon or (http_status is not None and 400 <= http_status < 500 and errors >= 5)
+        with self.db.tx() as c:
+            c.execute("INSERT INTO attempts(delivery_id, attempt_no, kind, started_at, finished_at, outcome,"
+                      " http_status, response_body, error) VALUES (?,?,?,?,?,?,?,?,?)",
+                      (d["id"], errors, "receipt_poll", now_iso(), now_iso(), "retryable", http_status, body, error))
+            c.execute("UPDATE deliveries SET poll_errors=?, last_error=?, next_poll_at=? WHERE id=?",
+                      (errors, f"receipt poll: {error}",
+                       None if give_up else in_seconds(min(900, 30 * errors)), d["id"]))
+        if give_up:
+            log.warning("receipt tracking abandoned", extra={"delivery_id": d["id"], "error": error,
+                                                             "expires_at": n["expires_at"] if n else None})
+
+    def delivery_by_receipt(self, provider: str, receipt: str) -> sqlite3.Row | None:
+        return self.db.one("SELECT * FROM deliveries WHERE provider=? AND receipt=?", (provider, receipt))
+
+    # ---------------------------------------------------------------- manage
+    async def cancel(self, client: Client, nid: str) -> dict[str, Any]:
+        n = self._notification_row(client, nid)
+        results = []
+        for d in self.db.query("SELECT * FROM deliveries WHERE notification_id=?", (nid,)):
+            provider = self.providers.get(d["provider"])
+            if d["state"] == QUEUED:
+                with self.db.tx() as c:
+                    self._transition(c, d, CANCELLED, {}, {"reason": f"cancelled by {client.id} before dispatch"})
+                results.append({"delivery": d["id"], "result": "cancelled"})
+            elif d["state"] == SENDING:
+                with self.db.tx() as c:
+                    c.execute("UPDATE deliveries SET cancel_requested=1 WHERE id=?", (d["id"],))
+                results.append({"delivery": d["id"], "result": "cancel_requested",
+                                "note": "send in progress; cancelled after dispatch if the provider supports it"})
+            elif d["state"] in (DISPATCHED, DELIVERED):
+                sev = Severity(n["severity"])
+                if provider and d["receipt"] and provider.can_cancel_after_dispatch(sev):
+                    res = await provider.cancel(d["receipt"])
+                    with self.db.tx() as c:
+                        c.execute("INSERT INTO attempts(delivery_id, attempt_no, kind, started_at, finished_at, outcome,"
+                                  " http_status, response_body, error) VALUES (?,?,?,?,?,?,?,?,?)",
+                                  (d["id"], d["attempts"], "cancel", now_iso(), now_iso(), res.outcome,
+                                   res.http_status, res.response_body, res.error))
+                        if res.outcome == "success":
+                            cur = c.execute("SELECT * FROM deliveries WHERE id=?", (d["id"],)).fetchone()
+                            if cur["state"] in (DISPATCHED, DELIVERED):
+                                self._transition(c, cur, CANCELLED, {},
+                                                 {"reason": f"provider alert cancelled by {client.id}"})
+                    results.append({"delivery": d["id"], "result": "cancelled" if res.outcome == "success" else "error",
+                                    "error": res.error})
+                else:
+                    results.append({"delivery": d["id"], "result": "not_cancellable",
+                                    "reason": f"{d['provider']} cannot recall a message already dispatched"
+                                              f" at severity {sev.value}"})
+            else:
+                results.append({"delivery": d["id"], "result": "not_cancellable", "reason": f"already {d['state']}"})
+        self._after_commit()
+        if not any(r["result"] in ("cancelled", "cancel_requested") for r in results):
+            raise Conflict("nothing to cancel", results)
+        return {"notification": self.get(client, nid, detail=False), "results": results}
+
+    def retry(self, client: Client, nid: str) -> dict[str, Any]:
+        n = self._notification_row(client, nid)
+        expires = parse_iso(n["expires_at"])
+        if expires is not None and expires <= utcnow():
+            raise Conflict("notification has expired; submit a new one instead")
+        results = []
+        now = now_iso()
+        for d in self.db.query("SELECT * FROM deliveries WHERE notification_id=?", (nid,)):
+            if d["state"] == FAILED:
+                with self.db.tx() as c:
+                    self._transition(c, d, QUEUED, {"attempts": 0, "next_attempt_at": now, "finalized_at": None,
+                                                    "last_error": d["last_error"]},
+                                     {"reason": f"manual retry by {client.id}", "previous_error": d["last_error"]})
+                results.append({"delivery": d["id"], "result": "requeued"})
+            elif d["state"] == QUEUED:
+                with self.db.tx() as c:
+                    c.execute("UPDATE deliveries SET next_attempt_at=? WHERE id=?", (now, d["id"]))
+                results.append({"delivery": d["id"], "result": "retry_now"})
+            else:
+                results.append({"delivery": d["id"], "result": "not_retryable", "reason": f"state is {d['state']}"})
+        self._after_commit(dispatch=True)
+        if not any(r["result"] in ("requeued", "retry_now") for r in results):
+            raise Conflict("nothing to retry (only failed or waiting deliveries can be retried)", results)
+        return {"notification": self.get(client, nid, detail=False), "results": results}
+
+    # --------------------------------------------------------------- queries
+    def _delivery_out(self, d: sqlite3.Row, attempts: list[sqlite3.Row] | None = None) -> dict[str, Any]:
+        observable = loads(d["observable_states_json"], [])
+        out: dict[str, Any] = {
+            "id": d["id"], "device": d["device"], "provider": d["provider"], "state": d["state"],
+            "final": d["finalized_at"] is not None,
+            "tracking": d["tracking"], "observable_states": observable,
+            "capability_gaps": loads(d["capability_gaps_json"], []),
+            "attempts": d["attempts"], "max_attempts": d["max_attempts"],
+            "next_attempt_at": d["next_attempt_at"] if d["state"] == QUEUED else None,
+            "last_error": d["last_error"],
+            "provider_ref": {"message_id": d["provider_message_id"], "receipt": d["receipt"]},
+            "timestamps": {"created": d["created_at"], "dispatched": d["dispatched_at"],
+                           "delivered": d["delivered_at"], "acknowledged": d["acknowledged_at"],
+                           "interacted": d["interacted_at"], "finalized": d["finalized_at"]},
+            "acknowledged_by": d["acknowledged_by"],
+            "interaction": loads(d["interaction_json"]),
+        }
+        if attempts is not None:
+            out["attempt_log"] = [{
+                "attempt": a["attempt_no"], "kind": a["kind"], "started_at": a["started_at"],
+                "finished_at": a["finished_at"], "outcome": a["outcome"], "http_status": a["http_status"],
+                "request": loads(a["request_json"]), "response": a["response_body"], "error": a["error"],
+            } for a in attempts]
+        return out
+
+    def _notification_out(self, n: sqlite3.Row, deliveries: list[dict[str, Any]]) -> dict[str, Any]:
+        counts: dict[str, int] = {}
+        for d in deliveries:
+            counts[d["state"]] = counts.get(d["state"], 0) + 1
+        routing = loads(n["routing_json"], {})
+        return {
+            "id": n["id"], "status": n["status"], "severity": n["severity"], "title": n["title"],
+            "message": n["message"], "targets": loads(n["targets_json"], []), "source": n["source"],
+            "client": n["client_id"], "tags": loads(n["tags_json"], []), "data": loads(n["data_json"]),
+            "url": n["url"], "url_title": n["url_title"], "actions": loads(n["actions_json"], []),
+            "require_ack": bool(n["require_ack"]), "idempotency_key": n["idempotency_key"],
+            "created_at": n["created_at"], "updated_at": n["updated_at"], "expires_at": n["expires_at"],
+            "suppressed": routing.get("suppressed", []), "delivery_counts": counts, "deliveries": deliveries,
+        }
+
+    def get(self, client: Client, nid: str, detail: bool = True) -> dict[str, Any]:
+        n = self._notification_row(client, nid)
+        ds = self.db.query("SELECT * FROM deliveries WHERE notification_id=? ORDER BY created_at, id", (nid,))
+        deliveries = []
+        for d in ds:
+            att = self.db.query("SELECT * FROM attempts WHERE delivery_id=? ORDER BY id", (d["id"],)) if detail else None
+            deliveries.append(self._delivery_out(d, att))
+        out = self._notification_out(n, deliveries)
+        if detail:
+            out["events"] = [self._event_out(e) for e in
+                             self.db.query("SELECT * FROM events WHERE notification_id=? ORDER BY id", (nid,))]
+        return out
+
+    def list(self, client: Client, *, status: str | None = None, source: str | None = None, tag: str | None = None,
+             since: str | None = None, before: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM notifications WHERE 1=1"
+        params: list[Any] = []
+        if not client.admin:
+            sql += " AND client_id=?"
+            params.append(client.id)
+        if status:
+            statuses = [s.strip() for s in status.split(",") if s.strip()]
+            sql += f" AND status IN ({','.join('?' * len(statuses))})"
+            params += statuses
+        if source:
+            sql += " AND source=?"
+            params.append(source)
+        if tag:
+            sql += " AND EXISTS (SELECT 1 FROM json_each(tags_json) WHERE value=?)"
+            params.append(tag)
+        if since:
+            sql += " AND created_at >= ?"
+            params.append(since)
+        if before:
+            sql += " AND id < ?"
+            params.append(before)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(max(1, min(limit, 200)))
+        out = []
+        for n in self.db.query(sql, params):
+            ds = [self._delivery_out(d) for d in
+                  self.db.query("SELECT * FROM deliveries WHERE notification_id=? ORDER BY created_at, id", (n["id"],))]
+            out.append(self._notification_out(n, ds))
+        return out
+
+    def attention(self, client: Client, stuck_after_seconds: int = 120) -> dict[str, Any]:
+        """Things a human or agent should look at: failures, stuck queue, unacknowledged alerts."""
+        own = "" if client.admin else " AND n.client_id=?"
+        p: list[Any] = [] if client.admin else [client.id]
+        since = iso(utcnow() - timedelta(days=7))
+        stuck_cut = iso(utcnow() - timedelta(seconds=stuck_after_seconds))
+
+        def rows(where: str, params: list[Any]) -> list[dict[str, Any]]:
+            res = self.db.query(
+                "SELECT d.*, n.title, n.severity, n.source, n.created_at AS n_created FROM deliveries d"
+                " JOIN notifications n ON n.id=d.notification_id WHERE " + where + own
+                + " ORDER BY d.updated_at DESC LIMIT 50", params + p)
+            return [{"notification_id": r["notification_id"], "delivery_id": r["id"], "title": r["title"],
+                     "severity": r["severity"], "source": r["source"], "device": r["device"], "state": r["state"],
+                     "attempts": r["attempts"], "last_error": r["last_error"], "created_at": r["n_created"],
+                     "next_attempt_at": r["next_attempt_at"] if r["state"] == QUEUED else None} for r in res]
+
+        return {
+            "failed": rows("d.state=? AND d.updated_at >= ?", [FAILED, since]),
+            "expired": rows("d.state=? AND d.updated_at >= ?", [EXPIRED, since]),
+            "retrying": rows("d.state=? AND d.attempts > 0", [QUEUED]),
+            "stuck": rows("d.state IN (?,?) AND d.created_at <= ?", [QUEUED, SENDING, stuck_cut]),
+            "awaiting_acknowledgement": rows("d.tracking='receipt' AND d.state IN (?,?)", [DISPATCHED, DELIVERED]),
+            "providers": {name: p.health() for name, p in self.providers.items() if not p.configured},
+        }
+
+    def targets(self) -> dict[str, Any]:
+        cfg = self.config
+
+        def device_out(name: str) -> dict[str, Any]:
+            d = cfg.devices[name]
+            p = self.providers[d.provider]
+            caps = {**p.capabilities(), **d.capabilities}
+            problems = p.config_problems() + p.device_problems(d.address)
+            return {"target": f"device:{name}", "description": d.description, "owner": d.owner,
+                    "provider": d.provider, "enabled": d.enabled, "min_severity": d.min_severity.value,
+                    "ready": not problems, "problems": problems, "capabilities": caps}
+
+        return {
+            "users": [{"target": f"user:{n}", "display_name": u.display_name, "devices": cfg.devices_of_user(n)}
+                      for n, u in cfg.users.items()],
+            "devices": [device_out(n) for n in cfg.devices],
+            "groups": [{"target": f"group:{n}", "description": g.description, "members": g.members}
+                       for n, g in cfg.groups.items()],
+            "channels": [{"target": f"channel:{n}", "description": ch.description, "targets": ch.targets,
+                          "min_severity": ch.min_severity.value} for n, ch in cfg.channels.items()],
+            "severities": [s.value for s in Severity],
+        }
+
+    def providers_info(self) -> list[dict[str, Any]]:
+        return [{"name": name, "type": p.type, **p.health(), "capabilities": p.capabilities()}
+                for name, p in self.providers.items()]
+
+    # ---------------------------------------------------------------- events
+    @staticmethod
+    def _event_out(e: sqlite3.Row) -> dict[str, Any]:
+        return {"id": e["id"], "type": e["type"], "notification_id": e["notification_id"],
+                "delivery_id": e["delivery_id"], "source": e["source"], "created_at": e["created_at"],
+                "data": loads(e["data_json"], {})}
+
+    def events_after(self, client: Client, after: int, *, notification_id: str | None = None,
+                     types: list[str] | None = None, source: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM events WHERE id > ?"
+        params: list[Any] = [after]
+        if not client.admin:
+            sql += " AND client_id=?"
+            params.append(client.id)
+        if notification_id:
+            sql += " AND notification_id=?"
+            params.append(notification_id)
+        if source:
+            sql += " AND source=?"
+            params.append(source)
+        sql += " ORDER BY id LIMIT ?"
+        params.append(max(1, min(limit, 500)))
+        out = [self._event_out(e) for e in self.db.query(sql, params)]
+        if types:
+            out = [e for e in out if any(event_matches(t, e["type"]) for t in types)]
+        return out
+
+    def last_event_id(self) -> int:
+        return int(self.db.scalar("SELECT COALESCE(MAX(id), 0) FROM events") or 0)
+
+    # --------------------------------------------------------- subscriptions
+    def _sub_out(self, s: sqlite3.Row) -> dict[str, Any]:
+        pending = self.db.scalar("SELECT COUNT(*) FROM webhook_deliveries WHERE subscription_id=? AND state='pending'",
+                                 (s["id"],))
+        return {"id": s["id"], "client": s["client_id"], "url": s["url"], "events": loads(s["events_json"], []),
+                "notification_id": s["notification_id"], "source": s["source"], "tag": s["tag"],
+                "description": s["description"], "active": bool(s["active"]),
+                "consecutive_failures": s["consecutive_failures"], "last_success_at": s["last_success_at"],
+                "last_failure_at": s["last_failure_at"], "last_error": s["last_error"], "pending": pending,
+                "created_at": s["created_at"]}
+
+    def create_subscription(self, client: Client, req: SubscriptionIn) -> dict[str, Any]:
+        if req.notification_id:
+            self._notification_row(client, req.notification_id)
+        sid = new_id("sub")
+        secret = req.secret or secrets.token_urlsafe(32)
+        with self.db.tx() as c:
+            c.execute("INSERT INTO subscriptions(id, client_id, url, secret, events_json, notification_id, source, tag,"
+                      " description, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                      (sid, client.id, req.url, secret, dumps(req.events), req.notification_id, req.source, req.tag,
+                       req.description, now_iso()))
+        out = self._sub_out(self.db.one("SELECT * FROM subscriptions WHERE id=?", (sid,)))  # type: ignore[arg-type]
+        out["secret"] = secret
+        return out
+
+    def list_subscriptions(self, client: Client) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM subscriptions" + ("" if client.admin else " WHERE client_id=?") + " ORDER BY created_at"
+        return [self._sub_out(s) for s in self.db.query(sql, () if client.admin else (client.id,))]
+
+    def delete_subscription(self, client: Client, sid: str) -> None:
+        s = self.db.one("SELECT * FROM subscriptions WHERE id=?", (sid,))
+        if s is None or not self._visible(client, s["client_id"]):
+            raise NotFound(f"subscription {sid} not found")
+        with self.db.tx() as c:
+            c.execute("DELETE FROM subscriptions WHERE id=?", (sid,))
+
+    def claim_webhooks(self, limit: int = 10) -> list[dict[str, Any]]:
+        now = now_iso()
+        rows = self.db.query(
+            "SELECT w.id AS wid, w.attempts, s.id AS sid, s.url, s.secret, e.* FROM webhook_deliveries w"
+            " JOIN subscriptions s ON s.id=w.subscription_id JOIN events e ON e.id=w.event_id"
+            " WHERE w.state='pending' AND w.next_attempt_at <= ? AND s.active=1 ORDER BY w.id LIMIT ?", (now, limit))
+        out = []
+        for r in rows:
+            n = self.db.one("SELECT * FROM notifications WHERE id=?", (r["notification_id"],))
+            ev = self._event_out(r)
+            if n is not None:
+                ev["notification"] = {"id": n["id"], "status": n["status"], "severity": n["severity"],
+                                      "title": n["title"], "source": n["source"], "tags": loads(n["tags_json"], []),
+                                      "data": loads(n["data_json"])}
+            out.append({"wid": r["wid"], "attempts": r["attempts"], "sid": r["sid"], "url": r["url"],
+                        "secret": r["secret"], "event": ev})
+        return out
+
+    def webhook_result(self, item: dict[str, Any], ok: bool, status: int | None, error: str | None) -> None:
+        s = self.config.server
+        now = utcnow()
+        attempts = item["attempts"] + 1
+        with self.db.tx() as c:
+            if ok:
+                c.execute("UPDATE webhook_deliveries SET state='delivered', attempts=?, last_status=?, delivered_at=?,"
+                          " last_error=NULL WHERE id=?", (attempts, status, iso(now), item["wid"]))
+                c.execute("UPDATE subscriptions SET consecutive_failures=0, last_success_at=? WHERE id=?",
+                          (iso(now), item["sid"]))
+                return
+            final = attempts >= s.webhook_max_attempts
+            nxt = now + timedelta(seconds=min(600, 5 * 3 ** (attempts - 1)))
+            c.execute("UPDATE webhook_deliveries SET state=?, attempts=?, last_status=?, last_error=?, next_attempt_at=?"
+                      " WHERE id=?", ("failed" if final else "pending", attempts, status, error, iso(nxt), item["wid"]))
+            c.execute("UPDATE subscriptions SET consecutive_failures=consecutive_failures+1, last_failure_at=?,"
+                      " last_error=? WHERE id=?", (iso(now), error, item["sid"]))
+            sub = c.execute("SELECT consecutive_failures FROM subscriptions WHERE id=?", (item["sid"],)).fetchone()
+            if sub and sub[0] >= s.webhook_disable_after_failures:
+                c.execute("UPDATE subscriptions SET active=0, last_error=? WHERE id=?",
+                          (f"disabled after {sub[0]} consecutive failures: {error}", item["sid"]))
+                log.warning("webhook subscription disabled", extra={"subscription_id": item["sid"]})
+
+    # ------------------------------------------------------------ operations
+    def retention_sweep(self) -> int:
+        cutoff = iso(utcnow() - timedelta(days=self.config.server.retention_days))
+        with self.db.tx() as c:
+            ids = [r[0] for r in c.execute(
+                "SELECT id FROM notifications WHERE created_at < ? AND NOT EXISTS (SELECT 1 FROM deliveries d"
+                " WHERE d.notification_id=notifications.id AND d.finalized_at IS NULL)", (cutoff,))]
+            for nid in ids:
+                c.execute("DELETE FROM notifications WHERE id=?", (nid,))
+            c.execute("DELETE FROM subscriptions WHERE notification_id IS NOT NULL AND NOT EXISTS"
+                      " (SELECT 1 FROM notifications n WHERE n.id=subscriptions.notification_id)")
+        return len(ids)
+
+    def stats(self) -> dict[str, Any]:
+        by_state = {r[0]: r[1] for r in self.db.query("SELECT state, COUNT(*) FROM deliveries GROUP BY state")}
+        by_status = {r[0]: r[1] for r in self.db.query("SELECT status, COUNT(*) FROM notifications GROUP BY status")}
+        oldest = self.db.scalar("SELECT MIN(created_at) FROM deliveries WHERE state IN (?,?)", tuple(ACTIVE_STATES))
+        oldest_age = (utcnow() - parse_iso(oldest)).total_seconds() if oldest else 0.0  # type: ignore[operator]
+        wh = {r[0]: r[1] for r in self.db.query("SELECT state, COUNT(*) FROM webhook_deliveries GROUP BY state")}
+        return {"deliveries_by_state": by_state, "notifications_by_status": by_status,
+                "oldest_pending_age_seconds": round(oldest_age, 1), "webhooks_by_state": wh,
+                "attempts_total": self.db.scalar("SELECT COUNT(*) FROM attempts WHERE kind='send'") or 0}

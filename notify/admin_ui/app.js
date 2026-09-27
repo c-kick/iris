@@ -1,0 +1,808 @@
+// hnl-notify management UI. Vanilla JS, no build step.
+
+const root = document.getElementById("root");
+const dialog = document.getElementById("dialog");
+const toastEl = document.getElementById("toast");
+
+let state = null;
+const hashSection = location.hash.slice(1);
+let section = hashSection || sessionStorage.getItem("notify.section") || "overview";
+
+const SECTIONS = [
+  ["overview", "Overview"],
+  ["delivery", "Pushover"],
+  ["devices", "Devices"],
+  ["people", "People & groups"],
+  ["channels", "Channels"],
+  ["access", "API access"],
+  ["requests", "Access requests"],
+  ["activity", "Activity"],
+  ["settings", "Settings"],
+];
+
+const SEVERITY_HELP = {
+  min: "silent, no alert",
+  low: "no sound or vibration",
+  normal: "default alert",
+  high: "bypasses quiet hours",
+  critical: "repeats until acknowledged",
+};
+
+const SCOPE_HELP = {
+  send: "send notifications",
+  read: "see its own history, targets and events",
+  manage: "retry or cancel its own notifications",
+  admin: "everything, for every client",
+};
+
+// ---------------------------------------------------------------- helpers
+
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+async function api(method, path, body) {
+  const opts = { method, headers: { "X-Notify-Admin": "1" }, credentials: "same-origin" };
+  if (body !== undefined) {
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(`/admin/api${path}`, opts);
+  let data = null;
+  try { data = await res.json(); } catch { /* empty body */ }
+  if (res.status === 401 && path !== "/login" && path !== "/setup") {
+    await boot();
+    throw new Error("Signed out. Sign in again.");
+  }
+  if (!res.ok) {
+    const d = data?.detail;
+    const msg = typeof d === "string" ? d : Array.isArray(d) ? d.map((e) => `${(e.loc || []).slice(1).join(".")}: ${e.msg}`).join("; ") : `Request failed (HTTP ${res.status})`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.hidden = false;
+  clearTimeout(toast.t);
+  toast.t = setTimeout(() => (toastEl.hidden = true), 3200);
+}
+
+function when(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  const same = d.toDateString() === new Date().toDateString();
+  return same ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+              : d.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+const logo = `<svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="var(--action)"/><circle cx="16" cy="16" r="5" fill="var(--surface)"/></svg>`;
+
+function lampFor(status) {
+  if (["acknowledged", "delivered", "dispatched"].includes(status)) return "ok";
+  if (["pending", "partial"].includes(status)) return "warn";
+  if (["failed", "expired"].includes(status)) return "bad";
+  return "";
+}
+
+// ---------------------------------------------------------------- forms in a dialog
+
+/**
+ * fields: {name, label, kind: text|secret|int|select|checks|textarea|check|url, value, help, options:[[value,label]], placeholder}
+ * onSubmit(values) -> Promise; throw to show an error.
+ */
+function openForm({ title, intro = "", fields, submit, onSubmit, extra }) {
+  dialog.innerHTML = `
+    <form class="stack" method="dialog" novalidate>
+      <h2>${esc(title)}</h2>
+      ${intro ? `<p class="hint">${intro}</p>` : ""}
+      ${fields.map(fieldHtml).join("")}
+      <div class="form-error" role="alert"></div>
+      <div class="form-actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn primary">${esc(submit)}</button>
+      </div>
+    </form>`;
+  const form = dialog.querySelector("form");
+  const err = form.querySelector(".form-error");
+  form.querySelector("[data-close]").onclick = () => dialog.close();
+  if (extra) extra(form);
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const btn = form.querySelector("button[type=submit]");
+    btn.disabled = true;
+    err.textContent = "";
+    try {
+      await onSubmit(readForm(form, fields));
+      dialog.close();
+    } catch (ex) {
+      err.textContent = ex.message;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  dialog.showModal();
+  const first = form.querySelector("input:not([type=checkbox]):not([readonly]), select, textarea");
+  if (first) first.focus();
+}
+
+function fieldHtml(f) {
+  const id = `f-${f.name}`;
+  const help = f.help ? `<span class="help" id="${id}-h">${f.help}</span>` : "";
+  const aria = f.help ? `aria-describedby="${id}-h"` : "";
+  if (f.kind === "checks") {
+    const vals = new Set(f.value || []);
+    return `<div class="field"><fieldset><legend>${esc(f.label)}</legend>${help}<div class="checks">
+      ${f.options.map(([v, l]) => `<label><input type="checkbox" name="${esc(f.name)}" value="${esc(v)}" ${vals.has(v) ? "checked" : ""}> ${esc(l)}</label>`).join("")}
+      ${f.options.length ? "" : `<span class="hint">Nothing to choose from yet.</span>`}
+    </div></fieldset></div>`;
+  }
+  if (f.kind === "check") {
+    return `<div class="field"><label><input type="checkbox" name="${esc(f.name)}" ${f.value ? "checked" : ""}> ${esc(f.label)}</label>${help}</div>`;
+  }
+  let input;
+  if (f.kind === "select") {
+    input = `<select id="${id}" name="${esc(f.name)}" ${aria}>${f.options.map(([v, l]) => `<option value="${esc(v)}" ${String(f.value ?? "") === String(v) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  } else if (f.kind === "textarea") {
+    input = `<textarea id="${id}" name="${esc(f.name)}" ${aria}>${esc(f.value)}</textarea>`;
+  } else {
+    const type = f.kind === "secret" ? "password" : f.kind === "int" ? "number" : f.kind === "url" ? "url" : "text";
+    const ph = f.kind === "secret" && f.stored ? `Stored (${f.stored}). Leave empty to keep it.` : (f.placeholder || "");
+    input = `<input id="${id}" type="${type}" name="${esc(f.name)}" value="${f.kind === "secret" ? "" : esc(f.value)}"
+      placeholder="${esc(ph)}" ${aria} autocomplete="off" ${f.readonly ? "readonly" : ""} ${f.list ? `list="${id}-list"` : ""}>`;
+    if (f.list) input += `<datalist id="${id}-list"></datalist>`;
+    if (f.button) input = `<div class="inline">${input}<button type="button" class="btn" data-action="${esc(f.button.action)}">${esc(f.button.label)}</button></div>`;
+  }
+  return `<div class="field"><label for="${id}">${esc(f.label)}</label>${input}${help}</div>`;
+}
+
+function readForm(form, fields) {
+  const out = {};
+  for (const f of fields) {
+    if (f.kind === "checks") out[f.name] = [...form.querySelectorAll(`input[name="${f.name}"]:checked`)].map((i) => i.value);
+    else if (f.kind === "check") out[f.name] = form.querySelector(`input[name="${f.name}"]`).checked;
+    else {
+      const v = form.elements[f.name].value.trim();
+      out[f.name] = f.kind === "int" ? (v === "" ? null : Number(v)) : v;
+    }
+  }
+  return out;
+}
+
+function confirmAction(title, body, label, fn) {
+  openForm({ title, intro: body, fields: [], submit: label, onSubmit: fn });
+  dialog.querySelector("button[type=submit]").classList.add("danger");
+}
+
+function showToken(title, name, token) {
+  const base = location.origin;
+  dialog.innerHTML = `
+    <div class="stack" style="display:flex;flex-direction:column;gap:1rem">
+      <h2>${esc(title)}</h2>
+      <p>Copy this token for <strong>${esc(name)}</strong> now. It is stored only as a fingerprint and will not be shown again.</p>
+      <div class="secret-box"><code id="tok">${esc(token)}</code><button class="btn" id="copy">Copy</button></div>
+      <div><strong>Use it as a header</strong><pre class="snippet">Authorization: Bearer ${esc(token)}</pre></div>
+      <div><strong>Connect an agent (MCP)</strong><pre class="snippet">claude mcp add --transport http hnl-notify ${esc(base)}/mcp \\
+  --header "Authorization: Bearer ${esc(token)}"</pre></div>
+      <div class="form-actions"><button class="btn primary" id="done">I've saved it</button></div>
+    </div>`;
+  dialog.querySelector("#copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(token); toast("Token copied"); }
+    catch { toast("Copy isn't available here; select the token and copy it manually"); }
+  };
+  dialog.querySelector("#done").onclick = () => dialog.close();
+  dialog.showModal();
+}
+
+// ---------------------------------------------------------------- auth screens
+
+function renderGate(mode, message = "") {
+  const setup = mode === "setup";
+  root.innerHTML = `
+    <main class="gate"><div class="panel">
+      <div class="brand">${logo}<h1>hnl-notify</h1></div>
+      <h2>${setup ? "Set up the admin password" : "Sign in"}</h2>
+      ${setup ? `<p class="hint">Find the setup code in the container log:<br><code>docker logs hnl-notify 2>&1 | grep "setup code"</code></p>` : ""}
+      <form class="stack" novalidate>
+        ${setup ? fieldHtml({ name: "code", label: "Setup code", kind: "text", placeholder: "abc123-def456-789abc" }) : ""}
+        ${fieldHtml({ name: "password", label: setup ? "New password" : "Password", kind: "secret",
+                     help: setup ? "At least 10 characters." : "" })}
+        <div class="form-error" role="alert">${esc(message)}</div>
+        <div class="form-actions"><button class="btn primary" type="submit">${setup ? "Save password and continue" : "Sign in"}</button></div>
+      </form>
+    </div></main>`;
+  const form = root.querySelector("form");
+  form.querySelector("input").focus();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const err = form.querySelector(".form-error");
+    const btn = form.querySelector("button");
+    btn.disabled = true;
+    err.textContent = "";
+    try {
+      const body = { password: form.elements.password.value };
+      if (setup) body.code = form.elements.code.value.trim();
+      await api("POST", setup ? "/setup" : "/login", body);
+      await boot();
+    } catch (ex) {
+      err.textContent = ex.message;
+      btn.disabled = false;
+    }
+  };
+}
+
+// ---------------------------------------------------------------- app shell
+
+async function boot() {
+  const s = await (await fetch("/admin/api/session", { credentials: "same-origin" })).json();
+  if (s.setup_required) return renderGate("setup");
+  if (!s.signed_in) return renderGate("login");
+  await refresh();
+}
+
+async function refresh() {
+  state = await api("GET", "/state");
+  render();
+}
+
+function render() {
+  if (!VIEWS[section]) section = "overview";
+  const badge = (k) => (k === "requests" && state.pending_registrations ? ` <span class="badge" aria-label="${state.pending_registrations} waiting">${state.pending_registrations}</span>` : "");
+  const nav = SECTIONS.map(([k, l]) => `<button data-nav="${k}" ${k === section ? 'aria-current="page"' : ""}>${esc(l)}${badge(k)}</button>`).join("");
+  root.innerHTML = `
+    <div class="shell">
+      <aside class="side">
+        <div class="top"><div class="brand">${logo}<h1>hnl-notify</h1></div><button class="btn quiet signout" data-signout>Sign out</button></div>
+        <nav class="nav" aria-label="Sections">${nav}</nav>
+        <div class="foot"><span>Version ${esc(state.version)}</span><button class="btn quiet" style="align-self:flex-start;padding-inline:0" data-signout>Sign out</button></div>
+      </aside>
+      <main class="main" id="main"></main>
+    </div>`;
+  root.querySelectorAll("[data-nav]").forEach((b) => (b.onclick = () => {
+    section = b.dataset.nav;
+    sessionStorage.setItem("notify.section", section);
+    history.replaceState(null, "", `#${section}`);
+    render();
+  }));
+  root.querySelectorAll("[data-signout]").forEach((b) => (b.onclick = async () => { await api("POST", "/logout"); boot(); }));
+  root.querySelector('.nav [aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "center" });
+  const main = document.getElementById("main");
+  VIEWS[section](main);
+}
+
+// Mutations return the new state; re-render with it.
+async function mutate(method, path, body, done) {
+  const res = await api(method, path, body);
+  state = res;
+  render();
+  if (done) toast(done);
+  return res;
+}
+
+// ---------------------------------------------------------------- derived info
+
+const cfg = () => state.config;
+const pushoverName = () => Object.keys(cfg().providers).find((n) => cfg().providers[n].type === "pushover");
+
+function targetOptions() {
+  const c = cfg();
+  return [
+    ...Object.entries(c.users).map(([n, u]) => [`user:${n}`, `${u.display_name || n} (person)`]),
+    ...Object.keys(c.groups).map((n) => [`group:${n}`, `${n} (group)`]),
+    ...Object.entries(c.devices).map(([n, d]) => [`device:${n}`, `${d.description || n} (device)`]),
+  ];
+}
+
+function describeTarget(t) {
+  const [kind, name] = t.split(":");
+  const c = cfg();
+  if (kind === "user") return c.users[name]?.display_name || name;
+  if (kind === "device") return c.devices[name]?.description || name;
+  return name;
+}
+
+// ---------------------------------------------------------------- views
+
+const VIEWS = {
+  overview(main) {
+    const c = cfg();
+    const pname = pushoverName();
+    const provider = pname ? state.providers[pname] : null;
+    const devices = Object.entries(c.devices);
+    const readyDevices = devices.filter(([n, d]) => d.enabled && state.devices[n]?.ready);
+    const clients = Object.keys(c.clients);
+    const pending = state.stats.deliveries_by_state.queued || 0;
+
+    const senderLamp = clients.length ? "ok" : "warn";
+    const coreLamp = pending > 0 && state.stats.oldest_pending_age_seconds > 120 ? "warn" : "ok";
+    const provLamp = !provider ? "bad" : provider.configured ? "ok" : "bad";
+    const devLamp = readyDevices.length ? "ok" : devices.length ? "bad" : "warn";
+    const wire = (l) => `--wire: var(--${l === "ok" ? "ok" : l === "bad" ? "bad" : l === "warn" ? "warn" : "idle"})`;
+    const quota = provider?.quota ? `${provider.quota.remaining.toLocaleString()} of ${provider.quota.limit.toLocaleString()} messages left this month` : "Quota appears after the first message";
+
+    main.innerHTML = `
+      ${state.pending_registrations ? `<div class="rows" style="margin-bottom:1.5rem"><div class="row"><span class="lamp warn"></span>
+        <div class="grow"><div class="title">${state.pending_registrations === 1 ? "An app is" : `${state.pending_registrations} apps are`} waiting for access</div>
+        <div class="sub">Approve or deny it before it can send notifications.</div></div>
+        <div class="actions"><button class="btn primary" data-go="requests">Review</button></div></div></div>` : ""}
+      <div class="section-head"><h2>Delivery path</h2><p>Where a notification goes after a service sends it.</p></div>
+      <div class="path">
+        <div class="hop" style="${wire(senderLamp)}"><div class="kind">Senders</div>
+          <div class="name"><span class="lamp ${senderLamp}"></span><span class="label">${clients.length} API ${clients.length === 1 ? "client" : "clients"}</span></div>
+          <div class="note">${clients.length ? esc(clients.slice(0, 3).join(", ")) + (clients.length > 3 ? "…" : "") : `<button class="btn quiet" style="padding:0" data-go="access">Create a token</button>`}</div></div>
+        <div class="hop" style="${wire(coreLamp)}"><div class="kind">Queue</div>
+          <div class="name"><span class="lamp ${coreLamp}"></span><span class="label">hnl-notify</span></div>
+          <div class="note">${pending ? `${pending} waiting` : "Nothing waiting"}</div></div>
+        <div class="hop" style="${wire(provLamp)}"><div class="kind">Provider</div>
+          <div class="name"><span class="lamp ${provLamp}"></span><span class="label">Pushover</span></div>
+          <div class="note">${!provider ? `<button class="btn quiet" style="padding:0" data-go="delivery">Connect Pushover</button>` : provider.configured ? esc(quota) : esc(provider.problems.join("; "))}</div></div>
+        <div class="hop"><div class="kind">Devices</div>
+          <div class="hop-list">${devices.length ? devices.map(([n, d]) => {
+            const ok = d.enabled && state.devices[n]?.ready;
+            return `<div class="name"><span class="lamp ${ok ? "ok" : d.enabled ? "bad" : ""}"></span><span class="label">${esc(d.description || n)}</span></div>`;
+          }).join("") : `<div class="name"><span class="lamp ${devLamp}"></span><span class="label">None yet</span></div><div class="note"><button class="btn quiet" style="padding:0" data-go="devices">Add a device</button></div>`}</div></div>
+      </div>
+
+      <div class="block">
+        <h3>Send a test</h3>
+        ${readyDevices.length ? `
+        <form class="test-form" id="test">
+          ${fieldHtml({ name: "target", label: "To", kind: "select", options: targetOptions(), value: Object.keys(c.users)[0] ? `user:${Object.keys(c.users)[0]}` : "" })}
+          ${fieldHtml({ name: "severity", label: "Urgency", kind: "select", value: "normal",
+                        options: state.severities.map((s) => [s, `${s}: ${SEVERITY_HELP[s]}`]),
+                        help: "Only critical reports delivery back, and it repeats until acknowledged." })}
+          <div class="form-error" role="alert"></div>
+          <div class="form-actions"><button class="btn primary" type="submit">Send test notification</button></div>
+        </form>` : `<div class="rows"><div class="empty">Connect Pushover and add a device, then send a test from here.</div></div>`}
+      </div>
+
+      <div class="block"><h3>Recent notifications</h3><div id="recent" class="rows"><div class="empty">Loading…</div></div></div>`;
+
+    main.querySelectorAll("[data-go]").forEach((b) => (b.onclick = () => { section = b.dataset.go; render(); }));
+    const form = main.querySelector("#test");
+    if (form) form.onsubmit = async (e) => {
+      e.preventDefault();
+      const err = form.querySelector(".form-error");
+      err.textContent = "";
+      try {
+        const n = await api("POST", "/test", { targets: [form.elements.target.value], severity: form.elements.severity.value });
+        toast(n.status === "suppressed" ? "Not sent: the target's severity floor filtered it out" : "Test sent. Watch its status below.");
+        loadRecent(main.querySelector("#recent"), 5);
+      } catch (ex) { err.textContent = ex.message; }
+    };
+    loadRecent(main.querySelector("#recent"), 5);
+  },
+
+  delivery(main) {
+    const pname = pushoverName() || "pushover";
+    const p = cfg().providers[pname];
+    const schema = state.provider_types.pushover.settings;
+    const health = state.providers[pname];
+    main.innerHTML = `
+      <div class="section-head"><h2>Pushover</h2>
+        <p>Pushover delivers to the Pushover app on your phone. Normal messages are reported as sent once Pushover accepts them. Only critical messages report delivery and acknowledgement back.</p></div>
+      <div class="rows"><div class="row">
+        <span class="lamp ${!p ? "" : health?.configured ? "ok" : "bad"}"></span>
+        <div class="grow"><div class="title">${!p ? "Not connected" : health?.configured ? "Connected" : "Needs attention"}</div>
+          <div class="sub">${!p ? "Add your application token to start." : health?.configured ? `Application token ${esc(p.app_token?.hint || "")}` : esc(health?.problems.join("; "))}</div>
+          ${health?.quota ? `<div class="sub">${health.quota.remaining.toLocaleString()} of ${health.quota.limit.toLocaleString()} messages left this month</div>` : ""}</div>
+        <div class="actions"><button class="btn ${p ? "" : "primary"}" id="edit">${p ? "Edit" : "Connect Pushover"}</button></div>
+      </div></div>`;
+    main.querySelector("#edit").onclick = () => openForm({
+      title: p ? "Edit Pushover" : "Connect Pushover",
+      intro: `Create an application at <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">pushover.net/apps/build</a> (name it hnl-notify), then paste its API token.`,
+      fields: Object.entries(schema).map(([k, s]) => ({ name: k, label: s.label, kind: s.kind, help: s.help,
+        value: p?.[k] ?? s.default ?? "", stored: s.kind === "secret" && p?.[k]?.set ? p[k].hint : "" })),
+      submit: "Save",
+      onSubmit: (v) => mutate("PUT", `/providers/${pname}`, { type: "pushover", settings: v }, "Pushover saved"),
+    });
+  },
+
+  devices(main) {
+    const c = cfg();
+    const devices = Object.entries(c.devices);
+    main.innerHTML = `
+      <div class="section-head"><h2>Devices</h2><p>Each device is one place a notification can land, such as the Pushover app on a phone.</p></div>
+      <div class="rows">${devices.length ? devices.map(([n, d]) => {
+        const info = state.devices[n] || {};
+        return `<div class="row"><span class="lamp ${d.enabled ? (info.ready ? "ok" : "bad") : ""}"></span>
+          <div class="grow"><div class="title">${esc(d.description || n)}</div>
+            <div class="sub">device:${esc(n)} via ${esc(d.provider)}${d.owner ? `, belongs to ${esc(c.users[d.owner]?.display_name || d.owner)}` : ""}${d.enabled ? "" : ", turned off"}${d.min_severity !== "min" ? `, only ${esc(d.min_severity)} and above` : ""}</div>
+            ${info.problems?.length ? `<div class="problem">${esc(info.problems.join("; "))}</div>` : ""}</div>
+          <div class="actions"><button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
+      }).join("") : `<div class="empty">No devices yet.</div>`}</div>
+      <p style="margin-top:1rem"><button class="btn primary" id="add">Add device</button></p>`;
+    main.querySelector("#add").onclick = () => deviceForm();
+    main.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => deviceForm(b.dataset.edit)));
+    main.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => confirmAction(
+      "Remove device?", `Notifications will no longer go to <strong>${esc(b.dataset.del)}</strong>. It is also removed from people, groups and channels.`,
+      "Remove device", () => mutate("DELETE", `/devices/${b.dataset.del}`, undefined, "Device removed"))));
+  },
+
+  people(main) {
+    const c = cfg();
+    main.innerHTML = `
+      <div class="section-head"><h2>People & groups</h2><p>Services send to a person or a group; hnl-notify picks the devices.</p></div>
+      <div class="block"><h3>People</h3><div class="rows">${Object.entries(c.users).map(([n, u]) => `
+        <div class="row"><div class="grow"><div class="title">${esc(u.display_name || n)}</div>
+          <div class="sub">user:${esc(n)}</div>
+          <div class="chips">${u.devices.map((d) => `<span class="chip">${esc(c.devices[d]?.description || d)}</span>`).join("") || `<span class="hint">No devices</span>`}</div></div>
+          <div class="actions"><button class="btn" data-user="${esc(n)}">Edit</button><button class="btn danger" data-deluser="${esc(n)}">Remove</button></div></div>`).join("") || `<div class="empty">No people yet.</div>`}
+      </div><p style="margin-top:.75rem"><button class="btn" id="adduser">Add person</button></p></div>
+      <div class="block"><h3>Groups</h3><div class="rows">${Object.entries(c.groups).map(([n, g]) => `
+        <div class="row"><div class="grow"><div class="title">${esc(n)}</div>
+          <div class="sub">group:${esc(n)}${g.description ? `, ${esc(g.description)}` : ""}</div>
+          <div class="chips">${g.members.map((m) => `<span class="chip">${esc(describeTarget(m))}</span>`).join("") || `<span class="hint">No members</span>`}</div></div>
+          <div class="actions"><button class="btn" data-group="${esc(n)}">Edit</button><button class="btn danger" data-delgroup="${esc(n)}">Remove</button></div></div>`).join("") || `<div class="empty">No groups yet.</div>`}
+      </div><p style="margin-top:.75rem"><button class="btn" id="addgroup">Add group</button></p></div>`;
+    main.querySelector("#adduser").onclick = () => userForm();
+    main.querySelector("#addgroup").onclick = () => groupForm();
+    main.querySelectorAll("[data-user]").forEach((b) => (b.onclick = () => userForm(b.dataset.user)));
+    main.querySelectorAll("[data-group]").forEach((b) => (b.onclick = () => groupForm(b.dataset.group)));
+    main.querySelectorAll("[data-deluser]").forEach((b) => (b.onclick = () => confirmAction("Remove person?",
+      `Services sending to user:${esc(b.dataset.deluser)} will get an error. Their devices stay.`, "Remove person",
+      () => mutate("DELETE", `/users/${b.dataset.deluser}`, undefined, "Person removed"))));
+    main.querySelectorAll("[data-delgroup]").forEach((b) => (b.onclick = () => confirmAction("Remove group?",
+      `Services sending to group:${esc(b.dataset.delgroup)} will get an error.`, "Remove group",
+      () => mutate("DELETE", `/groups/${b.dataset.delgroup}`, undefined, "Group removed"))));
+  },
+
+  channels(main) {
+    const c = cfg();
+    main.innerHTML = `
+      <div class="section-head"><h2>Channels</h2><p>A channel is a topic such as security or server alerts. Services send to the channel; you decide here who receives it and from which urgency.</p></div>
+      <div class="rows">${Object.entries(c.channels).map(([n, ch]) => `
+        <div class="row"><div class="grow"><div class="title">${esc(n)}</div>
+          <div class="sub">channel:${esc(n)}${ch.description ? `, ${esc(ch.description)}` : ""}${ch.min_severity !== "min" ? `. Only ${esc(ch.min_severity)} and above` : ""}</div>
+          <div class="chips">${ch.targets.map((t) => `<span class="chip">${esc(describeTarget(t))}</span>`).join("") || `<span class="hint">Nobody receives this channel</span>`}</div></div>
+          <div class="actions"><button class="btn" data-ch="${esc(n)}">Edit</button><button class="btn danger" data-delch="${esc(n)}">Remove</button></div></div>`).join("") || `<div class="empty">No channels yet.</div>`}
+      </div><p style="margin-top:1rem"><button class="btn primary" id="addch">Add channel</button></p>`;
+    main.querySelector("#addch").onclick = () => channelForm();
+    main.querySelectorAll("[data-ch]").forEach((b) => (b.onclick = () => channelForm(b.dataset.ch)));
+    main.querySelectorAll("[data-delch]").forEach((b) => (b.onclick = () => confirmAction("Remove channel?",
+      `Services sending to channel:${esc(b.dataset.delch)} will get an error.`, "Remove channel",
+      () => mutate("DELETE", `/channels/${b.dataset.delch}`, undefined, "Channel removed"))));
+  },
+
+  access(main) {
+    const c = cfg();
+    const firstUser = Object.keys(c.users)[0];
+    const exampleTarget = firstUser ? `user:${firstUser}` : "user:NAME";
+    main.innerHTML = `
+      <div class="section-head"><h2>API access</h2><p>Every service or agent that sends notifications gets its own token, so you can see who sent what and revoke one without touching the others.</p></div>
+      <div class="rows">${Object.entries(c.clients).map(([n, cl]) => `
+        <div class="row"><div class="grow"><div class="title">${esc(n)}</div>
+          ${cl.description ? `<div class="sub">${esc(cl.description)}</div>` : ""}
+          <div class="chips">${cl.scopes.map((s) => `<span class="chip" title="${esc(SCOPE_HELP[s])}">${esc(s)}</span>`).join("")}</div></div>
+          <div class="actions"><button class="btn" data-cl="${esc(n)}">Edit</button><button class="btn" data-rot="${esc(n)}">Replace token</button><button class="btn danger" data-delcl="${esc(n)}">Revoke</button></div></div>`).join("") || `<div class="empty">No tokens yet. Create one for each service that should send notifications, for example Home Assistant.</div>`}
+      </div>
+      <p style="margin-top:1rem"><button class="btn primary" id="addcl">Create token</button></p>
+      <div class="block" style="margin-top:2rem"><h3>Let an app ask for access itself</h3>
+        <p class="hint">${cfg().registration.enabled ? "The app gets a token right away; it starts working once you approve the request under Access requests." : "Self-registration is turned off in Settings."}</p>
+        <pre class="snippet">curl -X POST ${esc(location.origin)}/v1/registrations \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "node-red", "description": "Flow alerts", "scopes": ["send", "read"]}'</pre></div>
+      <div class="block"><h3>Send from a service</h3>
+        <pre class="snippet">curl -X POST ${esc(location.origin)}/v1/notifications \\
+  -H "Authorization: Bearer YOUR_TOKEN" -H "Content-Type: application/json" \\
+  -d '{"targets": ["${esc(exampleTarget)}"], "title": "Washing machine", "message": "The laundry is done"}'</pre>
+        <p class="hint" style="margin-top:.5rem">Full API reference: <a href="/docs" target="_blank" rel="noopener">/docs</a></p></div>`;
+    main.querySelector("#addcl").onclick = () => clientForm();
+    main.querySelectorAll("[data-cl]").forEach((b) => (b.onclick = () => clientForm(b.dataset.cl)));
+    main.querySelectorAll("[data-rot]").forEach((b) => (b.onclick = () => confirmAction("Replace token?",
+      `The current token for <strong>${esc(b.dataset.rot)}</strong> stops working immediately.`, "Replace token", async () => {
+        const res = await mutate("POST", `/clients/${b.dataset.rot}/rotate`);
+        showToken("New token", b.dataset.rot, res.token);
+      })));
+    main.querySelectorAll("[data-delcl]").forEach((b) => (b.onclick = () => confirmAction("Revoke token?",
+      `<strong>${esc(b.dataset.delcl)}</strong> can no longer send or read notifications.`, "Revoke",
+      () => mutate("DELETE", `/clients/${b.dataset.delcl}`, undefined, "Token revoked"))));
+  },
+
+  activity(main) {
+    main.innerHTML = `
+      <div class="section-head"><h2>Activity</h2><p>The latest notifications from every service, with what each device reported back.</p></div>
+      <div class="block" id="attention"></div>
+      <div class="rows" id="recent"><div class="empty">Loading…</div></div>`;
+    loadRecent(main.querySelector("#recent"), 50, main.querySelector("#attention"));
+  },
+
+  requests(main) {
+    main.innerHTML = `
+      <div class="section-head"><h2>Access requests</h2>
+        <p>Apps that asked for their own token. Nothing they send is accepted until you approve them here.</p></div>
+      <div id="reqs"><div class="rows"><div class="empty">Loading…</div></div></div>`;
+    loadRequests(main.querySelector("#reqs"));
+  },
+
+  settings(main) {
+    const s = cfg().server;
+    const r = cfg().registration;
+    main.innerHTML = `
+      <div class="section-head"><h2>Settings</h2></div>
+      <div class="block"><h3>Admin password</h3><p class="hint">Changing it signs out every other browser.</p>
+        <button class="btn" id="pw">Change password</button></div>
+      <div class="block"><h3>Access requests</h3>
+        <form class="stack" id="reg">
+          ${fieldHtml({ name: "enabled", label: "Let apps ask for access themselves", kind: "check", value: r.enabled })}
+          ${fieldHtml({ name: "notify_targets", label: "Alert about new requests", kind: "checks", value: r.notify_targets,
+                        options: [...targetOptions(), ...Object.keys(cfg().channels).map((n) => [`channel:${n}`, `${n} (channel)`])],
+                        help: "Nothing ticked: every person is alerted." })}
+          ${fieldHtml({ name: "auto_approve_subnets", label: "Approve automatically from these networks (optional)", kind: "text",
+                        value: r.auto_approve_subnets.join(", "), placeholder: "192.168.1.0/24",
+                        help: "Comma-separated. Leave empty to always ask. Only applies to requests that stay within the permissions below." })}
+          ${fieldHtml({ name: "auto_approve_scopes", label: "Permissions that may be approved automatically", kind: "checks",
+                        value: r.auto_approve_scopes, options: ["send", "read", "manage"].map((x) => [x, SCOPE_HELP[x]]) })}
+          <div class="form-error" role="alert"></div>
+          <div class="form-actions"><button class="btn primary" type="submit">Save access settings</button></div>
+        </form></div>
+      <div class="block"><h3>Delivery</h3>
+        <form class="stack" id="server">
+          ${fieldHtml({ name: "max_attempts", label: "Attempts before giving up", kind: "int", value: s.max_attempts,
+                        help: "Only network problems and Pushover outages are retried. Rejected requests fail at once." })}
+          ${fieldHtml({ name: "retention_days", label: "Keep history for (days)", kind: "int", value: s.retention_days })}
+          ${fieldHtml({ name: "external_url", label: "Address of this service on your network", kind: "url", value: s.external_url || "",
+                        placeholder: "http://notify.lan:8930",
+                        help: "Used for links in notifications hnl-notify sends you, such as access requests." })}
+          ${fieldHtml({ name: "public_base_url", label: "Public address for instant acknowledgements (optional)", kind: "url", value: s.public_base_url || "",
+                        placeholder: "https://notify.example.org",
+                        help: "Only if Pushover can reach this service from the internet. Without it, acknowledgements of critical alerts are checked every 30 seconds." })}
+          <div class="form-error" role="alert"></div>
+          <div class="form-actions"><button class="btn primary" type="submit">Save settings</button></div>
+        </form></div>`;
+    main.querySelector("#pw").onclick = () => openForm({
+      title: "Change password",
+      fields: [{ name: "current", label: "Current password", kind: "secret" },
+               { name: "new", label: "New password", kind: "secret", help: "At least 10 characters." }],
+      submit: "Change password",
+      onSubmit: async (v) => { await api("POST", "/password", v); toast("Password changed"); },
+    });
+    const reg = main.querySelector("#reg");
+    reg.onsubmit = async (e) => {
+      e.preventDefault();
+      const err = reg.querySelector(".form-error");
+      err.textContent = "";
+      const v = readForm(reg, [{ name: "enabled", kind: "check" }, { name: "notify_targets", kind: "checks" },
+                               { name: "auto_approve_subnets", kind: "text" }, { name: "auto_approve_scopes", kind: "checks" }]);
+      v.auto_approve_subnets = v.auto_approve_subnets.split(",").map((x) => x.trim()).filter(Boolean);
+      try { await mutate("PUT", "/registration", v, "Access settings saved"); } catch (ex) { err.textContent = ex.message; }
+    };
+    const form = main.querySelector("#server");
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const err = form.querySelector(".form-error");
+      err.textContent = "";
+      const v = readForm(form, [{ name: "max_attempts", kind: "int" }, { name: "retention_days", kind: "int" },
+                                { name: "external_url", kind: "url" }, { name: "public_base_url", kind: "url" }]);
+      try { await mutate("PUT", "/server", v, "Settings saved"); } catch (ex) { err.textContent = ex.message; }
+    };
+  },
+};
+
+// ---------------------------------------------------------------- forms
+
+function slugField(name, value, help) {
+  return { name: "name", label: name, kind: "text", value, readonly: !!value, placeholder: "lowercase-name",
+           help: value ? "Names can't be changed; remove and re-add instead." : help };
+}
+
+function deviceForm(name) {
+  const c = cfg();
+  const d = name ? c.devices[name] : null;
+  const pname = d?.provider || pushoverName();
+  if (!pname) { toast("Connect Pushover first"); section = "delivery"; render(); return; }
+  const schema = state.provider_types[c.providers[pname].type].address;
+  const fields = [
+    slugField("Name", name, "Used by services as device:NAME, for example alex-phone."),
+    { name: "description", label: "Description", kind: "text", value: d?.description || "", placeholder: "Alex's phone" },
+    { name: "owner", label: "Belongs to", kind: "select", value: d?.owner || "",
+      options: [["", "Nobody"], ...Object.entries(c.users).map(([n, u]) => [n, u.display_name || n])] },
+    ...Object.entries(schema).map(([k, s]) => ({
+      name: `addr_${k}`, label: s.label, kind: s.kind, help: s.help, value: d?.address?.[k] ?? "",
+      stored: s.kind === "secret" && d?.address?.[k]?.set ? d.address[k].hint : "",
+      list: k === "device", button: k === "device" ? { action: "check", label: "Find devices" } : null,
+    })),
+    { name: "min_severity", label: "Receive from urgency", kind: "select", value: d?.min_severity || "min",
+      options: state.severities.map((s) => [s, `${s}: ${SEVERITY_HELP[s]}`]) },
+    { name: "enabled", label: "Deliver to this device", kind: "check", value: d ? d.enabled : true },
+  ];
+  openForm({
+    title: d ? `Edit ${d.description || name}` : "Add device",
+    fields, submit: d ? "Save device" : "Add device",
+    extra: (form) => {
+      const btn = form.querySelector('[data-action="check"]');
+      if (!btn) return;
+      btn.onclick = async () => {
+        const err = form.querySelector(".form-error");
+        err.textContent = "";
+        btn.disabled = true;
+        try {
+          const address = {};
+          for (const k of Object.keys(schema)) if (k !== "device") address[k] = form.elements[`addr_${k}`].value.trim();
+          const res = await api("POST", `/providers/${pname}/check`, { address, device: name || null });
+          if (!res.valid) throw new Error(res.error || "Pushover did not accept this user key");
+          const list = form.querySelector("#f-addr_device-list");
+          list.innerHTML = res.devices.map((x) => `<option value="${esc(x)}">`).join("");
+          toast(res.devices.length ? `User key is valid. Devices: ${res.devices.join(", ")}` : "User key is valid, but no devices are registered yet");
+          form.elements.addr_device.focus();
+        } catch (ex) { err.textContent = ex.message; } finally { btn.disabled = false; }
+      };
+    },
+    onSubmit: (v) => {
+      const address = {};
+      for (const k of Object.keys(schema)) address[k] = v[`addr_${k}`];
+      return mutate("PUT", `/devices/${v.name}`, { provider: pname, owner: v.owner || null, description: v.description,
+        enabled: v.enabled, min_severity: v.min_severity, address }, d ? "Device saved" : "Device added");
+    },
+  });
+}
+
+function userForm(name) {
+  const c = cfg();
+  const u = name ? c.users[name] : null;
+  openForm({
+    title: u ? `Edit ${u.display_name || name}` : "Add person",
+    fields: [
+      slugField("Name", name, "Used by services as user:NAME, for example alex."),
+      { name: "display_name", label: "Display name", kind: "text", value: u?.display_name || "" },
+      { name: "devices", label: "Devices", kind: "checks", value: u?.devices || [],
+        options: Object.entries(c.devices).map(([n, d]) => [n, d.description || n]) },
+    ],
+    submit: u ? "Save person" : "Add person",
+    onSubmit: (v) => mutate("PUT", `/users/${v.name}`, { display_name: v.display_name, devices: v.devices }, u ? "Person saved" : "Person added"),
+  });
+}
+
+function groupForm(name) {
+  const g = name ? cfg().groups[name] : null;
+  openForm({
+    title: g ? `Edit ${name}` : "Add group",
+    fields: [
+      slugField("Name", name, "Used by services as group:NAME, for example household."),
+      { name: "description", label: "Description", kind: "text", value: g?.description || "" },
+      { name: "members", label: "Members", kind: "checks", value: g?.members || [],
+        options: targetOptions().filter(([t]) => t !== `group:${name}`) },
+    ],
+    submit: g ? "Save group" : "Add group",
+    onSubmit: (v) => mutate("PUT", `/groups/${v.name}`, { description: v.description, members: v.members }, g ? "Group saved" : "Group added"),
+  });
+}
+
+function channelForm(name) {
+  const ch = name ? cfg().channels[name] : null;
+  openForm({
+    title: ch ? `Edit ${name}` : "Add channel",
+    fields: [
+      slugField("Name", name, "Used by services as channel:NAME, for example security."),
+      { name: "description", label: "Description", kind: "text", value: ch?.description || "" },
+      { name: "targets", label: "Who receives it", kind: "checks", value: ch?.targets || [], options: targetOptions() },
+      { name: "min_severity", label: "Only from urgency", kind: "select", value: ch?.min_severity || "min",
+        options: state.severities.map((s) => [s, `${s}: ${SEVERITY_HELP[s]}`]),
+        help: "Less urgent notifications to this channel are recorded but not sent." },
+    ],
+    submit: ch ? "Save channel" : "Add channel",
+    onSubmit: (v) => mutate("PUT", `/channels/${v.name}`, { description: v.description, targets: v.targets, min_severity: v.min_severity }, ch ? "Channel saved" : "Channel added"),
+  });
+}
+
+function clientForm(name) {
+  const cl = name ? cfg().clients[name] : null;
+  openForm({
+    title: cl ? `Edit ${name}` : "Create token",
+    fields: [
+      slugField("Name", name, "The service or agent using it, for example home-assistant."),
+      { name: "description", label: "Description", kind: "text", value: cl?.description || "" },
+      { name: "scopes", label: "Allowed to", kind: "checks", value: cl?.scopes || ["send", "read"],
+        options: state.scopes.map((s) => [s, `${SCOPE_HELP[s]}`]) },
+    ],
+    submit: cl ? "Save" : "Create token",
+    onSubmit: async (v) => {
+      if (!v.scopes.length) throw new Error("Choose at least one permission.");
+      if (cl) return mutate("PUT", `/clients/${v.name}`, { description: v.description, scopes: v.scopes }, "Token saved");
+      const res = await mutate("POST", `/clients/${v.name}`, { description: v.description, scopes: v.scopes });
+      setTimeout(() => showToken("Token created", v.name, res.token), 0);
+    },
+  });
+}
+
+// ---------------------------------------------------------------- access requests
+
+const REQUEST_STATUS = { approved: "ok", denied: "bad", expired: "", revoked: "" };
+
+async function loadRequests(el) {
+  let data;
+  try { data = await api("GET", "/registrations"); }
+  catch (ex) { el.innerHTML = `<div class="rows"><div class="empty problem">${esc(ex.message)}</div></div>`; return; }
+  const from = (r) => [r.source_ip && `from ${r.source_ip}`, r.user_agent && `(${r.user_agent})`].filter(Boolean).join(" ");
+  el.innerHTML = `
+    <div class="block"><div class="rows">${data.pending.map((r) => `
+      <div class="row"><span class="lamp warn"></span>
+        <div class="grow"><div class="title">${esc(r.name)}</div>
+          ${r.description ? `<div class="sub">${esc(r.description)}</div>` : ""}
+          <div class="sub">Asked ${esc(when(r.created_at))} ${esc(from(r))}</div>
+          <div class="chips">${r.requested_scopes.map((x) => `<span class="chip" title="${esc(SCOPE_HELP[x])}">${esc(x)}</span>`).join("")}</div></div>
+        <div class="actions"><button class="btn primary" data-approve="${esc(r.id)}">Approve</button><button class="btn danger" data-deny="${esc(r.id)}">Deny</button></div>
+      </div>`).join("") || `<div class="empty">No apps are waiting. Apps can ask for access with the snippet under API access.</div>`}
+    </div></div>
+    ${data.recent.length ? `<div class="block"><h3>Decided</h3><div class="rows">${data.recent.map((r) => `
+      <div class="row"><span class="lamp ${REQUEST_STATUS[r.status] ?? ""}"></span>
+        <div class="grow"><div class="title">${esc(r.name)}</div>
+          <div class="sub">${esc(r.status)} ${esc(when(r.decided_at))}${r.decided_by === "auto-approve" ? " automatically" : ""}${r.granted_scopes ? `, may ${esc(r.granted_scopes.join(", "))}` : ""}</div></div></div>`).join("")}
+    </div></div>` : ""}`;
+  const byId = Object.fromEntries(data.pending.map((r) => [r.id, r]));
+  el.querySelectorAll("[data-approve]").forEach((b) => (b.onclick = () => {
+    const r = byId[b.dataset.approve];
+    openForm({
+      title: `Approve ${r.name}`,
+      intro: esc(r.description || "No description given."),
+      fields: [
+        { name: "scopes", label: "Allowed to", kind: "checks", value: r.requested_scopes,
+          options: r.requested_scopes.map((x) => [x, SCOPE_HELP[x]]),
+          help: "Untick anything it shouldn't get. It keeps the token it already has." },
+        { name: "description", label: "Description", kind: "text", value: r.description || "" },
+      ],
+      submit: "Approve",
+      onSubmit: async (v) => {
+        if (!v.scopes.length) throw new Error("Grant at least one permission, or deny the request.");
+        const res = await api("POST", `/registrations/${r.id}/approve`, v);
+        state = res.state; render(); toast(`${r.name} approved`);
+      },
+    });
+  }));
+  el.querySelectorAll("[data-deny]").forEach((b) => (b.onclick = () => {
+    const r = byId[b.dataset.deny];
+    confirmAction(`Deny ${r.name}?`, "Its token will never work. The app can ask again later.", "Deny", async () => {
+      const res = await api("POST", `/registrations/${r.id}/deny`, {});
+      state = res.state; render(); toast(`${r.name} denied`);
+    });
+  }));
+}
+
+// ---------------------------------------------------------------- activity list
+
+async function loadRecent(el, limit, attentionEl) {
+  let data;
+  try { data = await api("GET", `/activity?limit=${limit}`); }
+  catch (ex) { el.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  if (attentionEl) {
+    const a = data.attention;
+    const items = [...a.failed, ...a.stuck, ...a.retrying];
+    attentionEl.innerHTML = items.length || a.awaiting_acknowledgement.length ? `
+      <h3>Needs attention</h3><div class="rows">
+      ${a.awaiting_acknowledgement.map((x) => `<div class="row"><span class="lamp warn"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">Critical alert on ${esc(x.device)} not acknowledged yet</div></div></div>`).join("")}
+      ${items.map((x) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">${esc(x.state)} on ${esc(x.device)} after ${x.attempts} attempts: ${esc(x.last_error || "")}</div></div></div>`).join("")}
+      </div>` : "";
+  }
+  if (!data.notifications.length) { el.innerHTML = `<div class="empty">Nothing sent yet.</div>`; return; }
+  el.innerHTML = data.notifications.map((n) => `
+    <div class="row" style="align-items:flex-start"><span class="lamp ${lampFor(n.status)}" style="margin-top:.45rem"></span>
+      <div class="grow">
+        <div class="title">${esc(n.title || n.message.slice(0, 60))}</div>
+        <div class="sub">${esc(when(n.created_at))} from ${esc(n.source)} to ${esc(n.targets.join(", "))}, ${esc(n.severity)}</div>
+        <div class="sub"><span class="status">${esc(n.status)}</span>${n.suppressed.length ? `: ${esc(n.suppressed[0].reason)}` : ""}</div>
+        ${n.deliveries.map((d) => `
+          <details class="delivery"><summary>${esc(cfg().devices[d.device]?.description || d.device)}: ${esc(d.state)}${d.final ? "" : " (may still change)"}</summary>
+            <dl class="kv">
+              ${d.timestamps.dispatched ? `<dt>Accepted by ${esc(d.provider)}</dt><dd>${esc(when(d.timestamps.dispatched))}</dd>` : ""}
+              ${d.timestamps.delivered ? `<dt>Delivered</dt><dd>${esc(when(d.timestamps.delivered))}</dd>` : ""}
+              ${d.timestamps.acknowledged ? `<dt>Acknowledged</dt><dd>${esc(when(d.timestamps.acknowledged))}${d.acknowledged_by ? ` on ${esc(d.acknowledged_by)}` : ""}</dd>` : ""}
+              <dt>Can report</dt><dd>${esc(d.observable_states.filter((s) => ["dispatched", "delivered", "acknowledged"].includes(s)).join(", "))}</dd>
+              <dt>Attempts</dt><dd>${d.attempts}</dd>
+              ${d.last_error ? `<dt>Last error</dt><dd class="problem">${esc(d.last_error)}</dd>` : ""}
+              ${d.capability_gaps.length ? `<dt>Not supported</dt><dd>${d.capability_gaps.map(esc).join("<br>")}</dd>` : ""}
+            </dl></details>`).join("")}
+      </div>
+      <div class="actions">
+        ${["failed", "partial"].includes(n.status) ? `<button class="btn" data-retry="${esc(n.id)}">Retry</button>` : ""}
+        ${n.status === "pending" || n.deliveries.some((d) => !d.final && d.tracking === "receipt") ? `<button class="btn" data-cancel="${esc(n.id)}">Cancel</button>` : ""}
+      </div></div>`).join("");
+  el.querySelectorAll("[data-retry]").forEach((b) => (b.onclick = async () => {
+    try { await api("POST", `/notifications/${b.dataset.retry}/retry`); toast("Queued again"); loadRecent(el, limit, attentionEl); }
+    catch (ex) { toast(ex.message); }
+  }));
+  el.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = async () => {
+    try { await api("POST", `/notifications/${b.dataset.cancel}/cancel`); toast("Cancelled"); loadRecent(el, limit, attentionEl); }
+    catch (ex) { toast(ex.message); }
+  }));
+}
+
+boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><p class="problem">${esc(ex.message)}</p></div></main>`; });

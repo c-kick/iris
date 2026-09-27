@@ -1,0 +1,189 @@
+"""Management UI backend: first-run setup, session security, live configuration."""
+
+from __future__ import annotations
+
+import os
+import stat
+
+import httpx
+import pytest
+
+from notify.app import create_app
+from tests.conftest import APP_TOKEN, USER_KEY, LiveServer, wait_for
+
+H = {"X-Notify-Admin": "1"}
+
+
+@pytest.fixture
+def fresh(tmp_path, fake, monkeypatch):
+    """A server with an empty database and no seed config, like a first deployment."""
+    monkeypatch.setenv("NOTIFY_CONFIG", str(tmp_path / "absent.yaml"))
+    servers = []
+
+    def make():
+        app = create_app(db_path=str(tmp_path / "n.sqlite3"), key_path=str(tmp_path / "secrets" / "master.key"),
+                         transport=httpx.MockTransport(fake.handler))
+        srv = LiveServer(app, fake)
+        srv.start()
+        servers.append(srv)
+        return srv
+
+    yield make
+    for s in servers:
+        s.stop()
+
+
+def browser(srv) -> httpx.Client:
+    return httpx.Client(base_url=srv.url, timeout=10)
+
+
+def setup_admin(srv, password="correct horse battery") -> httpx.Client:
+    b = browser(srv)
+    code = srv.app.state.store.new_setup_code()
+    r = b.post("/admin/api/setup", json={"code": code, "password": password}, headers=H)
+    assert r.status_code == 200, r.text
+    return b
+
+
+def test_first_run_setup_and_login(fresh):
+    srv = fresh()
+    b = browser(srv)
+    assert b.get("/admin/api/session").json() == {"setup_required": True, "signed_in": False, "version": "0.3.0"}
+    ready = b.get("/health/ready").json()
+    assert "setup required" in ready["checks"]["admin"] and ready["status"] == "not_ready"
+    assert b.get("/admin/api/state").status_code == 401
+    assert b.post("/admin/api/setup", json={"code": "nope", "password": "long enough pw"}, headers=H).status_code == 403
+    code = srv.app.state.store.new_setup_code()
+    assert b.post("/admin/api/setup", json={"code": code, "password": "short"}, headers=H).status_code == 422
+    r = b.post("/admin/api/setup", json={"code": code, "password": "correct horse battery"}, headers=H)
+    assert r.status_code == 200
+    assert "httponly" in r.headers["set-cookie"].lower() and "samesite=strict" in r.headers["set-cookie"].lower()
+    assert b.get("/admin/api/state").status_code == 200
+    # the code is single-use
+    assert b.post("/admin/api/setup", json={"code": code, "password": "another password"}, headers=H).status_code == 409
+    b.post("/admin/api/logout", headers=H)
+    assert b.get("/admin/api/state").status_code == 401
+    assert b.post("/admin/api/login", json={"password": "wrong"}, headers=H).status_code == 403
+    assert b.post("/admin/api/login", json={"password": "correct horse battery"}, headers=H).status_code == 200
+    assert b.get("/admin/api/state").status_code == 200
+
+
+def test_browser_mutations_need_csrf_header_and_same_origin(fresh):
+    srv = fresh()
+    b = setup_admin(srv)
+    body = {"type": "pushover", "settings": {"app_token": APP_TOKEN}}
+    assert b.put("/admin/api/providers/pushover", json=body).status_code == 403
+    assert b.put("/admin/api/providers/pushover", json=body,
+                 headers={**H, "Origin": "http://evil.example"}).status_code == 403
+    assert b.put("/admin/api/providers/pushover", json=body,
+                 headers={**H, "Origin": srv.url}).status_code == 200
+
+
+def test_login_throttled(fresh):
+    srv = fresh()
+    b = setup_admin(srv)
+    b.post("/admin/api/logout", headers=H)
+    codes = [b.post("/admin/api/login", json={"password": "x"}, headers=H).status_code for _ in range(6)]
+    assert codes[:5] == [403] * 5 and codes[5] == 429
+
+
+def test_configure_everything_from_the_ui_then_send(fresh, fake, tmp_path):
+    srv = fresh()
+    b = setup_admin(srv)
+    st = b.put("/admin/api/providers/pushover", json={"type": "pushover", "settings": {
+        "app_token": APP_TOKEN, "emergency_retry_seconds": "90"}}, headers=H).json()
+    assert st["config"]["providers"]["pushover"]["app_token"] == {"set": True, "hint": "…aaaa"}
+    assert st["config"]["providers"]["pushover"]["emergency_retry_seconds"] == 90
+    # device lookup through Pushover's validate endpoint
+    chk = b.post("/admin/api/providers/pushover/check", json={"address": {"user_key": USER_KEY}}, headers=H).json()
+    assert chk == {"supported": True, "valid": True, "devices": ["iphone", "ipad"], "is_group": False}
+    bad = b.post("/admin/api/providers/pushover/check", json={"address": {"user_key": "b" * 30}}, headers=H).json()
+    assert bad["valid"] is False and "invalid" in bad["error"]
+    b.put("/admin/api/users/alex", json={"display_name": "Alex"}, headers=H)
+    st = b.put("/admin/api/devices/alex-phone", json={
+        "provider": "pushover", "owner": "alex", "description": "Alex's phone",
+        "address": {"user_key": USER_KEY, "device": "iphone"}}, headers=H).json()
+    assert st["config"]["users"]["alex"]["devices"] == ["alex-phone"]
+    assert st["devices"]["alex-phone"]["ready"] is True
+    b.put("/admin/api/groups/household", json={"members": ["user:alex"]}, headers=H)
+    b.put("/admin/api/channels/security", json={"targets": ["group:household"], "min_severity": "high"}, headers=H)
+    created = b.post("/admin/api/clients/home-assistant", json={"scopes": ["send", "read"]}, headers=H).json()
+    token = created["token"]
+    assert "token_sha256" not in created["config"]["clients"]["home-assistant"]
+    assert httpx.get(f"{srv.url}/health/ready").status_code == 200
+
+    # the new token works immediately (no restart) for REST
+    api = httpx.Client(base_url=srv.url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    n = api.post("/v1/notifications", json={"targets": ["channel:security"], "message": "Door open",
+                                            "severity": "high"}).json()
+    wait_for(lambda: api.get(f"/v1/notifications/{n['id']}").json()["status"] == "dispatched")
+    assert fake.messages[-1]["user"] == USER_KEY and fake.messages[-1]["device"] == "iphone"
+
+    # nothing secret ever leaves through the admin API or sits in the database in plaintext
+    state_text = b.get("/admin/api/state").text
+    assert USER_KEY not in state_text and APP_TOKEN not in state_text and token not in state_text
+    raw = srv.service.db.scalar("SELECT value FROM settings WHERE key='config'")
+    assert USER_KEY not in raw and APP_TOKEN not in raw and "$enc" in raw
+    key = tmp_path / "secrets" / "master.key"
+    assert stat.S_IMODE(os.stat(key).st_mode) == 0o600
+
+    # a blank secret on edit keeps the stored value
+    b.put("/admin/api/devices/alex-phone", json={"provider": "pushover", "owner": "alex",
+                                                   "description": "iPhone 16", "address": {"device": "iphone"}},
+          headers=H)
+    assert srv.app.state.config.devices["alex-phone"].address["user_key"] == USER_KEY
+
+    # replacing a token cuts off the old one at once
+    new = b.post("/admin/api/clients/home-assistant/rotate", headers=H).json()["token"]
+    assert api.get("/v1/whoami").status_code == 401
+    assert httpx.get(f"{srv.url}/v1/whoami", headers={"Authorization": f"Bearer {new}"}).status_code == 200
+
+    # test send + activity
+    t = b.post("/admin/api/test", json={"targets": ["user:alex"]}, headers=H).json()
+    assert t["source"] == "admin-ui"
+    wait_for(lambda: any(x["id"] == t["id"] for x in b.get("/admin/api/activity").json()["notifications"]))
+
+    # removing a device cleans up references everywhere
+    st = b.delete("/admin/api/devices/alex-phone", headers=H).json()
+    assert st["config"]["users"]["alex"]["devices"] == []
+    # a provider still used by a device cannot be removed
+    b.put("/admin/api/devices/spare", json={"provider": "pushover", "address": {"user_key": USER_KEY}}, headers=H)
+    r = b.delete("/admin/api/providers/pushover", headers=H)
+    assert r.status_code == 422 and "spare" in r.json()["detail"]
+
+
+def test_configuration_survives_restart_without_yaml(fresh, fake):
+    srv = fresh()
+    b = setup_admin(srv)
+    b.put("/admin/api/providers/pushover", json={"type": "pushover", "settings": {"app_token": APP_TOKEN}}, headers=H)
+    b.put("/admin/api/devices/phone", json={"provider": "pushover", "address": {"user_key": USER_KEY}}, headers=H)
+    srv.stop()
+    srv2 = fresh()
+    assert srv2.app.state.config.devices["phone"].address["user_key"] == USER_KEY
+    assert srv2.app.state.config.providers["pushover"].app_token == APP_TOKEN  # type: ignore[attr-defined]
+    assert browser(srv2).get("/admin/api/session").json()["setup_required"] is False
+
+
+def test_bearer_admin_token_and_scope_check(fresh):
+    srv = fresh()
+    b = setup_admin(srv)
+    admin_tok = b.post("/admin/api/clients/ops", json={"scopes": ["admin"]}, headers=H).json()["token"]
+    send_tok = b.post("/admin/api/clients/sender", json={"scopes": ["send"]}, headers=H).json()["token"]
+    ok = httpx.get(f"{srv.url}/admin/api/state", headers={"Authorization": f"Bearer {admin_tok}"})
+    assert ok.status_code == 200
+    no = httpx.get(f"{srv.url}/admin/api/state", headers={"Authorization": f"Bearer {send_tok}"})
+    assert no.status_code == 403
+
+
+def test_reset_admin_and_page_headers(fresh):
+    srv = fresh()
+    b = setup_admin(srv)
+    code = srv.app.state.store.reset_admin()
+    assert b.get("/admin/api/state").status_code == 401  # sessions revoked
+    assert b.get("/admin/api/session").json()["setup_required"] is True
+    assert b.post("/admin/api/setup", json={"code": code, "password": "a new password"}, headers=H).status_code == 200
+    page = httpx.get(f"{srv.url}/admin")
+    assert page.status_code == 200 and "app.js" in page.text
+    assert "script-src 'self'" in page.headers["content-security-policy"]
+    assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
+    assert httpx.get(f"{srv.url}/admin/static/app.js").status_code == 200

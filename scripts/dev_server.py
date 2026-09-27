@@ -1,0 +1,117 @@
+"""Run hnl-notify locally against a fake Pushover (nothing leaves the host).
+
+    .venv/bin/python scripts/dev_server.py --dir /tmp/notify-dev --port 18931 [--demo] [--password PW]
+
+--demo seeds a Pushover provider, an iPhone, a household group, two channels,
+a few API clients and some delivered/failed history so every admin screen has
+content. --password pre-creates the admin password (otherwise the setup code
+is printed). For UI iteration only; never point it at the live data directory.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import sys
+from pathlib import Path
+from urllib.parse import parse_qsl
+
+import httpx
+import uvicorn
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from notify.app import create_app  # noqa: E402
+from notify.auth import hash_token  # noqa: E402
+from notify.config import NotifyConfig  # noqa: E402
+from notify.core import Client  # noqa: E402
+from notify.models import Scope  # noqa: E402
+
+FAKE_TOKEN = "a" * 30
+FAKE_USER = "u" * 30
+
+
+def fake_pushover(request: httpx.Request) -> httpx.Response:
+    path = request.url.path
+    form = dict(parse_qsl(request.content.decode())) if request.content else {}
+    if path.endswith("/users/validate.json"):
+        ok = form.get("user") == FAKE_USER
+        return httpx.Response(200 if ok else 400, json={"status": 1, "devices": ["iphone", "ipad"]} if ok
+                              else {"status": 0, "errors": ["user key is invalid"]})
+    if path.endswith("/messages.json"):
+        if "fail" in form.get("message", ""):
+            return httpx.Response(400, json={"status": 0, "errors": ["device name is not valid for user"]})
+        body = {"status": 1, "request": "dev"}
+        if form.get("priority") == "2":
+            body["receipt"] = "r" * 30
+        return httpx.Response(200, json=body, headers={"X-Limit-App-Limit": "10000", "X-Limit-App-Remaining": "9876",
+                                                       "X-Limit-App-Reset": "1790000000"})
+    if "/receipts/" in path:
+        return httpx.Response(200, json={"status": 1, "acknowledged": 1, "acknowledged_at": 1790000000,
+                                         "acknowledged_by_device": "iphone", "last_delivered_at": 1790000000,
+                                         "expired": 0, "expires_at": 1790003600})
+    return httpx.Response(404, json={"status": 0, "errors": ["unknown"]})
+
+
+def demo_config() -> NotifyConfig:
+    return NotifyConfig.model_validate({
+        "providers": {"pushover": {"type": "pushover", "app_token": FAKE_TOKEN}},
+        "devices": {"alex-phone": {"provider": "pushover", "owner": "alex", "description": "Alex's phone",
+                                     "address": {"user_key": FAKE_USER, "device": "iphone"}}},
+        "users": {"alex": {"display_name": "Alex", "devices": ["alex-phone"]}},
+        "groups": {"household": {"description": "Everyone at home", "members": ["user:alex"]}},
+        "channels": {"security": {"description": "Doors, alarms, leaks", "targets": ["group:household"]},
+                     "infra": {"description": "Server and network alerts", "targets": ["user:alex"],
+                               "min_severity": "high"}},
+        "clients": {n: {"token_sha256": hash_token(f"dev-{n}"), "scopes": s, "description": d} for n, s, d in [
+            ("home-assistant", ["send", "read"], "Automations and rest_command"),
+            ("node-red", ["send"], None),
+            ("agents", ["send", "read", "manage"], "Claude Code and Codex via MCP")]},
+    })
+
+
+async def seed_history(url: str) -> None:
+    async with httpx.AsyncClient(base_url=url, headers={"Authorization": "Bearer dev-home-assistant"}) as c:
+        for body in [
+            {"targets": ["user:alex"], "title": "Washing machine", "message": "The laundry is done", "tags": ["laundry"]},
+            {"targets": ["channel:security"], "title": "Front door", "message": "Open for 10 minutes",
+             "severity": "high"},
+            {"targets": ["channel:security"], "title": "Water leak in the attic", "message": "Sensor reports water",
+             "severity": "critical"},
+            {"targets": ["user:alex"], "title": "Backup", "message": "fail: NAS backup", "severity": "low"},
+            {"targets": ["channel:infra"], "title": "Disk 71%", "message": "Below the channel floor"},
+        ]:
+            await c.post("/v1/notifications", json=body)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dir", required=True)
+    ap.add_argument("--port", type=int, default=18931)
+    ap.add_argument("--demo", action="store_true")
+    ap.add_argument("--password")
+    args = ap.parse_args()
+    d = Path(args.dir)
+    d.mkdir(parents=True, exist_ok=True)
+    os.environ["NOTIFY_CONFIG"] = str(d / "none.yaml")
+    app = create_app(demo_config() if args.demo else None, db_path=str(d / "notify.sqlite3"),
+                     key_path=str(d / "master.key"), transport=httpx.MockTransport(fake_pushover))
+    if args.password and not app.state.store.admin_configured():
+        app.state.store.set_password(args.password)
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, log_level="warning"))
+
+    async def run() -> None:
+        task = asyncio.create_task(server.serve())
+        while not server.started:
+            await asyncio.sleep(0.05)
+        if args.demo and not app.state.service.list(Client("dev", frozenset({Scope.admin})), limit=1):
+            await seed_history(f"http://127.0.0.1:{args.port}")
+        print(f"hnl-notify dev server on http://127.0.0.1:{args.port}/admin", flush=True)
+        await task
+
+    asyncio.run(run())
+
+
+if __name__ == "__main__":
+    main()

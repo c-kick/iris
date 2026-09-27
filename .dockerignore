@@ -1,0 +1,10 @@
+.git
+.claude
+.venv
+.env
+data
+config
+tests
+.test-runs
+**/__pycache__
+secrets

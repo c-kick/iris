@@ -1,0 +1,267 @@
+"""SQLite persistence: schema, connection and time helpers.
+
+One connection, serialised with a lock. All access happens from the asyncio
+event loop (plus short CLI use); statements are small, so blocking is brief.
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+import sqlite3
+import threading
+import time
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any, Iterator
+
+SCHEMA_VERSION = 1
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    idempotency_key TEXT,
+    source TEXT NOT NULL,
+    title TEXT,
+    message TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    url TEXT,
+    url_title TEXT,
+    actions_json TEXT NOT NULL DEFAULT '[]',
+    data_json TEXT,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    targets_json TEXT NOT NULL,
+    require_ack INTEGER NOT NULL DEFAULT 0,
+    expires_at TEXT,
+    status TEXT NOT NULL,
+    routing_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (client_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS ix_notifications_created ON notifications(created_at);
+CREATE INDEX IF NOT EXISTS ix_notifications_status ON notifications(status);
+
+CREATE TABLE IF NOT EXISTS deliveries (
+    id TEXT PRIMARY KEY,
+    notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    device TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL,
+    next_attempt_at TEXT,
+    lease_until TEXT,
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    tracking TEXT NOT NULL DEFAULT 'none',
+    observable_states_json TEXT NOT NULL,
+    capability_gaps_json TEXT NOT NULL DEFAULT '[]',
+    provider_message_id TEXT,
+    receipt TEXT,
+    next_poll_at TEXT,
+    poll_errors INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    dispatched_at TEXT,
+    delivered_at TEXT,
+    acknowledged_at TEXT,
+    acknowledged_by TEXT,
+    interacted_at TEXT,
+    interaction_json TEXT,
+    finalized_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_deliveries_due ON deliveries(state, next_attempt_at);
+CREATE INDEX IF NOT EXISTS ix_deliveries_poll ON deliveries(tracking, next_poll_at);
+CREATE INDEX IF NOT EXISTS ix_deliveries_notification ON deliveries(notification_id);
+CREATE INDEX IF NOT EXISTS ix_deliveries_receipt ON deliveries(receipt);
+
+CREATE TABLE IF NOT EXISTS attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    delivery_id TEXT NOT NULL REFERENCES deliveries(id) ON DELETE CASCADE,
+    attempt_no INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'send',
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    outcome TEXT,
+    http_status INTEGER,
+    request_json TEXT,
+    response_body TEXT,
+    error TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_attempts_delivery ON attempts(delivery_id);
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    notification_id TEXT REFERENCES notifications(id) ON DELETE CASCADE,
+    delivery_id TEXT,
+    client_id TEXT,
+    source TEXT,
+    data_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_events_notification ON events(notification_id);
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id TEXT PRIMARY KEY,
+    client_id TEXT NOT NULL,
+    url TEXT NOT NULL,
+    secret TEXT NOT NULL,
+    events_json TEXT NOT NULL,
+    notification_id TEXT,
+    source TEXT,
+    tag TEXT,
+    description TEXT,
+    active INTEGER NOT NULL DEFAULT 1,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    last_error TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+    event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+    state TEXT NOT NULL DEFAULT 'pending',
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    last_status INTEGER,
+    last_error TEXT,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT,
+    UNIQUE (subscription_id, event_id)
+);
+CREATE INDEX IF NOT EXISTS ix_webhook_due ON webhook_deliveries(state, next_attempt_at);
+
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS registrations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    requested_scopes_json TEXT NOT NULL,
+    granted_scopes_json TEXT,
+    token_sha256 TEXT NOT NULL,
+    status TEXT NOT NULL,
+    source_ip TEXT,
+    user_agent TEXT,
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    decided_by TEXT,
+    decision_sha256 TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_registrations_status ON registrations(status, created_at);
+CREATE INDEX IF NOT EXISTS ix_registrations_token ON registrations(token_sha256);
+
+CREATE TABLE IF NOT EXISTS admin_sessions (
+    id_hash TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+"""
+
+
+# --- time -------------------------------------------------------------------
+
+def utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
+def iso(dt: datetime | None) -> str | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def now_iso() -> str:
+    return iso(utcnow())  # type: ignore[return-value]
+
+
+def parse_iso(s: str | None) -> datetime | None:
+    if not s:
+        return None
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+
+def in_seconds(seconds: float, base: datetime | None = None) -> str:
+    return iso((base or utcnow()) + timedelta(seconds=seconds))  # type: ignore[return-value]
+
+
+def new_id(prefix: str) -> str:
+    """Time-sortable id: prefix + 12 hex ms timestamp + 10 hex random."""
+    return f"{prefix}_{int(time.time() * 1000):012x}{secrets.token_hex(5)}"
+
+
+def dumps(v: Any) -> str:
+    return json.dumps(v, separators=(",", ":"), ensure_ascii=False, default=str)
+
+
+def loads(s: str | None, default: Any = None) -> Any:
+    if s is None or s == "":
+        return default
+    return json.loads(s)
+
+
+# --- database ---------------------------------------------------------------
+
+class Database:
+    def __init__(self, path: str | Path):
+        self.path = str(path)
+        if self.path != ":memory:":
+            Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self.conn = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False, timeout=10)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=FULL")
+        self.conn.execute("PRAGMA foreign_keys=ON")
+        self.conn.execute("PRAGMA busy_timeout=10000")
+        self.conn.executescript(SCHEMA)
+        self._add_missing_columns({"registrations": {"decision_sha256": "TEXT"}})
+        with self.tx() as c:
+            c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+
+    def _add_missing_columns(self, columns: dict[str, dict[str, str]]) -> None:
+        """Additive migrations for databases created by older versions."""
+        for table, cols in columns.items():
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in cols.items():
+                if name not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
+    @contextmanager
+    def tx(self) -> Iterator[sqlite3.Connection]:
+        with self._lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield self.conn
+            except BaseException:
+                self.conn.execute("ROLLBACK")
+                raise
+            else:
+                self.conn.execute("COMMIT")
+
+    def query(self, sql: str, params: Any = ()) -> list[sqlite3.Row]:
+        with self._lock:
+            return self.conn.execute(sql, params).fetchall()
+
+    def one(self, sql: str, params: Any = ()) -> sqlite3.Row | None:
+        with self._lock:
+            return self.conn.execute(sql, params).fetchone()
+
+    def scalar(self, sql: str, params: Any = ()) -> Any:
+        row = self.one(sql, params)
+        return None if row is None else row[0]
+
+    def close(self) -> None:
+        with self._lock:
+            self.conn.close()

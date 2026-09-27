@@ -1,0 +1,70 @@
+# hnl-notify configuration. Copy to config/notify.yaml (git-ignored).
+# Secrets are ${ENV} references resolved from .env; never write them here.
+# Client tokens are stored only as SHA-256 hashes: python -m notify new-token NAME
+
+server:
+  # Set both to let Pushover POST acknowledgements back (needs a publicly
+  # reachable URL). Without them, critical alerts are tracked by polling receipts.
+  public_base_url: null
+  callback_secret: null
+  max_attempts: 8          # per delivery, network/5xx/429 only; 4xx fails at once
+  retry_base_seconds: 10   # 10s, 30s, 90s, ... capped at retry_max_seconds
+  retry_max_seconds: 900
+  retention_days: 90
+
+providers:
+  pushover:
+    type: pushover
+    app_token: ${PUSHOVER_APP_TOKEN}
+    emergency_retry_seconds: 60     # how often a critical alert re-alerts (min 30)
+    emergency_expire_seconds: 3600  # stop re-alerting after this (max 10800)
+    receipt_poll_seconds: 30        # critical alerts only (Pushover minimum 5)
+    # sounds: {critical: siren, high: tugboat}
+
+devices:
+  alex-phone:
+    provider: pushover
+    owner: alex
+    description: Alex's phone (Pushover app)
+    address:
+      user_key: ${PUSHOVER_USER_KEY}
+      device: ${PUSHOVER_DEVICE:-}   # Pushover device name; empty = all of the user's devices
+
+users:
+  alex:
+    display_name: Alex
+    devices: [alex-phone]
+
+groups:
+  household:
+    description: Everyone at home
+    members: [user:alex]
+
+channels:
+  infra:
+    description: Server and network alerts
+    targets: [user:alex]
+    min_severity: normal
+  security:
+    description: Doors, alarms, leaks
+    targets: [group:household]
+  home:
+    description: Appliances and household reminders
+    targets: [group:household]
+
+clients:
+  # Replace the hashes with the output of: docker compose run --rm notify python -m notify new-token NAME
+  home-assistant:
+    description: HA rest_command / automations
+    token_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    scopes: [send, read]
+  node-red:
+    token_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+    scopes: [send, read]
+  agents:
+    description: MCP clients (Claude Code, Codex)
+    token_sha256: "2222222222222222222222222222222222222222222222222222222222222222"
+    scopes: [send, read, manage]
+  admin:
+    token_sha256: "3333333333333333333333333333333333333333333333333333333333333333"
+    scopes: [admin]
