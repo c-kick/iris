@@ -166,6 +166,35 @@ data: {message: "The front door is open", severity: high, targets: ["channel:sec
 HTTP request node: `POST http://notify.lan:8930/v1/notifications`, header
 `Authorization: Bearer ntk_...`, JSON body as above.
 
+### Radarr / Sonarr / Lidarr / Prowlarr
+
+The *arr apps cannot send our JSON, so hnl-notify accepts their own webhook
+format at `/v1/ingest/arr` and writes the notification itself. Give the app its
+own client with the `send` scope, then in the app go to *Settings → Connect →
++ → Webhook*:
+
+- **URL**: `http://notify.lan:8930/v1/ingest/arr?targets=user:alex`
+  (repeat `targets=` or comma-separate for more)
+- **Method**: POST
+- **Username**: anything (e.g. `radarr`) · **Password**: the `ntk_...` token
+
+Tick the triggers you want and press *Test*: you get a "Radarr: Test" push.
+
+| Event | Severity | Message |
+|---|---|---|
+| Grab | low | title (year), quality · group · size, indexer |
+| Download / Upgrade | normal | title (year), quality · group · size |
+| Import needs attention (manual interaction) | high | title plus Radarr's reasons |
+| Health (error / warning / other) | high / normal / low | the health message, wiki link |
+| Added, deleted, file deleted, health restored, update, test | low | |
+| Rename / Retag | min | |
+
+Movies link to IMDb (or TMDB), series to IMDb (or TheTVDB). Grab, Download
+and manual-interaction events are keyed on the download id, so a re-sent
+webhook does not notify twice. Sonarr names episodes (`S02E03 · Title`),
+Lidarr names artist and album; unknown events still arrive, titled with the
+event name.
+
 ## Events
 
 **Server-Sent Events** (resumable with `Last-Event-ID`):

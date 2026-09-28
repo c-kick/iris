@@ -172,10 +172,14 @@ gap "acknowledgement on pushover requires severity=critical".
 | `GET /v1/providers` | Provider capabilities, health, quota |
 | `GET /v1/events`, `GET /v1/events/stream` | Event history by cursor; Server-Sent Events |
 | `POST/GET/DELETE /v1/subscriptions` | Webhook subscriptions |
+| `POST\|PUT /v1/ingest/arr?targets=…` | Radarr/Sonarr/Lidarr/Prowlarr webhook adapter (`send`); translated in `notify/arr.py` |
 | `POST /v1/callbacks/{provider}/{secret}` | Inbound provider callbacks |
 | `GET /health/live`, `/health/ready`, `/metrics`, `/v1/whoami` | Operations |
 
 Clients see and manage only their own notifications unless they hold `admin`.
+A token may also arrive as the HTTP Basic password (username ignored, or the
+username when the password is empty), for senders that cannot set a bearer
+header.
 
 ## Self-registration
 

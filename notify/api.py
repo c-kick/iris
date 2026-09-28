@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from . import __version__
+from . import __version__, arr
 from .core import Client, Conflict, Invalid, NotFound, NotifyService
 from .models import NotificationIn, Scope, SubscriptionIn, event_matches
 
@@ -195,6 +195,34 @@ async def list_subscriptions(request: Request, client: Client = Depends(require(
 async def delete_subscription(sid: str, request: Request, client: Client = Depends(require(Scope.read))) -> Response:
     service(request).delete_subscription(client, sid)
     return Response(status_code=204)
+
+
+# ------------------------------------------------------------------ ingest adapters
+
+@router.api_route("/v1/ingest/arr", methods=["POST", "PUT"], status_code=202, tags=["ingest"])
+@_errors
+async def ingest_arr(request: Request, response: Response,
+                     targets: list[str] = Query(description="Targets, repeated or comma-separated"),
+                     client: Client = Depends(require(Scope.send))) -> dict[str, Any]:
+    """Radarr / Sonarr / Lidarr / Prowlarr "Webhook" connection. The token may be sent as the Basic-auth password."""
+    try:
+        payload = json.loads(await request.body())
+    except ValueError as e:
+        raise HTTPException(422, "body is not JSON") from e
+    if not isinstance(payload, dict):
+        raise HTTPException(422, "body must be a JSON object")
+    wanted = [t.strip() for raw in targets for t in raw.split(",") if t.strip()]
+    try:
+        body = arr.translate(payload, wanted)
+    except ValueError as e:  # includes pydantic ValidationError (e.g. no targets)
+        raise HTTPException(422, str(e)) from e
+    out, created = service(request).submit(client, body)
+    if not created:
+        response.status_code = 200
+        response.headers["Idempotent-Replay"] = "true"
+    else:
+        response.headers["Location"] = f"/v1/notifications/{out['id']}"
+    return out
 
 
 # ------------------------------------------------------------------ provider callbacks

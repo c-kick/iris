@@ -1,7 +1,14 @@
-"""Bearer-token authentication. Tokens are configured as SHA-256 hashes."""
+"""Token authentication. Tokens are configured as SHA-256 hashes.
+
+A token is normally sent as ``Authorization: Bearer <token>``. For senders that
+can only do HTTP Basic auth (the *arr "Webhook" connection), the token may be
+the Basic password; the username is ignored (or holds the token if the password is empty).
+"""
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import secrets
@@ -26,7 +33,15 @@ class Authenticator:
         if not header:
             return None
         scheme, _, token = header.partition(" ")
-        if scheme.lower() != "bearer" or not token.strip():
+        if scheme.lower() == "basic":
+            try:
+                user, _, password = base64.b64decode(token.strip(), validate=True).decode().partition(":")
+            except (binascii.Error, UnicodeDecodeError):
+                return None
+            token = password or user
+        elif scheme.lower() != "bearer":
+            return None
+        if not token.strip():
             return None
         digest = hash_token(token.strip())
         found = None
