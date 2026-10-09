@@ -72,12 +72,17 @@ def test_hostile_header_values():
     assert next(em.iter_attachments()).get_filename() == "a b.png"
 
 
-@pytest.mark.parametrize("bad", ["\x00", " ", "x" * 2000, "a b\x85c", "\r\n\r\n"])
+@pytest.mark.parametrize("bad", ["\x00", " ", "x" * 2000, "a\u2028b\x85c", "\r\n\r\n", "http://[::1", "http://[x"])
 def test_hostile_strings_never_raise(bad):
     att = AttachmentData(bad, "", 3, b"abc")
     p = prov(subject_prefix=bad, from_name=bad)
-    raw = p.build_message(msg(title=bad, message=bad, attachments=[att]), TO).as_bytes()
-    assert b"\r\nBcc:" not in raw
+    m = msg(title=bad, message=bad, url=bad, actions=[{"id": "a", "label": bad, "url": bad}], attachments=[att])
+    p.plan(m, TO)
+    em = p.build_message(m, TO)
+    assert b"\r\nBcc:" not in em.as_bytes()
+    assert not any(c in str(em["From"]) for c in "\r\n")
+    name = next(em.iter_attachments()).get_filename() or ""
+    assert not any(c in name for c in "\r\n")
     assert _header_safe(None) == ""
 
 
@@ -113,6 +118,19 @@ def test_base_test_connection_unsupported():
     assert asyncio.run(P.test_connection(None)) == {"supported": False}  # type: ignore[arg-type]
 
 
+class FakeSock:
+    closed = False
+
+    def settimeout(self, t: float) -> None:
+        pass
+
+    def shutdown(self, how: int) -> None:
+        self.closed = True
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class FakeSMTP:
     features: dict[str, str] = {}
     starttls_offered = True
@@ -121,14 +139,14 @@ class FakeSMTP:
     connect_exc: Exception | None = None
     sent: list[bytes] = []
 
-    class sock:
-        @staticmethod
-        def settimeout(t: float) -> None:
-            pass
+    contexts: list[Any] = []
+    block_send = False
 
     def __init__(self, host: str, port: int, timeout: float = 0, context: Any = None):
         if self.connect_exc:
             raise self.connect_exc
+        self.contexts.append(context)
+        self.sock = FakeSock()
         self.esmtp_features = dict(self.features)
 
     def ehlo(self): pass
@@ -143,6 +161,10 @@ class FakeSMTP:
             raise self.login_exc
 
     def sendmail(self, f, to, raw):
+        while self.block_send:
+            if self.sock.closed:
+                raise OSError("socket closed")
+            time.sleep(0.02)
         if self.send_exc:
             raise self.send_exc
         self.sent.append(raw)
@@ -153,7 +175,13 @@ def fake_smtp(monkeypatch):
     class F(FakeSMTP):
         features: dict[str, str] = {}
         sent: list[bytes] = []
+        contexts: list[Any] = []
+        quits = 0
+
+        def quit(self):
+            type(self).quits += 1
     monkeypatch.setattr(email_mod.smtplib, "SMTP", F)
+    monkeypatch.setattr(email_mod.smtplib, "SMTP_SSL", F)
     return F
 
 
@@ -179,6 +207,53 @@ def test_accepted(fake_smtp):
 def test_send_error_mapping(fake_smtp, exc, outcome):
     fake_smtp.send_exc = exc
     assert send(prov()).outcome == outcome
+
+
+def test_not_supported_other_than_starttls(fake_smtp):
+    fake_smtp.login_exc = smtplib.SMTPNotSupportedError("SMTP AUTH extension not supported by server.")
+    r = send(prov(security="starttls", username="u", password="pw"))
+    assert r.outcome == "retryable" and "STARTTLS" not in r.error and "AUTH" in r.error
+    out = asyncio.run(prov(security="starttls", username="u", password="pw").test_connection())
+    assert out["ok"] is False and "STARTTLS" not in out["error"] and "AUTH" in out["error"]
+    fake_smtp.starttls_offered = False
+    assert "STARTTLS" in asyncio.run(prov().__class__("m", {**GOOD, "security": "starttls"}, None).test_connection())["error"]
+
+
+def test_tls_path_and_verify_off(fake_smtp):
+    assert send(prov(security="tls", verify_tls=False)).outcome == "success"
+    ctx = fake_smtp.contexts[-1]
+    assert ctx.check_hostname is False and ctx.verify_mode == email_mod.ssl.CERT_NONE
+    assert send(prov(security="tls")).outcome == "success"
+    assert fake_smtp.contexts[-1].check_hostname is True
+
+
+def test_size_checked_before_login_and_quits(fake_smtp):
+    fake_smtp.features = {"size": "1000"}
+    fake_smtp.login_exc = smtplib.SMTPAuthenticationError(535, b"bad")
+    r = send(prov(security="starttls", username="u", password="pw"), msg(message="x" * 5000))
+    assert r.outcome == "permanent" and fake_smtp.quits == 1
+
+
+def test_non_numeric_size_ignored(fake_smtp):
+    fake_smtp.features = {"size": "abc"}
+    assert send(prov()).outcome == "success"
+    assert asyncio.run(prov().test_connection())["size_limit"] is None
+
+
+def test_short_password_not_scrubbed(fake_smtp):
+    fake_smtp.login_exc = smtplib.SMTPAuthenticationError(535, b"login")
+    p = prov(security="starttls", username="u", password="log")
+    assert "login rejected" in asyncio.run(p.test_connection())["error"]
+
+
+def test_hard_deadline_stops_stalled_send(fake_smtp):
+    fake_smtp.block_send = True
+    p = prov()
+    p.timeout = 1
+    t0 = time.monotonic()
+    r = send(p)
+    assert time.monotonic() - t0 < 5
+    assert r.outcome == "retryable" and "exceeded 1 s" in r.error
 
 
 def test_auth_failure_retries_later(fake_smtp):

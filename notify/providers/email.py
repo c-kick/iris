@@ -10,7 +10,9 @@ import asyncio
 import html
 import re
 import smtplib
+import socket
 import ssl
+import threading
 import time
 import unicodedata
 from email import policy
@@ -33,6 +35,10 @@ _KEYS = {"type", "host", "port", "security", "username", "password", "from_addre
          "subject_prefix", "timeout_seconds", "verify_tls"}
 
 
+class _NoStartTLS(smtplib.SMTPNotSupportedError):
+    """Our own STARTTLS-not-offered raise (other NotSupported errors come from smtplib, e.g. no AUTH)."""
+
+
 def _header_safe(s: str | None) -> str:
     return re.sub(r"\s+", " ", "".join(" " if unicodedata.category(c).startswith("C") else c for c in s or "")).strip()
 
@@ -42,7 +48,10 @@ def _valid_address(s: str) -> bool:
 
 
 def _http(url: str | None) -> bool:
-    return bool(url) and urlsplit(url).scheme in ("http", "https")
+    try:
+        return bool(url) and urlsplit(url).scheme in ("http", "https")
+    except ValueError:
+        return False
 
 
 def _int(v: Any, default: int) -> int:
@@ -196,28 +205,35 @@ class EmailProvider(Provider):
         return out
 
     # --- delivery ---
-    def _open(self, left: Any) -> smtplib.SMTP:
+    def _open(self, left: Any, box: list) -> smtplib.SMTP:
+        """Connect, EHLO and (if configured) STARTTLS; the session is appended to `box` for the watchdog."""
         ctx = ssl.create_default_context()
         if not self.verify_tls:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
         s = smtplib.SMTP_SSL(self.host, self.port, timeout=left(), context=ctx) if self.security == "tls" \
             else smtplib.SMTP(self.host, self.port, timeout=left())
-        try:
+        box.append(s)
+        s.ehlo()
+        if self.security == "starttls":
+            if not s.has_extn("starttls"):
+                raise _NoStartTLS("server does not offer STARTTLS")
+            s.sock.settimeout(left())
+            s.starttls(context=ctx)
             s.ehlo()
-            if self.security == "starttls":
-                if not s.has_extn("starttls"):
-                    raise smtplib.SMTPNotSupportedError("server does not offer STARTTLS")
-                s.sock.settimeout(left())
-                s.starttls(context=ctx)
-                s.ehlo()
-            if self.username:
-                s.sock.settimeout(left())
-                s.login(self.username, self.password)
-        except BaseException:
-            s.close()
-            raise
         return s
+
+    def _login(self, s: smtplib.SMTP, left: Any) -> None:
+        if self.username:
+            s.sock.settimeout(left())
+            s.login(self.username, self.password)
+
+    @staticmethod
+    def _size(s: smtplib.SMTP) -> int:
+        try:
+            return max(0, int(s.esmtp_features.get("size") or 0))
+        except (TypeError, ValueError):
+            return 0
 
     def _deadline(self) -> Any:
         end = time.monotonic() + self.timeout
@@ -229,26 +245,60 @@ class EmailProvider(Provider):
             return r
         return left
 
+    def _watchdog(self) -> tuple[threading.Timer, list, dict]:
+        """Hard session deadline: closes the socket so a stalled phase cannot outlive timeout_seconds."""
+        box: list = []
+        state = {"expired": False}
+
+        def expire() -> None:
+            state["expired"] = True
+            for s in list(box):
+                sock = getattr(s, "sock", None)
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+        t = threading.Timer(self.timeout, expire)
+        t.daemon = True
+        return t, box, state
+
+    def _error(self, e: Exception, state: dict) -> SendResult:
+        if state["expired"] and not isinstance(e, TimeoutError):
+            e = TimeoutError(f"SMTP session exceeded {self.timeout} s")
+        return self._map_error(e)
+
+    @staticmethod
+    def _quit(s: smtplib.SMTP) -> None:
+        try:
+            s.quit()
+        except Exception:
+            pass
+
     def _send_sync(self, raw: bytes, sender: str, to: str) -> SendResult:
         left = self._deadline()
-        s = None
+        timer, box, state = self._watchdog()
+        timer.start()
         try:
-            s = self._open(left)
-            lim = int(s.esmtp_features.get("size") or 0)
+            s = self._open(left, box)
+            lim = self._size(s)
             if lim and len(raw) > lim:
+                self._quit(s)
                 return SendResult(outcome="permanent",
                                   error=f"message is {len(raw) / 1048576:.1f} MB, server accepts at most {lim / 1048576:.1f} MB")
+            self._login(s, left)
             s.sock.settimeout(left())
             s.sendmail(sender, [to], raw)
-            try:
-                s.quit()
-            except Exception:
-                pass
+            self._quit(s)
             return SendResult(outcome="success")
         except Exception as e:
-            return self._map_error(e)
+            return self._error(e, state)
         finally:
-            if s is not None:
+            timer.cancel()
+            for s in box:
                 s.close()
 
     @staticmethod
@@ -256,9 +306,11 @@ class EmailProvider(Provider):
         if isinstance(e, smtplib.SMTPAuthenticationError):
             return SendResult(outcome="retryable", retry_after=900,
                               error="login rejected; check username/password in the admin UI")
-        if isinstance(e, smtplib.SMTPNotSupportedError):
+        if isinstance(e, _NoStartTLS):
             return SendResult(outcome="retryable",
                               error="server does not offer STARTTLS; choose another Encryption setting")
+        if isinstance(e, smtplib.SMTPNotSupportedError):
+            return SendResult(outcome="retryable", error=f"server does not support: {e}")
         if isinstance(e, (smtplib.SMTPConnectError, smtplib.SMTPHeloError, smtplib.SMTPServerDisconnected)):
             return SendResult(outcome="retryable", error=f"{type(e).__name__}: {e}")
         code: int | None = None
@@ -299,22 +351,24 @@ class EmailProvider(Provider):
     # --- connection test ---
     def _test_sync(self) -> dict:
         left = self._deadline()
-        s = None
+        timer, box, state = self._watchdog()
+        timer.start()
         try:
-            s = self._open(left)
-            lim = int(s.esmtp_features.get("size") or 0)
+            s = self._open(left, box)
+            lim = self._size(s)
+            self._login(s, left)
             s.sock.settimeout(left())
             s.noop()
-            try:
-                s.quit()
-            except Exception:
-                pass
+            self._quit(s)
             return {"supported": True, "ok": True, "tls": self.security, "size_limit": lim or None}
         except Exception as e:
-            err = self._map_error(e).error or f"{type(e).__name__}: {e}"
-            return {"supported": True, "ok": False, "error": err.replace(self.password, "***") if self.password else err}
+            err = self._error(e, state).error or f"{type(e).__name__}: {e}"
+            if len(self.password) >= 4:
+                err = err.replace(self.password, "***")
+            return {"supported": True, "ok": False, "error": err}
         finally:
-            if s is not None:
+            timer.cancel()
+            for s in box:
                 s.close()
 
     async def test_connection(self) -> dict:
