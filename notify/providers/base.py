@@ -153,5 +153,9 @@ class Provider(ABC):
         """Ask the provider whether an address is valid; may list its sub-devices."""
         return {"supported": False}
 
+    async def test_connection(self) -> dict[str, Any]:
+        """Check the provider's connection settings without sending anything."""
+        return {"supported": False}
+
     def health(self) -> dict[str, Any]:
         return {"configured": self.configured, "problems": self.config_problems()}

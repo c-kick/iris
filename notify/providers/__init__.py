@@ -7,10 +7,12 @@ from typing import Any
 import httpx
 
 from .base import Provider
+from .email import EmailProvider
 from .pushover import PushoverProvider
 
 REGISTRY: dict[str, type[Provider]] = {
     PushoverProvider.type: PushoverProvider,
+    EmailProvider.type: EmailProvider,
 }
 
 
