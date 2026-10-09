@@ -8,6 +8,7 @@ import stat
 import httpx
 import pytest
 
+from notify import __version__
 from notify.app import create_app
 from tests.conftest import APP_TOKEN, USER_KEY, LiveServer, wait_for
 
@@ -48,7 +49,7 @@ def setup_admin(srv, password="correct horse battery") -> httpx.Client:
 def test_first_run_setup_and_login(fresh):
     srv = fresh()
     b = browser(srv)
-    assert b.get("/admin/api/session").json() == {"setup_required": True, "signed_in": False, "version": "0.3.0"}
+    assert b.get("/admin/api/session").json() == {"setup_required": True, "signed_in": False, "version": __version__}
     ready = b.get("/health/ready").json()
     assert "setup required" in ready["checks"]["admin"] and ready["status"] == "not_ready"
     assert b.get("/admin/api/state").status_code == 401
