@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Callable
 
 import httpx
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -110,6 +111,12 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
                 log.info("hnl-notify stopped")
 
     app.router.lifespan_context = lifespan
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(_: Any, exc: RequestValidationError) -> JSONResponse:
+        # the default handler echoes each offending input, which can be a megabyte of base64
+        return JSONResponse({"detail": [{k: v for k, v in e.items() if k not in ("input", "ctx", "url")}
+                                        for e in exc.errors()]}, status_code=422)
     app.state.auth = Authenticator(config)
     app.state.config = config
     app.state.store = store

@@ -143,3 +143,26 @@ def test_arr_kinds_param(mail_live):
     assert [d["device"] for d in r.json()["deliveries"]] == ["alex-email"]
     r = httpx.post(url, params={"targets": "user:alex", "kinds": "sms"}, json={"eventType": "Test"}, auth=auth, timeout=10)
     assert r.status_code == 422
+
+
+def test_channel_floor_cut_adds_no_kind_entries():
+    d = cfg_dict()
+    d["channels"] = {"alerts": {"targets": ["user:alex"], "min_severity": "high"}}
+    r = Router(NotifyConfig.model_validate(d))
+    plan = r.resolve(["channel:alerts"], Severity.normal, ["email"])
+    assert devs(plan) == set()
+    assert [s["reason"] for s in plan.suppressed] == ["below channel min_severity high"]
+    plan = r.resolve(["channel:alerts"], Severity.high, ["email"])
+    assert devs(plan) == {"alex-email"}
+
+
+def test_mcp_kinds_email_routes_only_email(mail_live):
+    from tests.test_mcp import payload, run_session
+
+    async def flow(s):
+        return payload(await s.call_tool("send_notification", {"targets": ["user:alex"], "message": "m",
+                                                               "kinds": ["email"]}))
+    sent = run_session(mail_live, "agent", flow)
+    assert [d["device"] for d in sent["deliveries"]] == ["alex-email"]
+    assert '"kinds":["email"]' in mail_live.service.db.one(
+        "SELECT routing_json FROM notifications WHERE id=?", (sent["id"],))["routing_json"]

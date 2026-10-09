@@ -64,3 +64,8 @@ def test_router_bare_names_and_ambiguity(tmp_path):
 ])
 def test_status_rollup(states, expected):
     assert derive_notification_status(states) == expected
+
+
+def test_attachment_hosts_trailing_dot_stripped():
+    from notify.config import ServerConfig
+    assert ServerConfig(attachment_url_hosts=["HA.lan.", "ha.lan.:8123"]).attachment_url_hosts == ["ha.lan", "ha.lan:8123"]

@@ -66,7 +66,8 @@ class ServerConfig(_Strict):
         import ipaddress
         out = []
         for h in v:
-            h = h.strip().lower()
+            h = h.strip().lower().replace(".:", ":")
+            h = h[:-1] if h.endswith(".") else h
             try:
                 out.append(str(ipaddress.ip_network(h, strict=False)))
                 continue

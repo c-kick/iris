@@ -260,3 +260,21 @@ def test_test_send_passes_kinds(fresh):
     t = b.post("/admin/api/test", json={"targets": ["user:alex"]}, headers=H).json()
     assert t["deliveries"] == []
     assert b.post("/admin/api/test", json={"targets": ["user:alex"], "kinds": ["sms"]}, headers=H).status_code == 422
+
+
+def test_provider_type_change_blocked_while_devices_use_it(fresh):
+    b = setup_admin(fresh())
+    _email_provider(b)
+    b.put("/admin/api/devices/alex-email", json={"provider": "mail", "address": {"to": "alex@example.org"}}, headers=H)
+    r = b.put("/admin/api/providers/mail", json={"type": "pushover", "settings": {"app_token": APP_TOKEN}}, headers=H)
+    assert r.status_code == 422 and "alex-email" in r.json()["detail"]
+    assert _email_provider(b).status_code == 200  # same type is fine
+
+
+def test_validation_errors_do_not_echo_large_input(live):
+    with live.client() as c:
+        r = c.post("/v1/notifications", json={"targets": ["user:alex"], "message": "m",
+                                              "attachments": [{"data_base64": "A" * (1 << 20)}]})
+        assert r.status_code == 422 and len(r.content) < 10240, len(r.content)
+        d = r.json()["detail"]
+        assert d and all({"loc", "msg", "type"} <= set(e) for e in d)

@@ -49,7 +49,8 @@ class Router:
             top = f"{kind}:{name}"
             found: set[str] = set()  # kinds of devices reached (before severity/enabled filtering)
             self._expand(kind, name, severity, top, plan, set(), kinds, kind == "device", found)
-            for k in kinds or ():
+            cut = kind == "channel" and severity.rank < self.config.channels[name].min_severity.rank
+            for k in () if cut else kinds or ():
                 if k not in found:
                     plan.suppressed.append({"target": top, "via": top, "reason": f"no {k} device"})
         return plan

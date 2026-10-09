@@ -246,6 +246,9 @@ async def put_provider(name: str, body: ProviderIn, request: Request, _: Client 
 
     def mutate(data: dict[str, Any]) -> None:
         old = data["providers"].get(name) or {}
+        used = [d for d, dev in data["devices"].items() if dev["provider"] == name]
+        if used and old.get("type") not in (None, body.type):
+            raise ConfigError(f"remove the devices using it before changing its type: {', '.join(used)}")
         new: dict[str, Any] = {"type": body.type}
         for key, spec in cls.settings_schema.items():
             v = body.settings.get(key)
