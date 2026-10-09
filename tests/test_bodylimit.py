@@ -141,3 +141,47 @@ def test_large_bodies_are_read_two_at_a_time():
 def test_live_unauthenticated_large_post_refused(live):
     r = httpx.post(f"{live.url}/v1/notifications", content=b"x" * (2 << 20), timeout=10)
     assert r.status_code == 401 and r.json() == {"detail": "authentication required"}
+
+
+class FakeAuth:
+    def from_header(self, header):
+        return object() if header == "Bearer good" else None
+
+
+def test_large_body_credential_is_validated_before_reading():
+    reached: list[int] = []
+
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        reached.append(1)
+        await echo(scope, receive, send)
+
+    async def run(token: str) -> httpx.Response:
+        wrapped = BodyLimit(app, default=100, routes={("POST", "/x"): 1000}, large=500, get_auth=FakeAuth)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=wrapped), base_url="http://t") as c:
+            return await c.post("/x", content=b"a" * 600, headers={"Authorization": f"Bearer {token}"})
+    r = asyncio.run(run("bogus"))
+    assert r.status_code == 401 and reached == []
+    assert asyncio.run(run("good")).text == "600"
+
+
+def test_slow_drip_large_body_times_out_and_frees_the_slot():
+    async def run() -> list[int]:
+        wrapped = BodyLimit(echo, default=100, routes={("POST", "/x"): 1000}, large=500, large_concurrency=1,
+                            read_deadline=0.3)
+
+        async def drip():
+            yield b"a" * 400
+            await asyncio.sleep(2)
+            yield b"a" * 400
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=wrapped), base_url="http://t") as c:
+            h = {"Authorization": "Bearer x", "Content-Length": "800"}
+            slow = await c.post("/x", content=drip(), headers=h)
+            fast = await c.post("/x", content=b"a" * 600, headers={"Authorization": "Bearer x"})
+            return [slow.status_code, fast.status_code]
+    assert asyncio.run(run()) == [408, 200]
+
+
+def test_live_bogus_token_on_large_post_refused(live):
+    r = httpx.post(f"{live.url}/v1/notifications", content=b"x" * (2 << 20), timeout=10,
+                   headers={"Authorization": "Bearer nope"})
+    assert r.status_code == 401

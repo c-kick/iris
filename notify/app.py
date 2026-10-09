@@ -140,7 +140,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
             response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
-    app.add_middleware(BodyLimit)  # added last = outermost: caps bodies before auth or routing
+    app.add_middleware(BodyLimit, get_auth=lambda: app.state.auth)  # added last = outermost: caps bodies before auth or routing
     return app
 
 
