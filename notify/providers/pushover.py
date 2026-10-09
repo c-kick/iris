@@ -11,6 +11,7 @@ non-emergency messages.
 
 from __future__ import annotations
 
+import base64
 import html
 import re
 from datetime import UTC, datetime
@@ -19,7 +20,7 @@ from typing import Any
 import httpx
 
 from ..models import ACKNOWLEDGED, DELIVERED, Severity
-from .base import (BASE_OBSERVABLE, DeliveryPlan, OutboundMessage, Provider, ProviderError,
+from .base import (BASE_OBSERVABLE, AttachmentData, DeliveryPlan, OutboundMessage, Provider, ProviderError,
                    ReceiptStatus, SendResult)
 
 PRIORITY = {
@@ -35,6 +36,7 @@ MAX_MESSAGE = 1024
 MAX_URL = 512
 MAX_URL_TITLE = 100
 MAX_EXPIRE = 10800
+MAX_ATTACHMENT = 5242880
 MIN_RETRY = 30
 _KEY_RE = re.compile(r"^[A-Za-z0-9]{30}$")
 _BODY_LIMIT = 4000
@@ -114,6 +116,7 @@ class PushoverProvider(Provider):
             "actions": {"max": 0, "inline_links": True,
                         "note": "no buttons; extra actions become tappable links in the message text "
                                 "(Pushover app only, not the lock-screen banner); taps are not reported"},
+            "attachments": {"max_count": 1, "max_bytes": MAX_ATTACHMENT, "types": ["image/*"]},
             "links": {"max": 1, "note": "one supplementary URL, opened on tap, not reported back"},
             "cancel_after_dispatch": {"supported": True, "when": "severity=critical",
                                       "note": "stops the repeating emergency alert only"},
@@ -152,6 +155,13 @@ class PushoverProvider(Provider):
             gaps.append(f"message truncated to {MAX_MESSAGE} characters")
         if critical and msg.expires_at is not None:
             gaps.append("ttl: not honoured by pushover at severity=critical; used as the alert's expire window instead")
+        if msg.attachments:
+            if any(a.size is None for a in msg.attachments):
+                gaps.append("attachments: type and size unknown until sent; pushover carries one image ≤ 5 MB")
+            else:
+                n = len(msg.attachments) - (1 if self._image(msg) else 0)
+                if n:
+                    gaps.append(f"attachments: pushover carries one image ≤ 5 MB; {n} attachment(s) not sent")
         return DeliveryPlan(tracking="receipt" if critical else "none",
                             observable_states=observable, capability_gaps=gaps)
 
@@ -167,6 +177,11 @@ class PushoverProvider(Provider):
             if a.get("url"):
                 return a["url"], a.get("label")
         return None, None
+
+    @staticmethod
+    def _image(msg: OutboundMessage) -> AttachmentData | None:
+        return next((a for a in msg.attachments if a.content_type.startswith("image/")
+                     and a.size is not None and a.size <= MAX_ATTACHMENT), None)
 
     def _body(self, msg: OutboundMessage) -> tuple[str, bool]:
         """Message text; URL actions other than the tap link become an HTML link line (Pushover app only)."""
@@ -222,11 +237,19 @@ class PushoverProvider(Provider):
                 form["callback"] = msg.callback_url
         elif ttl is not None and ttl > 0:
             form["ttl"] = str(ttl)
+        image = self._image(msg)
+        if image is not None and image.data is not None:
+            form["attachment_base64"] = base64.b64encode(image.data).decode()
+            form["attachment_type"] = image.content_type
         return form
 
     @staticmethod
     def _redact(form: dict[str, str]) -> dict[str, Any]:
-        out: dict[str, Any] = {k: v for k, v in form.items() if k not in ("token", "user", "message")}
+        out: dict[str, Any] = {k: v for k, v in form.items()
+                               if k not in ("token", "user", "message", "attachment_base64")}
+        if "attachment_base64" in form:
+            b64 = form["attachment_base64"]
+            out["attachment_bytes"] = len(b64) * 3 // 4 - b64.count("=", -2)
         out["user"] = f"…{form.get('user', '')[-4:]}" if form.get("user") else None
         out["message_chars"] = len(form.get("message", ""))
         return out
