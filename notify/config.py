@@ -57,6 +57,26 @@ class ServerConfig(_Strict):
     webhook_disable_after_failures: int = Field(default=50, ge=1)
     # links in notifications sent by hnl-notify itself (e.g. access requests); falls back to NOTIFY_EXTERNAL_URL
     external_url: str | None = None
+    attachment_url_hosts: list[str] = Field(default_factory=list, description="hosts, host:port or CIDRs URL attachments may be fetched from; empty = disabled")
+    attachment_retention_days: int = Field(default=7, ge=1, le=90)
+
+    @field_validator("attachment_url_hosts")
+    @classmethod
+    def _hosts(cls, v: list[str]) -> list[str]:
+        import ipaddress
+        out = []
+        for h in v:
+            h = h.strip().lower()
+            try:
+                out.append(str(ipaddress.ip_network(h, strict=False)))
+                continue
+            except ValueError:
+                pass
+            m = re.fullmatch(r"[a-z0-9.-]+(?::(\d{1,5}))?", h)
+            if not m or (m.group(1) and not 0 < int(m.group(1)) < 65536):
+                raise ValueError(f"{h!r} is not a host, host:port or CIDR")
+            out.append(h)
+        return out
 
 
 class RegistrationConfig(_Strict):

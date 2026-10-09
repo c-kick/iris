@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class Severity(str, Enum):
@@ -152,6 +152,28 @@ class WebhookIn(BaseModel):
         return check_event_patterns(v)
 
 
+class AttachmentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str | None = Field(default=None, max_length=255)
+    content_type: str | None = Field(default=None, max_length=255)
+    data_base64: str | None = Field(default=None, max_length=14_200_000)
+    url: str | None = Field(default=None, max_length=2048, description="Fetched once at intake; only from admin-allowlisted hosts")
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, v: str | None) -> str | None:
+        return v if v is None else check_http_url(v)
+
+    @model_validator(mode="after")
+    def _one_source(self) -> "AttachmentIn":
+        if (self.data_base64 is None) == (self.url is None):
+            raise ValueError("give exactly one of data_base64 or url")
+        if self.data_base64 is not None and not self.filename:
+            raise ValueError("filename is required with data_base64")
+        return self
+
+
 class NotificationIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -172,6 +194,7 @@ class NotificationIn(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
     webhook: WebhookIn | None = None
     dry_run: bool = False
+    attachments: list[AttachmentIn] = Field(default_factory=list, max_length=10)
     kinds: list[Literal["push", "email"]] | None = Field(
         default=None, description="Delivery kinds to use; omitted = default devices (push). email devices only receive when 'email' is listed")
 
