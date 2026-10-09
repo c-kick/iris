@@ -68,4 +68,25 @@ def test_get_without_body():
 def test_live_mcp_oversized_body(live):
     with live.client() as c:
         r = c.post("/mcp", content=b"x" * (2 << 20), headers={"Authorization": f"Bearer {TOKENS['agent']}"})
-        assert r.status_code == 413
+        assert r.status_code == 413, (r.status_code, r.text, r.headers)
+
+
+def _chunks(total: int):
+    def gen():
+        for _ in range(total >> 16):
+            yield b"x" * (1 << 16)
+    return gen()
+
+
+def test_live_chunked_mcp_over_cap(live):
+    with live.client() as c:
+        r = c.post("/mcp", content=_chunks(2 << 20), headers={
+            "Authorization": f"Bearer {TOKENS['agent']}", "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"})
+        assert r.status_code == 413, (r.status_code, r.text, r.headers)
+
+
+def test_live_chunked_notifications_over_cap(live):
+    with live.client() as c:
+        r = c.post("/v1/notifications", content=_chunks(16 << 20), headers={"Content-Type": "application/json"})
+        assert r.status_code == 413, (r.status_code, r.text, r.headers)

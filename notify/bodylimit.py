@@ -28,28 +28,37 @@ class BodyLimit:
             await self._reject(cap, scope, receive, send)
             return
         seen = 0
-        started = False
+        exceeded = False
+        started = False  # a response (ours or the app's) has begun
+        rejected = False  # that response is our 413
 
         async def limited_receive() -> Message:
-            nonlocal seen
+            nonlocal seen, exceeded
             msg = await receive()
             if msg["type"] == "http.request":
                 seen += len(msg.get("body", b""))
                 if seen > cap:
+                    exceeded = True
                     raise _TooLarge
             return msg
 
         async def tracking_send(msg: Message) -> None:
-            nonlocal started
+            nonlocal started, rejected
+            if exceeded:  # the app may swallow _TooLarge and answer 400/500: its response is replaced
+                if not started:
+                    started = rejected = True
+                    await self._reject(cap, scope, receive, send)
+                return
             if msg["type"] == "http.response.start":
                 started = True
             await send(msg)
 
         try:
             await self.app(scope, limited_receive, tracking_send)
-        except _TooLarge:
-            if started:
-                raise
+        except BaseException:
+            if not exceeded or (started and not rejected):
+                raise  # not ours, or the app's response is already underway: abort the connection
+        if exceeded and not started:
             await self._reject(cap, scope, receive, send)
 
     @staticmethod
