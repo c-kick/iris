@@ -58,6 +58,7 @@ class BodyLimit:
         seen = 0
         held = False  # holding a large-body slot
         reason = ""  # "", "large" (413), "auth" (401) or "slow" (408)
+        complete = False  # the final body chunk has arrived
         deadline = 0.0  # monotonic time by which a large body must have arrived
         started = False  # a response (ours or the app's) has begun
         rejected = False  # that response is our 413/401
@@ -71,8 +72,8 @@ class BodyLimit:
                 deadline = time.monotonic() + self.read_deadline
 
         async def limited_receive() -> Message:
-            nonlocal seen, reason
-            if held:
+            nonlocal seen, reason, complete
+            if held and not complete:
                 try:
                     if time.monotonic() > deadline:
                         raise asyncio.TimeoutError
@@ -83,6 +84,8 @@ class BodyLimit:
             else:
                 msg = await receive()
             if msg["type"] == "http.request":
+                if not msg.get("more_body"):
+                    complete = True  # fully read: later receive() calls (disconnect listener) are not ours to time
                 seen += len(msg.get("body", b""))
                 if seen > cap:
                     reason = "large"

@@ -185,3 +185,21 @@ def test_live_bogus_token_on_large_post_refused(live):
     r = httpx.post(f"{live.url}/v1/notifications", content=b"x" * (2 << 20), timeout=10,
                    headers={"Authorization": "Bearer nope"})
     assert r.status_code == 401
+
+
+def test_deadline_does_not_apply_after_the_body_is_complete():
+    async def app(scope: Any, receive: Any, send: Any) -> None:
+        while (await receive()).get("more_body"):  # the whole body
+            pass
+        await asyncio.sleep(0.4)  # slower than the read deadline
+        listener = asyncio.create_task(receive())  # disconnect listener: must not be timed
+        await asyncio.sleep(0.05)
+        await send({"type": "http.response.start", "status": 202, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+        listener.cancel()
+
+    async def run() -> int:
+        wrapped = BodyLimit(app, default=100, routes={("POST", "/x"): 1000}, large=500, read_deadline=0.2)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=wrapped), base_url="http://t") as c:
+            return (await c.post("/x", content=b"a" * 600, headers={"Authorization": "Bearer x"})).status_code
+    assert asyncio.run(run()) == 202

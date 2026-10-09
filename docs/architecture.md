@@ -55,9 +55,10 @@ inside the adapter.
 Every provider has a *kind*: `push` (Pushover) or `email`. A request may carry
 `kinds: ["push"]`, `["email"]` or both (`via` keeps its existing meaning: the
 expansion path). A device is *opt-in* when `opt_in` is true; unset means the
-kind default (email: yes, push: no). Rules: kind and opt-in filtering happens
-first, then the disabled-device, device `min_severity` and channel floor checks;
-the suppression reason reflects the first rule that applied:
+kind default (email: yes, push: no). Rules: a channel `min_severity` floor cuts
+the whole channel before any device is examined; kind and opt-in filtering
+happens before the per-device disabled and `min_severity` checks; the
+suppression reason reflects the first rule that applied:
 
 - **No `kinds`**: opt-in devices are skipped, except a device named as a
   top-level target (`device:alex-email`). Devices reached through a user, group

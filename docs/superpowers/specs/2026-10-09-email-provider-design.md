@@ -48,9 +48,10 @@ Success criteria:
   lazily inside the helper.
 - `NotificationIn.kinds: list[Literal["push","email"]] | None = None`
   (1–2 items, de-duplicated; empty list → 422).
-- `Router.resolve(targets, severity, kinds)` rules: kind and opt-in filtering
-  happens before the existing disabled-device, device `min_severity` and channel
-  floor checks; the suppression reason reflects the first rule that applied:
+- `Router.resolve(targets, severity, kinds)` rules: a channel `min_severity` floor
+  cuts the whole channel before any device is examined; kind and opt-in filtering
+  happens before the per-device disabled and `min_severity` checks; the
+  suppression reason reflects the first rule that applied:
   - `kinds is None`: include a device iff it is not opt-in, **except** a
     device named as a *top-level* target (`device:alex-email` in the request's
     `targets`) is always eligible. Devices reached through user/group/channel
