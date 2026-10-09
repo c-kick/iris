@@ -37,6 +37,9 @@ make sure that account can write `data/` and `secrets/`, or change it.
 Resource limits (320 MiB, no extra swap, 0.5 CPU, 64 PIDs) are set in
 `compose.yaml`.
 
+Upgrading to 0.5.0 migrates the database in place. Rolling back to 0.4.0
+requires restoring the pre-0.5.0 database backup (take one before upgrading).
+
 Open **http://notify.lan:8930/admin**, enter the setup code and choose an
 admin password. Then, in the admin UI:
 

@@ -48,8 +48,9 @@ Success criteria:
   lazily inside the helper.
 - `NotificationIn.kinds: list[Literal["push","email"]] | None = None`
   (1–2 items, de-duplicated; empty list → 422).
-- `Router.resolve(targets, severity, kinds)` rules, applied after the existing
-  rules (disabled device, device `min_severity`, channel floor):
+- `Router.resolve(targets, severity, kinds)` rules: kind and opt-in filtering
+  happens before the existing disabled-device, device `min_severity` and channel
+  floor checks; the suppression reason reflects the first rule that applied:
   - `kinds is None`: include a device iff it is not opt-in, **except** a
     device named as a *top-level* target (`device:alex-email` in the request's
     `targets`) is always eligible. Devices reached through user/group/channel
@@ -60,7 +61,7 @@ Success criteria:
     `{"target", "via", "reason": "device kind push not requested"}`.
   - With `kinds` given, for each top-level target and each requested kind
     that the target's expansion yields no device for (before severity
-    floors), one suppressed entry `{"target": <top-level>, "via":
+    floors; none when a top-level channel's floor cut the target), one suppressed entry `{"target": <top-level>, "via":
     <top-level>, "reason": "no email device"}`.
   - `suppressed[].via` and `routing_json["via"]` keep their existing meaning
     (expansion path / device → targets). `routing_json` gains `"kinds"`.

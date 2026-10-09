@@ -24,7 +24,7 @@ pydantic, plus the official MCP Python SDK.
  │ auth ─► intake ─► router ─► deliveries (SQLite, 1 per device)    │
  │                                  │                               │
  │   dispatcher ◄───────────────────┘   (lease, retry/backoff)      │
- │      │ provider adapter (pushover | email (later ntfy/HA/webpush)) │
+ │      │ provider adapter (pushover | email; later ntfy/HA/webpush)│
  │      ▼                                                           │
  │   receipt poller / inbound callbacks ─► state transitions        │
  │                                      │                           │
@@ -55,8 +55,9 @@ inside the adapter.
 Every provider has a *kind*: `push` (Pushover) or `email`. A request may carry
 `kinds: ["push"]`, `["email"]` or both (`via` keeps its existing meaning: the
 expansion path). A device is *opt-in* when `opt_in` is true; unset means the
-kind default (email: yes, push: no). Rules, applied after disabled-device,
-device `min_severity` and channel floors:
+kind default (email: yes, push: no). Rules: kind and opt-in filtering happens
+first, then the disabled-device, device `min_severity` and channel floor checks;
+the suppression reason reflects the first rule that applied:
 
 - **No `kinds`**: opt-in devices are skipped, except a device named as a
   top-level target (`device:alex-email`). Devices reached through a user, group
@@ -66,7 +67,8 @@ device `min_severity` and channel floors:
 - **`kinds` given**: a device is included iff its kind is requested (opt-in is
   ignored). A top-level device of another kind is suppressed ("device kind push
   not requested"); a requested kind that a top-level target has no device for is
-  suppressed with "no email device". `routing_json` records the `kinds`.
+  suppressed with "no email device" (unless a channel floor already cut that
+  target). `routing_json` records the `kinds`.
 
 Configuration is managed in the **admin UI** (`/admin`) and stored in the
 same SQLite database (`settings` table). Fields each provider adapter declares
@@ -196,7 +198,7 @@ The `Message-ID` is derived from the delivery id, so a resend after a crash
 is the prefix plus title, or the first message line (120 chars). `high` and
 `critical` set `Importance: high` / `X-Priority: 1`; `min` and `low` set
 `Importance: low`. Header values are stripped of control characters; the adapter
-never raises on sender input. One SMTP session at a time (`max_concurrency` 1);
+never raises on sender input. One send at a time per email provider (`max_concurrency` 1);
 `smtplib` debug output stays off, the password is stored encrypted.
 
 ## Attachments
@@ -243,7 +245,11 @@ A pure-ASGI limit rejects with **413** when a body exceeds 15 MiB on
 by `Content-Length` or by counting streamed bytes. Container memory is capped at
 320 MiB (`mem_limit` and `memswap_limit`); a 10 MiB request needs several times
 that in Python while it is decoded, which is why attachment intake and email
-sending are one at a time.
+sending are one at a time. Requests over 1 MiB must carry a valid credential
+(checked before the body is read), at most two such bodies are read at once and
+each must arrive within 60 s; Pushover loads only the image it sends, and the
+image sets `MALLOC_MMAP_THRESHOLD_` so freed buffers return to the OS.
+`scripts/memprobe.py` measures the peak.
 
 ## REST API (bearer tokens; scopes `send`, `read`, `manage`, `admin`)
 
