@@ -121,37 +121,36 @@ def _host_port(url: str) -> tuple[str, int]:
     return host, port
 
 
-def _match(host: str, port: int, allow: list[str], ips: list[str] | None) -> str:
-    """'yes', 'no', or 'maybe' (a CIDR entry could still match once the name resolves)."""
+def _allowed(host: str, port: int, allow: list[str]) -> bool:
+    """Hostnames match host / host:port entries only; CIDR entries match IP-literal hosts only."""
     lit = _ip(host)
-    maybe = False
     for e in allow:
         e = e.strip().lower()
         try:
             net = ipaddress.ip_network(e, strict=False)
         except ValueError:
             h, _, p = e.partition(":")
-            if h == host and (not p or int(p) == port):
-                return "yes"
+            if lit is None and h == host and (not p or int(p) == port):
+                return True
             continue
-        if lit is not None:
-            if lit.version == net.version and lit in net:
-                return "yes"
-        elif ips is None:
-            maybe = True
-        elif ips:
-            addrs = [_ip(x) for x in ips]
-            if all(a is not None and a.version == net.version and a in net for a in addrs):
-                return "yes"
-    return "maybe" if maybe else "no"
+        if lit is not None and lit.version == net.version and lit in net:
+            return True
+    return False
 
 
 def check_url_allowed(url: str, allow: list[str], index: int | None = None) -> None:
     if not allow:
         raise AttachmentError("URL attachments are not enabled; an admin can allow hosts under Settings")
     host, port = _host_port(url)
-    if _match(host, port, allow, None) == "no":
+    if not _allowed(host, port, allow):
         raise AttachmentError(f"{'' if index is None else f'attachment {index}: '}host {host} is not in the allowed list")
+
+
+def _peer_denied(r: httpx.Response) -> bool:
+    """True if the address the socket actually connected to is in a denied range."""
+    ns = r.extensions.get("network_stream")
+    addr = ns.get_extra_info("server_addr") if ns is not None else None
+    return bool(addr) and _denied(_ip(str(addr[0])))
 
 
 async def _fetch(i: int, it: AttachmentIn, allow: list[str], http: httpx.AsyncClient,
@@ -166,10 +165,10 @@ async def _fetch(i: int, it: AttachmentIn, allow: list[str], http: httpx.AsyncCl
             raise AttachmentError(f"attachment {i}: could not be fetched") from None
         if not ips or any(_denied(_ip(x)) for x in ips):
             raise AttachmentError(f"attachment {i}: address not allowed")
-        if _match(host, port, allow, ips) != "yes":
-            raise AttachmentError(f"attachment {i}: host {host} is not in the allowed list")
         try:
             async with http.stream("GET", url) as r:
+                if _peer_denied(r):
+                    raise AttachmentError(f"attachment {i}: address not allowed")
                 if 300 <= r.status_code < 400 and r.headers.get("location"):
                     if hop == MAX_REDIRECTS:
                         raise AttachmentError(f"attachment {i}: too many redirects")

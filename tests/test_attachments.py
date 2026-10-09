@@ -133,16 +133,12 @@ def test_allowlist():
     check_url_allowed("http://192.168.1.10/x", ["192.168.1.0/24"])
     with pytest.raises(AttachmentError):
         check_url_allowed("http://192.168.2.10/x", ["192.168.1.0/24"])
-    check_url_allowed("http://cam.lan/x", ["192.168.1.0/24"])  # needs resolution, decided in prepare
 
 
-def test_cidr_matches_resolved_names():
-    assert run([url("http://cam.lan/x")], ["192.168.1.0/24"])[0].source_host == "cam.lan"
-    assert "not in the allowed list" in fail([url("http://cam.lan/x")], ["10.0.0.0/8"])
-
-    async def mixed(h):
-        return ["192.168.1.10", "8.8.8.8"]
-    assert "not in the allowed list" in fail([url("http://cam.lan/x")], ["192.168.1.0/24"], resolve=mixed)
+def test_cidr_never_matches_hostnames():
+    assert "not in the allowed list" in fail([url("http://cam.lan/x")], ["192.168.1.0/24"])
+    with pytest.raises(AttachmentError, match="not in the allowed list"):
+        check_url_allowed("http://cam.lan/x", ["192.168.1.0/24"])
 
 
 def test_disabled_by_default():
@@ -175,6 +171,30 @@ def test_resolution_failure():
     async def res(h):
         raise OSError("nope")
     assert "attachment 0: could not be fetched" == fail([url("http://ha.lan/x")], ["ha.lan"], resolve=res)
+
+
+# ------------------------------------------------------------------ peer address
+
+class FakeStream:
+    def __init__(self, addr):
+        self.addr = addr
+
+    def get_extra_info(self, name):
+        return self.addr if name == "server_addr" else None
+
+
+@pytest.mark.parametrize("addr,denied", [(("127.0.0.1", 80), True), (("::ffff:127.0.0.1", 80, 0, 0), True),
+                                         (("169.254.169.254", 80), True), (("192.168.1.10", 80), False),
+                                         (None, False)])
+def test_peer_address_check(addr, denied):
+    r = httpx.Response(200, extensions={"network_stream": FakeStream(addr)})
+    assert attachments._peer_denied(r) is denied
+    assert attachments._peer_denied(httpx.Response(200)) is False
+
+
+def test_connected_peer_in_deny_range_refused():
+    h = lambda r: httpx.Response(200, content=b"x", extensions={"network_stream": FakeStream(("127.0.0.1", 80))})
+    assert "attachment 0: address not allowed" == fail([url("http://ha.lan/x")], ["ha.lan"], h)
 
 
 # ------------------------------------------------------------------ fetching
