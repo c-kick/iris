@@ -256,6 +256,40 @@ def test_hard_deadline_stops_stalled_send(fake_smtp):
     assert r.outcome == "retryable" and "exceeded 1 s" in r.error
 
 
+def test_slow_connect_past_deadline_never_ehlos(fake_smtp):
+    calls: list[str] = []
+    orig_init = fake_smtp.__init__
+
+    def slow_init(self, *a, **k):
+        orig_init(self, *a, **k)
+        time.sleep(1.3)
+    fake_smtp.__init__ = slow_init
+    fake_smtp.ehlo = lambda self: calls.append("ehlo")
+    p = prov()
+    p.timeout = 1
+    r = send(p)
+    assert r.outcome == "retryable" and "exceeded 1 s" in r.error
+    assert calls == [] and fake_smtp.sent == []
+
+
+def test_message_is_built_off_the_event_loop(fake_smtp, monkeypatch):
+    import threading
+    where: list[str] = []
+    orig = EmailProvider.build_message
+
+    def spy(self, m, a):
+        where.append(threading.current_thread().name)
+        return orig(self, m, a)
+    monkeypatch.setattr(EmailProvider, "build_message", spy)
+    assert send(prov()).outcome == "success" and where and where[0] != threading.main_thread().name
+
+    def boom(self, m, a):
+        raise ValueError("bad")
+    monkeypatch.setattr(EmailProvider, "build_message", boom)
+    r = send(prov())
+    assert r.outcome == "permanent" and "could not build" in r.error
+
+
 def test_auth_failure_retries_later(fake_smtp):
     fake_smtp.login_exc = smtplib.SMTPAuthenticationError(535, b"bad")
     r = send(prov(security="starttls", username="u", password="secret"))

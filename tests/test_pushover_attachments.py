@@ -76,3 +76,16 @@ def test_capabilities_advertise_one_image(live):
     items = live.client().get("/v1/providers").json()["items"]
     push = next(x for x in items if x["type"] == "pushover")
     assert push["capabilities"]["attachments"]["max_count"] == 1
+
+
+def test_only_the_sent_image_is_loaded(live):
+    pdf = base64.b64encode(b"%PDF-1.4\n%%EOF\n").decode()
+    r = submit(live, attachments=[inline("a.pdf", pdf, "application/pdf"), inline()])
+    nid = r.json()["id"]
+    n = live.service.db.one("SELECT * FROM notifications WHERE id=?", (nid,))
+    did = live.service.db.scalar("SELECT id FROM deliveries WHERE notification_id=?", (nid,))
+    msg = live.service.message_for(n, did, "pushover", with_data=True)
+    assert [(a.filename, a.data) for a in msg.attachments] == [("a.pdf", None), ("door.png", PNG)]
+    live.service.providers["pushover"].attachment_data = "all"  # providers that take everything load everything
+    msg = live.service.message_for(n, did, "pushover", with_data=True)
+    assert all(a.data is not None for a in msg.attachments)

@@ -99,6 +99,9 @@ class Provider(ABC):
     receipt_poll_seconds: float = 30
     # longest a single send may take; the dispatch lease is extended to cover it
     send_deadline_seconds: float | None = None
+    # which stored attachment bytes a send loads: every one, or only the first image/* up to image_max_bytes
+    attachment_data: ClassVar[Literal["all", "first_image"]] = "all"
+    image_max_bytes: ClassVar[int | None] = None
     # settings/address keys that are secrets: encrypted at rest, never returned by the admin API
     secret_settings: frozenset[str] = frozenset()
     secret_address_fields: frozenset[str] = frozenset()
@@ -110,6 +113,10 @@ class Provider(ABC):
         self.name = name
         self.settings = settings
         self.http = http
+
+    def first_image(self, atts: list[AttachmentData]) -> int | None:
+        return next((i for i, a in enumerate(atts) if a.content_type.startswith("image/") and a.size is not None
+                     and (self.image_max_bytes is None or a.size <= self.image_max_bytes)), None)
 
     # --- configuration ---
     @abstractmethod

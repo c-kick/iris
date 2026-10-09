@@ -68,6 +68,28 @@ def _links(msg: OutboundMessage) -> list[tuple[str, str]]:
     return out
 
 
+class _SessionBox(list):
+    """SMTP sessions the watchdog may close; one appended after expiry is closed at once."""
+
+    def __init__(self, state: dict):
+        super().__init__()
+        self.state = state
+
+    @staticmethod
+    def kill(s: Any) -> None:
+        sock = getattr(s, "sock", None)
+        for op in (lambda: sock.shutdown(socket.SHUT_RDWR), lambda: sock.close()):
+            try:
+                op()
+            except Exception:
+                pass
+
+    def append(self, s: Any) -> None:
+        super().append(s)
+        if self.state["expired"]:
+            self.kill(s)
+
+
 class EmailProvider(Provider):
     type = "email"
     kind = "email"
@@ -214,6 +236,7 @@ class EmailProvider(Provider):
         s = smtplib.SMTP_SSL(self.host, self.port, timeout=left(), context=ctx) if self.security == "tls" \
             else smtplib.SMTP(self.host, self.port, timeout=left())
         box.append(s)
+        s.sock.settimeout(left())  # the constructor may have used up the budget
         s.ehlo()
         if self.security == "starttls":
             if not s.has_extn("starttls"):
@@ -247,21 +270,13 @@ class EmailProvider(Provider):
 
     def _watchdog(self) -> tuple[threading.Timer, list, dict]:
         """Hard session deadline: closes the socket so a stalled phase cannot outlive timeout_seconds."""
-        box: list = []
         state = {"expired": False}
+        box = _SessionBox(state)
 
         def expire() -> None:
             state["expired"] = True
             for s in list(box):
-                sock = getattr(s, "sock", None)
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except Exception:
-                    pass
-                try:
-                    sock.close()
-                except Exception:
-                    pass
+                box.kill(s)
         t = threading.Timer(self.timeout, expire)
         t.daemon = True
         return t, box, state
@@ -332,20 +347,26 @@ class EmailProvider(Provider):
         if problems:
             return SendResult(outcome="retryable", error="; ".join(problems))
         to = str(address["to"])
+        return await asyncio.to_thread(self._deliver, msg, address, to)
+
+    def _deliver(self, msg: OutboundMessage, address: dict[str, Any], to: str) -> SendResult:
+        """Build (MIME + base64 of large attachments is CPU and memory heavy) and send, off the event loop."""
         try:
             em = self.build_message(msg, address)
             raw = em.as_bytes()
         except Exception as e:
             return SendResult(outcome="permanent", error=f"could not build the message: {type(e).__name__}: {e}")
+        message_id, subject_chars = str(em["Message-ID"]), len(str(em["Subject"]))
+        del em
         summary = {"host": self.host, "port": self.port, "security": self.security,
-                   "to_domain": "…@" + to.rpartition("@")[2], "subject_chars": len(str(em["Subject"])),
+                   "to_domain": "…@" + to.rpartition("@")[2], "subject_chars": subject_chars,
                    "attachments": sum(1 for a in msg.attachments if a.data is not None),
                    "attachment_bytes": sum(len(a.data) for a in msg.attachments if a.data is not None),
                    "encoded_bytes": len(raw)}
-        res = await asyncio.to_thread(self._send_sync, raw, self.from_address, to)
+        res = self._send_sync(raw, self.from_address, to)
         res.request_summary = summary
         if res.outcome == "success":
-            res.provider_message_id = str(em["Message-ID"])
+            res.provider_message_id = message_id
         return res
 
     # --- connection test ---

@@ -140,11 +140,20 @@ class NotifyService:
         """`atts` overrides the stored attachments (planning before the notification is written);
         with_data loads the bytes and leaves out purged attachments."""
         if atts is None:
-            cols = "filename, content_type, size, purged_at" + (", data" if with_data else "")
-            atts = [AttachmentData(r["filename"], r["content_type"], r["size"], r["data"] if with_data else None)
-                    for r in self.db.query(f"SELECT {cols} FROM attachments WHERE notification_id=? ORDER BY idx",
-                                           (n["id"],))
-                    if not (with_data and r["purged_at"])]
+            rows = [r for r in self.db.query(
+                "SELECT idx, filename, content_type, size, purged_at FROM attachments WHERE notification_id=?"
+                " ORDER BY idx", (n["id"],)) if not (with_data and r["purged_at"])]
+            atts = [AttachmentData(r["filename"], r["content_type"], r["size"]) for r in rows]
+            if with_data:
+                prov = self.providers.get(provider)
+                if prov is not None and prov.attachment_data == "first_image":
+                    pick = prov.first_image(atts)
+                    wanted = [] if pick is None else [pick]
+                else:
+                    wanted = range(len(atts))
+                for i in wanted:  # one BLOB in memory at a time per load
+                    atts[i].data = self.db.scalar("SELECT data FROM attachments WHERE notification_id=? AND idx=?",
+                                                  (n["id"], rows[i]["idx"]))
         return OutboundMessage(
             notification_id=n["id"], delivery_id=delivery_id, title=n["title"], message=n["message"],
             severity=Severity(n["severity"]), url=n["url"], url_title=n["url_title"],

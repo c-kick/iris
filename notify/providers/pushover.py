@@ -55,6 +55,8 @@ class PushoverProvider(Provider):
     kind = "push"
     label = "Pushover"
     max_concurrency = 2  # Pushover: no more than 2 concurrent connections
+    attachment_data = "first_image"
+    image_max_bytes = MAX_ATTACHMENT
     secret_settings = frozenset({"app_token"})
     secret_address_fields = frozenset({"user_key"})
     settings_schema = {
@@ -178,10 +180,9 @@ class PushoverProvider(Provider):
                 return a["url"], a.get("label")
         return None, None
 
-    @staticmethod
-    def _image(msg: OutboundMessage) -> AttachmentData | None:
-        return next((a for a in msg.attachments if a.content_type.startswith("image/")
-                     and a.size is not None and a.size <= MAX_ATTACHMENT), None)
+    def _image(self, msg: OutboundMessage) -> AttachmentData | None:
+        i = self.first_image(msg.attachments)
+        return None if i is None else msg.attachments[i]
 
     def _body(self, msg: OutboundMessage) -> tuple[str, bool]:
         """Message text; URL actions other than the tap link become an HTML link line (Pushover app only)."""
