@@ -136,22 +136,22 @@ class NotifyService:
         return None
 
     def message_for(self, n: sqlite3.Row | dict, delivery_id: str, provider: str, *, with_data: bool = False,
-                    attachments: list[AttachmentData] | None = None) -> OutboundMessage:
-        """`attachments` overrides the stored ones (planning before the notification is written);
+                    atts: list[AttachmentData] | None = None) -> OutboundMessage:
+        """`atts` overrides the stored attachments (planning before the notification is written);
         with_data loads the bytes and leaves out purged attachments."""
-        if attachments is None:
-            attachments = [AttachmentData(r["filename"], r["content_type"], r["size"],
-                                          r["data"] if with_data else None)
-                           for r in self.db.query("SELECT * FROM attachments WHERE notification_id=? ORDER BY idx",
-                                                  (n["id"],))
-                           if not (with_data and r["purged_at"])]
+        if atts is None:
+            cols = "filename, content_type, size, purged_at" + (", data" if with_data else "")
+            atts = [AttachmentData(r["filename"], r["content_type"], r["size"], r["data"] if with_data else None)
+                    for r in self.db.query(f"SELECT {cols} FROM attachments WHERE notification_id=? ORDER BY idx",
+                                           (n["id"],))
+                    if not (with_data and r["purged_at"])]
         return OutboundMessage(
             notification_id=n["id"], delivery_id=delivery_id, title=n["title"], message=n["message"],
             severity=Severity(n["severity"]), url=n["url"], url_title=n["url_title"],
             actions=loads(n["actions_json"], []), tags=loads(n["tags_json"], []),
             require_ack=bool(n["require_ack"]), created_at=parse_iso(n["created_at"]),  # type: ignore[arg-type]
             expires_at=parse_iso(n["expires_at"]), callback_url=self.callback_url(provider),
-            attachments=attachments,
+            attachments=atts,
         )
 
     # ---------------------------------------------------------------- events
@@ -234,7 +234,7 @@ class NotifyService:
             dev = self.config.devices[device_name]
             provider = self.providers[dev.provider]
             did = new_id("dlv")
-            plan = provider.plan(self.message_for(nrow, did, dev.provider, attachments=atts), dev.address)
+            plan = provider.plan(self.message_for(nrow, did, dev.provider, atts=atts), dev.address)
             gaps = list(plan.capability_gaps)
             problems = provider.config_problems() + provider.device_problems(dev.address)
             if problems:
@@ -285,8 +285,8 @@ class NotifyService:
                           attachment_meta=meta)
 
     def commit(self, client: Client, req: NotificationIn, plan: SubmitPlan,
-               attachments: list[PreparedAttachment | None]) -> tuple[dict[str, Any], bool]:
-        """The transactional half of a submit. `attachments` holds one entry per request attachment
+               prepared: list[PreparedAttachment | None]) -> tuple[dict[str, Any], bool]:
+        """The transactional half of a submit. `prepared` holds one entry per request attachment
         (None = not fetched); bytes are stored only when the plan has deliveries."""
         nrow, deliveries, route = plan.nrow, plan.deliveries, plan.route
         nid, source = nrow["id"], nrow["source"]
@@ -296,7 +296,7 @@ class NotifyService:
             routing["kinds"] = req.kinds
         rows = []
         for i, (it, m) in enumerate(zip(req.attachments, plan.attachment_meta)):
-            p = attachments[i] if i < len(attachments) else None
+            p = prepared[i] if i < len(prepared) else None
             if p is not None:
                 rows.append((nid, i, p.filename, p.content_type, p.size, p.sha256, p.source, p.source_host,
                              p.data if deliveries else None))
@@ -354,6 +354,9 @@ class NotifyService:
 
     def submit(self, client: Client, req: NotificationIn) -> tuple[dict[str, Any], bool]:
         """Synchronous submit for internal callers; URL attachments need `submit_async`."""
+        replay = self._replay(client, req)
+        if replay:
+            return replay
         if any(a.url is not None for a in req.attachments):
             raise Invalid("URL attachments need the asynchronous submit path")
         try:
@@ -367,6 +370,9 @@ class NotifyService:
                            inline_limit: int | None = None) -> tuple[dict[str, Any], bool]:
         """The intake path for REST, MCP and ingest adapters: fetches URL attachments only when
         the notification will actually be delivered somewhere."""
+        replay = self._replay(client, req)  # answered before any attachment check, so a replay never fails on them
+        if replay:
+            return replay
         try:
             meta = attachments.metadata(req.attachments)
             if inline_limit and sum(m["size"] for m in meta if m["source"] == "inline") > inline_limit:
@@ -385,12 +391,19 @@ class NotifyService:
                 if self._intake is None:
                     self._intake = asyncio.Semaphore(1)
                 async with self._intake:
-                    prepared = list(await attachments.prepare(
+                    fetched = await attachments.prepare(
                         req.attachments, self.config.server.attachment_url_hosts, self.fetch_transport,
-                        self.resolve))
+                        self.resolve)
+                prepared = list(fetched)
+                if res.expires_at is not None and res.expires_at <= utcnow():
+                    raise Invalid("notification expired while attachments were fetched")
                 res.attachment_meta = [{"filename": p.filename, "content_type": p.content_type, "size": p.size,
-                                        "source": p.source} for p in prepared if p]
-                res.deliveries = self._plan_deliveries(res.nrow, res.route, res.attachment_meta)
+                                        "source": p.source} for p in fetched]
+                try:
+                    res.deliveries = self._plan_deliveries(res.nrow, res.route, res.attachment_meta)
+                except KeyError as e:  # a device or provider was removed by a reconfigure meanwhile
+                    raise Invalid(f"the target configuration changed while attachments were fetched ({e});"
+                                  " submit again") from None
             elif req.attachments:
                 prepared = attachments.decode_inline(req.attachments)
         except attachments.AttachmentError as e:

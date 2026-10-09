@@ -207,3 +207,49 @@ def test_sync_submit_rejects_url_attachments(tmp_path):
     else:
         raise AssertionError("expected Invalid")
     db.close()
+
+
+def test_replay_answered_before_attachment_checks(server_factory, fake):
+    live = server_factory(attachment_url_hosts=["files.test"])
+    body = {"attachments": [{"url": "http://files.test/a.png"}], "idempotency_key": "k2"}
+    first = submit(live, **body)
+    assert first.status_code == 202, first.text
+    live.service.config.server.attachment_url_hosts = []
+    again = submit(live, **body)
+    assert again.status_code == 200, again.text
+    assert again.headers["Idempotent-Replay"] == "true" and again.json()["id"] == first.json()["id"]
+    assert fake.file_requests == ["/a.png"]
+
+
+def slow_prepare(monkeypatch, before=None):
+    import asyncio
+
+    from notify import attachments
+    real = attachments.prepare
+
+    async def prepare(*a, **kw):
+        if before:
+            before()
+        await asyncio.sleep(1.2)
+        return await real(*a, **kw)
+    monkeypatch.setattr(attachments, "prepare", prepare)
+
+
+def test_expiry_rechecked_after_fetch(server_factory, monkeypatch):
+    live = server_factory(attachment_url_hosts=["files.test"])
+    slow_prepare(monkeypatch)
+    r = submit(live, ttl_seconds=1, attachments=[{"url": "http://files.test/a.png"}])
+    assert r.status_code == 422 and "expired while attachments were fetched" in r.text
+    assert live.service.db.scalar("SELECT COUNT(*) FROM notifications") == 0
+
+
+def test_device_removed_during_fetch(server_factory, monkeypatch):
+    live = server_factory(attachment_url_hosts=["files.test"])
+
+    def drop_device():
+        cfg = live.service.config.model_copy(deep=True)
+        del cfg.devices["alex-phone"]
+        live.service.config = cfg
+    slow_prepare(monkeypatch, drop_device)
+    r = submit(live, attachments=[{"url": "http://files.test/a.png"}])
+    assert r.status_code == 422 and "configuration changed" in r.text
