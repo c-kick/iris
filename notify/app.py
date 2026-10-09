@@ -18,6 +18,7 @@ from . import __version__
 from .admin import router as admin_router
 from .api import router
 from .auth import Authenticator
+from .bodylimit import BodyLimit
 from .config import NotifyConfig
 from .core import NotifyService
 from .db import Database
@@ -131,6 +132,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
             response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
+    app.add_middleware(BodyLimit)  # added last = outermost: caps bodies before auth or routing
     return app
 
 
