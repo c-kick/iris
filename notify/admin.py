@@ -197,9 +197,12 @@ def _state(request: Request) -> dict[str, Any]:
         "pending_registrations": pending,
         "config": masked,
         "devices": {d["target"].split(":", 1)[1]: {"ready": d["ready"], "problems": d["problems"],
-                                                    "capabilities": d["capabilities"]} for d in targets["devices"]},
-        "providers": {name: {"type": p.type, **p.health()} for name, p in svc.providers.items()},
-        "provider_types": {t: {"label": cls.label or t, "settings": cls.settings_schema,
+                                                    "capabilities": d["capabilities"],
+                                                    "kind": cfg.device_kind(d["target"].split(":", 1)[1]),
+                                                    "opt_in": cfg.device_opt_in(d["target"].split(":", 1)[1])}
+                    for d in targets["devices"]},
+        "providers": {name: {"type": p.type, "kind": p.kind, **p.health()} for name, p in svc.providers.items()},
+        "provider_types": {t: {"label": cls.label or t, "kind": cls.kind, "settings": cls.settings_schema,
                                "address": cls.address_schema} for t, cls in REGISTRY.items()},
         "severities": [s.value for s in Severity],
         "scopes": [s.value for s in Scope],
@@ -246,17 +249,34 @@ async def put_provider(name: str, body: ProviderIn, request: Request, _: Client 
         new: dict[str, Any] = {"type": body.type}
         for key, spec in cls.settings_schema.items():
             v = body.settings.get(key)
-            if spec.get("kind") == "secret" and not v and old.get("type") == body.type:
+            kind = spec.get("kind")
+            if kind == "secret" and not v and old.get("type") == body.type:
                 v = old.get(key)  # blank secret field = keep the stored value
-            if spec.get("kind") == "int" and v not in (None, ""):
+            if kind == "int" and v not in (None, ""):
                 try:
                     v = int(v)
                 except (TypeError, ValueError):
                     raise ConfigError(f"{spec['label']}: enter a whole number") from None
+            elif kind == "check" and v is not None:
+                v = bool(v)
+            elif kind == "select" and v not in (None, ""):
+                choices = [o[0] for o in spec["options"]]
+                if v not in choices:
+                    raise ConfigError(f"{spec['label']}: choose one of {', '.join(choices)}")
+            elif kind == "text" and v is not None:
+                v = str(v).strip()
             if v not in (None, ""):
                 new[key] = v
         data["providers"][name] = new
     return _commit(request, mutate)
+
+
+@router.post("/api/providers/{name}/test")
+async def test_provider(name: str, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
+    provider = _svc(request).providers.get(name)
+    if provider is None:
+        raise HTTPException(404, f"provider {name} is not configured")
+    return await provider.test_connection()
 
 
 @router.delete("/api/providers/{name}")
@@ -298,6 +318,7 @@ class DeviceIn(BaseModel):
     description: str | None = None
     enabled: bool = True
     min_severity: Severity = Severity.min
+    opt_in: bool | None = None
     address: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -318,6 +339,8 @@ async def put_device(name: str, body: DeviceIn, request: Request, _: Client = De
         data["devices"][name] = {"provider": body.provider, "owner": owner, "description": body.description or None,
                                  "enabled": body.enabled, "min_severity": body.min_severity.value,
                                  "address": address, "capabilities": old.get("capabilities", {})}
+        if body.opt_in is not None:
+            data["devices"][name]["opt_in"] = body.opt_in
         for uname, u in data["users"].items():
             if uname != owner and name in u["devices"] and old.get("owner") == uname:
                 u["devices"].remove(name)  # moved to another owner
@@ -467,6 +490,8 @@ class ServerIn(BaseModel):
     external_url: str | None = None
     max_attempts: int | None = None
     retention_days: int | None = None
+    attachment_retention_days: int | None = None
+    attachment_url_hosts: list[str] | None = None
 
 
 @router.put("/api/server")
@@ -482,6 +507,10 @@ async def put_server(body: ServerIn, request: Request, _: Client = Depends(admin
             s["max_attempts"] = body.max_attempts
         if body.retention_days is not None:
             s["retention_days"] = body.retention_days
+        if body.attachment_retention_days is not None:
+            s["attachment_retention_days"] = body.attachment_retention_days
+        if body.attachment_url_hosts is not None:
+            s["attachment_url_hosts"] = [h.strip() for h in body.attachment_url_hosts if h.strip()]
     return _commit(request, mutate)
 
 

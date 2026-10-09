@@ -188,3 +188,50 @@ def test_reset_admin_and_page_headers(fresh):
     assert "script-src 'self'" in page.headers["content-security-policy"]
     assert "frame-ancestors 'none'" in page.headers["content-security-policy"]
     assert httpx.get(f"{srv.url}/admin/static/app.js").status_code == 200
+
+
+def _email_provider(b, **over):
+    settings = {"host": "smtp.example.org", "port": "2525", "security": "starttls", "password": "hunter2-secret-pw",
+                "from_address": "n@example.org", "verify_tls": False, **over}
+    return b.put("/admin/api/providers/mail", json={"type": "email", "settings": settings}, headers=H)
+
+
+def test_email_provider_settings(fresh):
+    b = setup_admin(fresh())
+    st = _email_provider(b).json()
+    mail = st["config"]["providers"]["mail"]
+    assert mail["password"]["set"] is True and "hunter2-secret-pw" not in b.get("/admin/api/state").text
+    assert mail["port"] == 2525 and mail["verify_tls"] is False
+    assert st["providers"]["mail"]["kind"] == "email" and st["provider_types"]["email"]["kind"] == "email"
+    st = _email_provider(b, password="").json()  # blank secret keeps the stored one
+    assert st["config"]["providers"]["mail"]["password"]["set"] is True
+    r = _email_provider(b, security="bogus")
+    assert r.status_code == 422 and "Encryption" in r.json()["detail"]
+
+
+def test_email_device_opt_in_and_server_attachment_settings(fresh):
+    b = setup_admin(fresh())
+    _email_provider(b)
+    body = {"provider": "mail", "address": {"to": "alex@example.org"}}
+    st = b.put("/admin/api/devices/alex-email", json={**body, "opt_in": False}, headers=H).json()
+    assert st["devices"]["alex-email"]["opt_in"] is False and st["devices"]["alex-email"]["kind"] == "email"
+    st = b.put("/admin/api/devices/alex-email", json=body, headers=H).json()
+    assert st["devices"]["alex-email"]["opt_in"] is True
+    st = b.put("/admin/api/server", json={"attachment_url_hosts": ["ha.lan:8123"], "attachment_retention_days": 3},
+               headers=H).json()
+    assert st["config"]["server"]["attachment_url_hosts"] == ["ha.lan:8123"]
+    assert st["config"]["server"]["attachment_retention_days"] == 3
+    assert b.put("/admin/api/server", json={"attachment_retention_days": 0}, headers=H).status_code == 422
+
+
+def test_provider_test_connection(fresh, monkeypatch):
+    from notify.providers.email import EmailProvider
+    monkeypatch.setattr(EmailProvider, "_test_sync", lambda self: {"supported": True, "ok": True, "tls": "starttls",
+                                                                  "size_limit": None})
+    b = setup_admin(fresh())
+    _email_provider(b)
+    b.put("/admin/api/providers/pushover", json={"type": "pushover", "settings": {"app_token": APP_TOKEN}}, headers=H)
+    r = b.post("/admin/api/providers/mail/test", headers=H)
+    assert r.status_code == 200 and r.json() == {"supported": True, "ok": True, "tls": "starttls", "size_limit": None}
+    assert b.post("/admin/api/providers/pushover/test", headers=H).json() == {"supported": False}
+    assert b.post("/admin/api/providers/nope/test", headers=H).status_code == 404
