@@ -248,3 +248,15 @@ def test_provider_setting_validation_and_test_endpoint_needs_admin(fresh):
     r = httpx.post(f"{srv.url}/admin/api/providers/mail/test", headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 403
     assert httpx.post(f"{srv.url}/admin/api/providers/mail/test").status_code == 401
+
+
+def test_test_send_passes_kinds(fresh):
+    b = setup_admin(fresh())
+    _email_provider(b)
+    b.put("/admin/api/devices/alex-email", json={"provider": "mail", "address": {"to": "alex@example.org"}}, headers=H)
+    b.put("/admin/api/users/alex", json={"devices": ["alex-email"]}, headers=H)
+    t = b.post("/admin/api/test", json={"targets": ["user:alex"], "kinds": ["email"]}, headers=H).json()
+    assert [d["device"] for d in t["deliveries"]] == ["alex-email"]
+    t = b.post("/admin/api/test", json={"targets": ["user:alex"]}, headers=H).json()
+    assert t["deliveries"] == []
+    assert b.post("/admin/api/test", json={"targets": ["user:alex"], "kinds": ["sms"]}, headers=H).status_code == 422

@@ -7,10 +7,11 @@ const toastEl = document.getElementById("toast");
 let state = null;
 const hashSection = location.hash.slice(1);
 let section = hashSection || sessionStorage.getItem("notify.section") || "overview";
+if (section === "delivery") section = "providers"; // renamed page; old bookmarks still work
 
 const SECTIONS = [
   ["overview", "Overview"],
-  ["delivery", "Pushover"],
+  ["providers", "Providers"],
   ["devices", "Devices"],
   ["people", "People & groups"],
   ["channels", "Channels"],
@@ -27,6 +28,12 @@ const SEVERITY_HELP = {
   high: "bypasses quiet hours",
   critical: "repeats until acknowledged",
 };
+
+// Provider types whose /test (connection) and /check (address) endpoints do something.
+const TESTABLE = new Set(["email"]);
+const CHECKABLE = new Set(["pushover"]);
+
+const KINDS = [["", "Default devices"], ["push", "Push"], ["email", "Email"], ["push,email", "Push and email"]];
 
 const SCOPE_HELP = {
   send: "send notifications",
@@ -77,6 +84,12 @@ function when(iso) {
 
 const logo = `<svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="var(--action)"/><circle cx="16" cy="16" r="5" fill="var(--surface)"/></svg>`;
 
+function fmtSize(bytes) {
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1048576) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+}
+
 function lampFor(status) {
   if (["acknowledged", "delivered", "dispatched"].includes(status)) return "ok";
   if (["pending", "partial"].includes(status)) return "warn";
@@ -90,7 +103,7 @@ function lampFor(status) {
  * fields: {name, label, kind: text|secret|int|select|checks|textarea|check|url, value, help, options:[[value,label]], placeholder}
  * onSubmit(values) -> Promise; throw to show an error.
  */
-function openForm({ title, intro = "", fields, submit, onSubmit, extra }) {
+function openForm({ title, intro = "", fields, submit, onSubmit, extra, focus }) {
   dialog.innerHTML = `
     <form class="stack" method="dialog" novalidate>
       <h2>${esc(title)}</h2>
@@ -120,8 +133,8 @@ function openForm({ title, intro = "", fields, submit, onSubmit, extra }) {
       btn.disabled = false;
     }
   };
-  dialog.showModal();
-  const first = form.querySelector("input:not([type=checkbox]):not([readonly]), select, textarea");
+  if (!dialog.open) dialog.showModal(); // re-rendered forms reuse the open dialog
+  const first = (focus && form.querySelector(focus)) || form.querySelector("input:not([type=checkbox]):not([readonly]), select, textarea");
   if (first) first.focus();
 }
 
@@ -281,7 +294,11 @@ async function mutate(method, path, body, done) {
 // ---------------------------------------------------------------- derived info
 
 const cfg = () => state.config;
-const pushoverName = () => Object.keys(cfg().providers).find((n) => cfg().providers[n].type === "pushover");
+const providerLabel = (n) => {
+  const p = cfg().providers[n];
+  const label = state.provider_types[p?.type]?.label || p?.type || n;
+  return n === p?.type ? label : `${n} (${label})`;
+};
 
 function targetOptions() {
   const c = cfg();
@@ -305,8 +322,7 @@ function describeTarget(t) {
 const VIEWS = {
   overview(main) {
     const c = cfg();
-    const pname = pushoverName();
-    const provider = pname ? state.providers[pname] : null;
+    const provs = Object.entries(c.providers);
     const devices = Object.entries(c.devices);
     const readyDevices = devices.filter(([n, d]) => d.enabled && state.devices[n]?.ready);
     const clients = Object.keys(c.clients);
@@ -314,10 +330,15 @@ const VIEWS = {
 
     const senderLamp = clients.length ? "ok" : "warn";
     const coreLamp = pending > 0 && state.stats.oldest_pending_age_seconds > 120 ? "warn" : "ok";
-    const provLamp = !provider ? "bad" : provider.configured ? "ok" : "bad";
+    const provLamp = provs.length && provs.every(([n]) => state.providers[n]?.configured) ? "ok" : "bad";
     const devLamp = readyDevices.length ? "ok" : devices.length ? "bad" : "warn";
     const wire = (l) => `--wire: var(--${l === "ok" ? "ok" : l === "bad" ? "bad" : l === "warn" ? "warn" : "idle"})`;
-    const quota = provider?.quota ? `${provider.quota.remaining.toLocaleString()} of ${provider.quota.limit.toLocaleString()} messages left this month` : "Quota appears after the first message";
+    const provNote = (n, p) => {
+      const h = state.providers[n];
+      if (!h?.configured) return h?.problems.join("; ") || "";
+      if (h.quota) return `${h.quota.remaining.toLocaleString()} of ${h.quota.limit.toLocaleString()} messages left this month`;
+      return p.type === "pushover" ? "Quota appears after the first message" : "Ready";
+    };
 
     main.innerHTML = `
       ${state.pending_registrations ? `<div class="rows" style="margin-bottom:1.5rem"><div class="row"><span class="lamp warn"></span>
@@ -332,9 +353,11 @@ const VIEWS = {
         <div class="hop" style="${wire(coreLamp)}"><div class="kind">Queue</div>
           <div class="name"><span class="lamp ${coreLamp}"></span><span class="label">hnl-notify</span></div>
           <div class="note">${pending ? `${pending} waiting` : "Nothing waiting"}</div></div>
-        <div class="hop" style="${wire(provLamp)}"><div class="kind">Provider</div>
-          <div class="name"><span class="lamp ${provLamp}"></span><span class="label">Pushover</span></div>
-          <div class="note">${!provider ? `<button class="btn quiet" style="padding:0" data-go="delivery">Connect Pushover</button>` : provider.configured ? esc(quota) : esc(provider.problems.join("; "))}</div></div>
+        <div class="hop" style="${wire(provLamp)}"><div class="kind">${provs.length > 1 ? "Providers" : "Provider"}</div>
+          <div class="hop-list">${provs.length ? provs.map(([n, p]) => `
+            <div class="name"><span class="lamp ${state.providers[n]?.configured ? "ok" : "bad"}"></span><span class="label">${esc(providerLabel(n))}</span></div>
+            <div class="note">${esc(provNote(n, p))}</div>`).join("")
+          : `<div class="name"><span class="lamp bad"></span><span class="label">None yet</span></div><div class="note"><button class="btn quiet" style="padding:0" data-go="providers">Add a provider</button></div>`}</div></div>
         <div class="hop"><div class="kind">Devices</div>
           <div class="hop-list">${devices.length ? devices.map(([n, d]) => {
             const ok = d.enabled && state.devices[n]?.ready;
@@ -350,9 +373,11 @@ const VIEWS = {
           ${fieldHtml({ name: "severity", label: "Urgency", kind: "select", value: "normal",
                         options: state.severities.map((s) => [s, `${s}: ${SEVERITY_HELP[s]}`]),
                         help: "Only critical reports delivery back, and it repeats until acknowledged." })}
+          ${fieldHtml({ name: "kinds", label: "Kinds", kind: "select", value: "", options: KINDS,
+                        help: "Email devices only receive when email is chosen." })}
           <div class="form-error" role="alert"></div>
           <div class="form-actions"><button class="btn primary" type="submit">Send test notification</button></div>
-        </form>` : `<div class="rows"><div class="empty">Connect Pushover and add a device, then send a test from here.</div></div>`}
+        </form>` : `<div class="rows"><div class="empty">Add a provider and a device, then send a test from here.</div></div>`}
       </div>
 
       <div class="block"><h3>Recent notifications</h3><div id="recent" class="rows"><div class="empty">Loading…</div></div></div>`;
@@ -364,49 +389,66 @@ const VIEWS = {
       const err = form.querySelector(".form-error");
       err.textContent = "";
       try {
-        const n = await api("POST", "/test", { targets: [form.elements.target.value], severity: form.elements.severity.value });
-        toast(n.status === "suppressed" ? "Not sent: the target's severity floor filtered it out" : "Test sent. Watch its status below.");
+        const kinds = form.elements.kinds.value;
+        const n = await api("POST", "/test", { targets: [form.elements.target.value], severity: form.elements.severity.value,
+                                               kinds: kinds ? kinds.split(",") : undefined });
+        const why = n.suppressed?.[0]?.reason;
+        toast(n.status === "suppressed" ? `Not sent: ${why || "the target's severity floor filtered it out"}` : "Test sent. Watch its status below.");
         loadRecent(main.querySelector("#recent"), 5);
       } catch (ex) { err.textContent = ex.message; }
     };
     loadRecent(main.querySelector("#recent"), 5);
   },
 
-  delivery(main) {
-    const pname = pushoverName() || "pushover";
-    const p = cfg().providers[pname];
-    const schema = state.provider_types.pushover.settings;
-    const health = state.providers[pname];
+  providers(main) {
+    const c = cfg();
+    const list = Object.entries(c.providers);
     main.innerHTML = `
-      <div class="section-head"><h2>Pushover</h2>
-        <p>Pushover delivers to the Pushover app on your phone. Normal messages are reported as sent once Pushover accepts them. Only critical messages report delivery and acknowledgement back.</p></div>
-      <div class="rows"><div class="row">
-        <span class="lamp ${!p ? "" : health?.configured ? "ok" : "bad"}"></span>
-        <div class="grow"><div class="title">${!p ? "Not connected" : health?.configured ? "Connected" : "Needs attention"}</div>
-          <div class="sub">${!p ? "Add your application token to start." : health?.configured ? `Application token ${esc(p.app_token?.hint || "")}` : esc(health?.problems.join("; "))}</div>
-          ${health?.quota ? `<div class="sub">${health.quota.remaining.toLocaleString()} of ${health.quota.limit.toLocaleString()} messages left this month</div>` : ""}</div>
-        <div class="actions"><button class="btn ${p ? "" : "primary"}" id="edit">${p ? "Edit" : "Connect Pushover"}</button></div>
-      </div></div>`;
-    main.querySelector("#edit").onclick = () => openForm({
-      title: p ? "Edit Pushover" : "Connect Pushover",
-      intro: `Create an application at <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">pushover.net/apps/build</a> (name it hnl-notify), then paste its API token.`,
-      fields: Object.entries(schema).map(([k, s]) => ({ name: k, label: s.label, kind: s.kind, help: s.help,
-        value: p?.[k] ?? s.default ?? "", stored: s.kind === "secret" && p?.[k]?.set ? p[k].hint : "" })),
-      submit: "Save",
-      onSubmit: (v) => mutate("PUT", `/providers/${pname}`, { type: "pushover", settings: v }, "Pushover saved"),
-    });
+      <div class="section-head"><h2>Providers</h2>
+        <p>A provider carries notifications to devices. Pushover delivers to the Pushover app on your phone: normal messages are reported as sent once Pushover accepts them, and only critical messages report delivery and acknowledgement back. Email goes out through your mail server.</p></div>
+      <div class="rows">${list.length ? list.map(([n, p]) => {
+        const t = state.provider_types[p.type] || {};
+        const h = state.providers[n];
+        return `<div class="row"><span class="lamp ${h?.configured ? "ok" : "bad"}"></span>
+          <div class="grow"><div class="title">${esc(n)}</div>
+            <div class="sub">${esc(t.label || p.type)}, delivers ${t.kind === "email" ? "email" : "push notifications"}${h?.configured ? "" : ", needs attention"}</div>
+            ${p.type === "pushover" && p.app_token?.set ? `<div class="sub">Application token ${esc(p.app_token.hint)}</div>` : ""}
+            ${h?.quota ? `<div class="sub">${h.quota.remaining.toLocaleString()} of ${h.quota.limit.toLocaleString()} messages left this month</div>` : ""}
+            ${h?.problems?.length ? `<div class="problem">${esc(h.problems.join("; "))}</div>` : ""}
+            <div class="sub" data-result></div></div>
+          <div class="actions">${TESTABLE.has(p.type) ? `<button class="btn" data-test="${esc(n)}">Test connection</button>` : ""}<button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
+      }).join("") : `<div class="empty">No providers yet. Connect Pushover to reach phones, or add your mail server to send email.</div>`}</div>
+      <p style="margin-top:1rem"><button class="btn primary" id="add">Add provider</button></p>`;
+    main.querySelector("#add").onclick = () => addProviderForm();
+    main.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => providerForm(b.dataset.edit)));
+    main.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => confirmAction(
+      "Remove provider?", `Remove <strong>${esc(b.dataset.del)}</strong>. Devices that use it must be removed first.`,
+      "Remove provider", () => mutate("DELETE", `/providers/${b.dataset.del}`, undefined, "Provider removed"))));
+    main.querySelectorAll("[data-test]").forEach((b) => (b.onclick = async () => {
+      const out = b.closest(".row").querySelector("[data-result]");
+      out.className = "sub";
+      out.textContent = "Connecting…";
+      b.disabled = true;
+      try {
+        const r = await api("POST", `/providers/${b.dataset.test}/test`);
+        if (!r.supported) { b.hidden = true; out.textContent = ""; return; }
+        if (!r.ok) throw new Error(r.error || "The connection failed");
+        const tls = { starttls: "with STARTTLS", tls: "with TLS" }[r.tls] || "without encryption";
+        out.textContent = `Connection works, ${tls}. ${r.size_limit ? `The server accepts messages up to ${fmtSize(r.size_limit)}.` : "The server announces no size limit."}`;
+      } catch (ex) { out.className = "problem"; out.textContent = ex.message; } finally { b.disabled = false; }
+    }));
   },
 
   devices(main) {
     const c = cfg();
     const devices = Object.entries(c.devices);
     main.innerHTML = `
-      <div class="section-head"><h2>Devices</h2><p>Each device is one place a notification can land, such as the Pushover app on a phone.</p></div>
+      <div class="section-head"><h2>Devices</h2><p>Each device is one place a notification can land, such as the Pushover app on a phone or an email address.</p></div>
       <div class="rows">${devices.length ? devices.map(([n, d]) => {
         const info = state.devices[n] || {};
         return `<div class="row"><span class="lamp ${d.enabled ? (info.ready ? "ok" : "bad") : ""}"></span>
           <div class="grow"><div class="title">${esc(d.description || n)}</div>
-            <div class="sub">device:${esc(n)} via ${esc(d.provider)}${d.owner ? `, belongs to ${esc(c.users[d.owner]?.display_name || d.owner)}` : ""}${d.enabled ? "" : ", turned off"}${d.min_severity !== "min" ? `, only ${esc(d.min_severity)} and above` : ""}</div>
+            <div class="sub">device:${esc(n)} via ${esc(d.provider)}${info.opt_in ? `, only when an app asks for ${esc(info.kind)}` : ""}${d.owner ? `, belongs to ${esc(c.users[d.owner]?.display_name || d.owner)}` : ""}${d.enabled ? "" : ", turned off"}${d.min_severity !== "min" ? `, only ${esc(d.min_severity)} and above` : ""}</div>
             ${info.problems?.length ? `<div class="problem">${esc(info.problems.join("; "))}</div>` : ""}</div>
           <div class="actions"><button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
       }).join("") : `<div class="empty">No devices yet.</div>`}</div>
@@ -546,6 +588,11 @@ const VIEWS = {
           ${fieldHtml({ name: "public_base_url", label: "Public address for instant acknowledgements (optional)", kind: "url", value: s.public_base_url || "",
                         placeholder: "https://notify.example.org",
                         help: "Only if Pushover can reach this service from the internet. Without it, acknowledgements of critical alerts are checked every 30 seconds." })}
+          ${fieldHtml({ name: "attachment_retention_days", label: "Keep attachments for (days)", kind: "int", value: s.attachment_retention_days,
+                        help: "Attached files are deleted after this; the notification history stays." })}
+          ${fieldHtml({ name: "attachment_url_hosts", label: "Hosts allowed for attachment URLs", kind: "textarea",
+                        value: (s.attachment_url_hosts || []).join("\n"),
+                        help: "One per line: a host, host:port or network, for example ha.lan:8123. Empty: apps can only attach files directly, not by URL." })}
           <div class="form-error" role="alert"></div>
           <div class="form-actions"><button class="btn primary" type="submit">Save settings</button></div>
         </form></div>`;
@@ -572,7 +619,9 @@ const VIEWS = {
       const err = form.querySelector(".form-error");
       err.textContent = "";
       const v = readForm(form, [{ name: "max_attempts", kind: "int" }, { name: "retention_days", kind: "int" },
-                                { name: "external_url", kind: "url" }, { name: "public_base_url", kind: "url" }]);
+                                { name: "external_url", kind: "url" }, { name: "public_base_url", kind: "url" },
+                                { name: "attachment_retention_days", kind: "int" }, { name: "attachment_url_hosts", kind: "textarea" }]);
+      v.attachment_url_hosts = v.attachment_url_hosts.split("\n").map((x) => x.trim()).filter(Boolean);
       try { await mutate("PUT", "/server", v, "Settings saved"); } catch (ex) { err.textContent = ex.message; }
     };
   },
@@ -585,30 +634,91 @@ function slugField(name, value, help) {
            help: value ? "Names can't be changed; remove and re-add instead." : help };
 }
 
-function deviceForm(name) {
+function addProviderForm() {
+  const c = cfg();
+  const types = Object.entries(state.provider_types);
+  const freeName = (t) => { if (!c.providers[t]) return t; let i = 2; while (c.providers[`${t}-${i}`]) i++; return `${t}-${i}`; };
+  const used = new Set(Object.values(c.providers).map((p) => p.type));
+  const first = (types.find(([t]) => !used.has(t)) || types[0])[0];
+  let auto = freeName(first);
+  openForm({
+    title: "Add provider",
+    fields: [
+      { name: "type", label: "Type", kind: "select", value: first, options: types.map(([t, x]) => [t, x.label]) },
+      { name: "name", label: "Name", kind: "text", value: auto, placeholder: "lowercase-name",
+        help: "Devices refer to the provider by this name. Names can't be changed later." },
+    ],
+    submit: "Next",
+    extra: (form) => {
+      form.elements.type.onchange = () => {
+        if (form.elements.name.value.trim() !== auto) return; // keep a name the user typed
+        auto = freeName(form.elements.type.value);
+        form.elements.name.value = auto;
+      };
+    },
+    onSubmit: async (v) => {
+      if (!v.name) throw new Error("Enter a name.");
+      if (c.providers[v.name]) throw new Error(`${v.name} already exists; edit it instead.`);
+      setTimeout(() => providerForm(v.name, v.type), 0);
+    },
+  });
+}
+
+function providerForm(name, newType) {
+  const p = cfg().providers[name];
+  const type = p?.type || newType;
+  const t = state.provider_types[type];
+  const pushover = type === "pushover";
+  openForm({
+    title: p ? `Edit ${name === type ? t.label : name}` : pushover ? "Connect Pushover" : `Add ${t.label}`,
+    intro: pushover ? `Create an application at <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">pushover.net/apps/build</a> (name it hnl-notify), then paste its API token.` : "",
+    fields: Object.entries(t.settings).map(([k, s]) => ({ name: k, label: s.label, kind: s.kind, help: s.help, options: s.options,
+      value: p?.[k] ?? s.default ?? (s.kind === "check" ? false : ""), stored: s.kind === "secret" && p?.[k]?.set ? p[k].hint : "" })),
+    submit: "Save",
+    onSubmit: (v) => mutate("PUT", `/providers/${name}`, { type, settings: v }, `${t.label} saved`),
+  });
+}
+
+/** draft: values carried over when the provider select re-renders the form (address fields are dropped). */
+function deviceForm(name, draft = null) {
   const c = cfg();
   const d = name ? c.devices[name] : null;
-  const pname = d?.provider || pushoverName();
-  if (!pname) { toast("Connect Pushover first"); section = "delivery"; render(); return; }
-  const schema = state.provider_types[c.providers[pname].type].address;
+  const pnames = Object.keys(c.providers);
+  if (!pnames.length) { toast("Add a provider first"); section = "providers"; render(); return; }
+  const pname = draft?.provider || (c.providers[d?.provider] ? d.provider : pnames[0]);
+  const ptype = c.providers[pname].type;
+  const t = state.provider_types[ptype];
+  const schema = t.address;
+  const same = d && d.provider === pname; // stored address applies
+  const pick = (k, dflt) => (draft && k in draft ? draft[k] : dflt);
+  // effective value for the stored provider, otherwise the default for the chosen provider's kind
+  const optIn = draft?.optInTouched ? draft.opt_in : same ? (state.devices[name]?.opt_in ?? d.opt_in ?? t.kind === "email") : t.kind === "email";
   const fields = [
-    slugField("Name", name, "Used by services as device:NAME, for example alex-phone."),
-    { name: "description", label: "Description", kind: "text", value: d?.description || "", placeholder: "Alex's phone" },
-    { name: "owner", label: "Belongs to", kind: "select", value: d?.owner || "",
+    { ...slugField("Name", name, "Used by services as device:NAME, for example alex-phone."), value: name || pick("name", "") },
+    { name: "description", label: "Description", kind: "text", value: pick("description", d?.description || ""), placeholder: "Alex's phone" },
+    { name: "owner", label: "Belongs to", kind: "select", value: pick("owner", d?.owner || ""),
       options: [["", "Nobody"], ...Object.entries(c.users).map(([n, u]) => [n, u.display_name || n])] },
+    { name: "provider", label: "Provider", kind: "select", value: pname, options: pnames.map((n) => [n, providerLabel(n)]) },
     ...Object.entries(schema).map(([k, s]) => ({
-      name: `addr_${k}`, label: s.label, kind: s.kind, help: s.help, value: d?.address?.[k] ?? "",
-      stored: s.kind === "secret" && d?.address?.[k]?.set ? d.address[k].hint : "",
-      list: k === "device", button: k === "device" ? { action: "check", label: "Find devices" } : null,
+      name: `addr_${k}`, label: s.label, kind: s.kind, help: s.help, options: s.options,
+      value: same ? d.address?.[k] ?? "" : "",
+      stored: s.kind === "secret" && same && d.address?.[k]?.set ? d.address[k].hint : "",
+      list: k === "device", button: k === "device" && CHECKABLE.has(ptype) ? { action: "check", label: "Check address" } : null,
     })),
-    { name: "min_severity", label: "Receive from urgency", kind: "select", value: d?.min_severity || "min",
+    { name: "min_severity", label: "Receive from urgency", kind: "select", value: pick("min_severity", d?.min_severity || "min"),
       options: state.severities.map((s) => [s, `${s}: ${SEVERITY_HELP[s]}`]) },
-    { name: "enabled", label: "Deliver to this device", kind: "check", value: d ? d.enabled : true },
+    { name: "enabled", label: "Deliver to this device", kind: "check", value: pick("enabled", d ? d.enabled : true) },
+    { name: "opt_in", label: "Only when an app asks for this kind explicitly", kind: "check", value: optIn,
+      help: "Email devices are opt-in by default so existing apps keep sending push only." },
   ];
   openForm({
     title: d ? `Edit ${d.description || name}` : "Add device",
     fields, submit: d ? "Save device" : "Add device",
+    focus: draft ? "select[name=provider]" : null,
     extra: (form) => {
+      let optInTouched = !!draft?.optInTouched;
+      form.elements.opt_in.onchange = () => (optInTouched = true);
+      form.elements.provider.onchange = () => deviceForm(name, { ...readForm(form, fields), optInTouched });
       const btn = form.querySelector('[data-action="check"]');
       if (!btn) return;
       btn.onclick = async () => {
@@ -619,11 +729,13 @@ function deviceForm(name) {
           const address = {};
           for (const k of Object.keys(schema)) if (k !== "device") address[k] = form.elements[`addr_${k}`].value.trim();
           const res = await api("POST", `/providers/${pname}/check`, { address, device: name || null });
+          if (!res.supported) { btn.hidden = true; toast("This provider can't check addresses"); return; }
           if (!res.valid) throw new Error(res.error || "Pushover did not accept this user key");
+          const devs = res.devices || [];
           const list = form.querySelector("#f-addr_device-list");
-          list.innerHTML = res.devices.map((x) => `<option value="${esc(x)}">`).join("");
-          toast(res.devices.length ? `User key is valid. Devices: ${res.devices.join(", ")}` : "User key is valid, but no devices are registered yet");
-          form.elements.addr_device.focus();
+          if (list) list.innerHTML = devs.map((x) => `<option value="${esc(x)}">`).join("");
+          toast(devs.length ? `User key is valid. Devices: ${devs.join(", ")}` : "User key is valid, but no devices are registered yet");
+          form.elements.addr_device?.focus();
         } catch (ex) { err.textContent = ex.message; } finally { btn.disabled = false; }
       };
     },
@@ -631,7 +743,7 @@ function deviceForm(name) {
       const address = {};
       for (const k of Object.keys(schema)) address[k] = v[`addr_${k}`];
       return mutate("PUT", `/devices/${v.name}`, { provider: pname, owner: v.owner || null, description: v.description,
-        enabled: v.enabled, min_severity: v.min_severity, address }, d ? "Device saved" : "Device added");
+        enabled: v.enabled, min_severity: v.min_severity, opt_in: v.opt_in, address }, d ? "Device saved" : "Device added");
     },
   });
 }
@@ -779,6 +891,8 @@ async function loadRecent(el, limit, attentionEl) {
         <div class="title">${esc(n.title || n.message.slice(0, 60))}</div>
         <div class="sub">${esc(when(n.created_at))} from ${esc(n.source)} to ${esc(n.targets.join(", "))}, ${esc(n.severity)}</div>
         <div class="sub"><span class="status">${esc(n.status)}</span>${n.suppressed.length ? `: ${esc(n.suppressed[0].reason)}` : ""}</div>
+        ${n.attachments?.length ? `<dl class="kv"><dt>Attachments</dt><dd>${n.attachments.map((a) =>
+          `${esc(a.filename)} (${esc(a.content_type)}, ${esc(fmtSize(a.size))})${a.purged ? ` <span class="chip">purged</span>` : ""}`).join("<br>")}</dd></dl>` : ""}
         ${n.deliveries.map((d) => `
           <details class="delivery"><summary>${esc(cfg().devices[d.device]?.description || d.device)}: ${esc(d.state)}${d.final ? "" : " (may still change)"}</summary>
             <dl class="kv">

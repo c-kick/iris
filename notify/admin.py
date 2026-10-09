@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import secrets
 import time
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -573,12 +573,13 @@ class TestIn(BaseModel):
     severity: Severity = Severity.normal
     title: str | None = "Test from hnl-notify"
     message: str = Field(default="If you can read this, delivery works.", min_length=1)
+    kinds: list[Literal["push", "email"]] | None = None
 
 
 @router.post("/api/test")
 async def send_test(body: TestIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
     req = NotificationIn(targets=body.targets, severity=body.severity, title=body.title, message=body.message,
-                         source="admin-ui", tags=["test"])
+                         kinds=body.kinds, source="admin-ui", tags=["test"])
     try:
         out, _ = await _svc(request).submit_async(client, req)
     except Invalid as e:
