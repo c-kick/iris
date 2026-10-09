@@ -363,6 +363,8 @@ class EmailProvider(Provider):
                    "attachments": sum(1 for a in msg.attachments if a.data is not None),
                    "attachment_bytes": sum(len(a.data) for a in msg.attachments if a.data is not None),
                    "encoded_bytes": len(raw)}
+        for a in msg.attachments:
+            a.data = None  # the encoded message holds them now; a retry reloads from the database
         res = self._send_sync(raw, self.from_address, to)
         res.request_summary = summary
         if res.outcome == "success":

@@ -1,6 +1,8 @@
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+# glibc: keep multi-MiB attachment buffers out of the heap so freed memory returns to the OS
+ENV MALLOC_MMAP_THRESHOLD_=262144 \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     MALLOC_ARENA_MAX=2 \
     NOTIFY_CONFIG=/config/notify.yaml \

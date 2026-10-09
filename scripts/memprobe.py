@@ -1,11 +1,12 @@
 """Peak-memory probe for large attachments (run from the repo root, ideally under a cgroup cap):
 
-    PYTHONPATH=. systemd-run --user --scope -q -p MemoryMax=320M -p MemorySwapMax=0 -- .venv/bin/python scripts/memprobe.py
+    PYTHONPATH=. MALLOC_MMAP_THRESHOLD_=262144 MALLOC_ARENA_MAX=2 \
+        systemd-run --user --scope -q -p MemoryMax=320M -p MemorySwapMax=0 -- .venv/bin/python scripts/memprobe.py
 
 Starts the app in-process with a fake Pushover transport and an aiosmtpd sink, sends a notification with
 10 MiB of inline attachments to a group of one email and two Pushover devices (once, then three at once)
-and prints peak RSS (ru_maxrss) before and after each step. The probe's own client and the SMTP sink share
-the process, so the figure is an upper bound for the service alone.
+and prints peak RSS (ru_maxrss) before and after each step. The probe's own client shares the process
+(the SMTP sink runs in its own process and reports its own peak), so the figure is an upper bound.
 """
 
 from __future__ import annotations
@@ -15,7 +16,9 @@ import base64
 import json
 import os
 import resource
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -36,11 +39,18 @@ def rss_mib() -> float:
 
 
 class Sink:
-    received = 0
-
     async def handle_DATA(self, server, session, envelope):  # noqa: N802
-        Sink.received += 1
         return "250 OK"
+
+
+def run_sink(port: int) -> None:
+    """SMTP server in its own process: runs until stdin closes, then reports its peak RSS."""
+    ctl = Controller(Sink(), hostname="127.0.0.1", port=port)
+    ctl.start()
+    print("ready", flush=True)
+    sys.stdin.read()
+    ctl.stop()
+    print(f"sink process peak RSS: {resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f} MiB", flush=True)
 
 
 def pushover(request: httpx.Request) -> httpx.Response:
@@ -75,8 +85,10 @@ async def main() -> None:
     with socket.socket() as sk:
         sk.bind(("127.0.0.1", 0))
         port = sk.getsockname()[1]
-    ctl = Controller(Sink(), hostname="127.0.0.1", port=port)
-    ctl.start()
+    scope = ["systemd-run", "--user", "--scope", "-q", "--"] if shutil.which("systemd-run") else []  # own cgroup
+    sink = subprocess.Popen([*scope, sys.executable, "-u", __file__, "--sink", str(port)], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, text=True)
+    assert sink.stdout.readline().strip() == "ready"
     addr = {"user_key": "u" * 30}
     cfg = NotifyConfig.model_validate({
         "providers": {"pushover": {"type": "pushover", "app_token": "a" * 30, "api_base": "https://pushover.test/1"},
@@ -97,23 +109,26 @@ async def main() -> None:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t", timeout=120,
                                      headers={"Authorization": f"Bearer {TOKEN}"}) as c:
             for label, n in (("one request", 1), ("three concurrent requests", 3)):
-                before = Sink.received
                 rs = await asyncio.gather(*[c.post("/v1/notifications", content=payload,
                                                    headers={"Content-Type": "application/json"}) for _ in range(n)])
                 assert all(r.status_code == 202 for r in rs), [r.text[:200] for r in rs]
                 end = time.monotonic() + 120
                 while time.monotonic() < end:
                     done = svc.db.scalar("SELECT COUNT(*) FROM deliveries WHERE state='dispatched'")
-                    if done >= 3 * (n + (0 if label == "one request" else 1)) and Sink.received >= before + n:
+                    if done >= 3 * (n + (0 if label == "one request" else 1)):
                         break
                     await asyncio.sleep(0.2)
                 else:
                     print("TIMEOUT waiting for dispatch", file=sys.stderr)
                 states = svc.db.query("SELECT state, COUNT(*) n FROM deliveries GROUP BY state")
-                print(f"{label}: peak RSS {rss_mib():.0f} MiB; deliveries { {r['state']: r['n'] for r in states} };"
-                      f" emails received {Sink.received}")
-    ctl.stop()
+                print(f"{label}: peak RSS {rss_mib():.0f} MiB; deliveries { {r['state']: r['n'] for r in states} }")
+    sink.stdin.close()
+    print(sink.stdout.read().strip())
+    sink.wait(30)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if sys.argv[1:2] == ["--sink"]:
+        run_sink(int(sys.argv[2]))
+    else:
+        asyncio.run(main())

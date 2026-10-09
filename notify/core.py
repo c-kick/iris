@@ -417,6 +417,8 @@ class NotifyService:
                 prepared = attachments.decode_inline(req.attachments)
         except attachments.AttachmentError as e:
             raise Invalid(str(e)) from e
+        for it in req.attachments:
+            it.data_base64 = None  # decoded (or fetched) already; don't hold ~1.4x the bytes through the commit
         return self.commit(client, req, res, prepared)
 
     # ------------------------------------------------------------ dispatcher
