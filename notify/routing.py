@@ -42,14 +42,20 @@ class Router:
             raise RoutingError(f"ambiguous target {target!r}: matches {', '.join(m + ':' + target for m in matches)}")
         return matches[0], target
 
-    def resolve(self, targets: list[str], severity: Severity) -> RoutePlan:
+    def resolve(self, targets: list[str], severity: Severity, kinds: list[str] | None = None) -> RoutePlan:
         plan = RoutePlan()
         for t in targets:
             kind, name = self.normalize(t)
-            self._expand(kind, name, severity, f"{kind}:{name}", plan, set())
+            top = f"{kind}:{name}"
+            found: set[str] = set()  # kinds of devices reached (before severity/enabled filtering)
+            self._expand(kind, name, severity, top, plan, set(), kinds, kind == "device", found)
+            for k in kinds or ():
+                if k not in found:
+                    plan.suppressed.append({"target": top, "via": top, "reason": f"no {k} device"})
         return plan
 
-    def _expand(self, kind: str, name: str, severity: Severity, via: str, plan: RoutePlan, seen: set[str]) -> None:
+    def _expand(self, kind: str, name: str, severity: Severity, via: str, plan: RoutePlan, seen: set[str],
+                kinds: list[str] | None, top_level: bool, found: set[str]) -> None:
         key = f"{kind}:{name}"
         if key in seen:
             return
@@ -57,6 +63,15 @@ class Router:
         cfg = self.config
         if kind == "device":
             dev = cfg.devices[name]
+            dk = cfg.device_kind(name)
+            if kinds is None or dk in kinds:
+                found.add(dk)
+            if kinds is not None and dk not in kinds:
+                if top_level:
+                    plan.suppressed.append({"target": key, "via": via, "reason": f"device kind {dk} not requested"})
+                return
+            if kinds is None and cfg.device_opt_in(name) and not top_level:
+                return
             if not dev.enabled:
                 plan.suppressed.append({"target": key, "via": via, "reason": "device disabled"})
                 return
@@ -72,11 +87,11 @@ class Router:
             if not devices:
                 plan.suppressed.append({"target": key, "via": via, "reason": "user has no devices"})
             for d in devices:
-                self._expand("device", d, severity, via, plan, seen)
+                self._expand("device", d, severity, via, plan, seen, kinds, False, found)
         elif kind == "group":
             for m in cfg.groups[name].members:
                 k, n = m.split(":", 1)
-                self._expand(k, n, severity, via, plan, seen)
+                self._expand(k, n, severity, via, plan, seen, kinds, False, found)
         elif kind == "channel":
             ch = cfg.channels[name]
             if severity.rank < ch.min_severity.rank:
@@ -85,4 +100,4 @@ class Router:
                 return
             for m in ch.targets:
                 k, n = m.split(":", 1)
-                self._expand(k, n, severity, via, plan, seen)
+                self._expand(k, n, severity, via, plan, seen, kinds, False, found)

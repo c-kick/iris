@@ -206,7 +206,7 @@ class NotifyService:
         if expires_at is not None and expires_at <= now:
             raise Invalid("notification is already expired (expires_at/ttl_seconds in the past)")
         try:
-            route = self.router.resolve(req.targets, req.severity)
+            route = self.router.resolve(req.targets, req.severity, req.kinds)
         except RoutingError as e:
             raise Invalid(str(e)) from e
 
@@ -242,6 +242,8 @@ class NotifyService:
 
         status = derive_notification_status([QUEUED] * len(deliveries))
         routing = {"suppressed": route.suppressed, "via": {d["device"]: d["via"] for d in deliveries}}
+        if req.kinds is not None:
+            routing["kinds"] = req.kinds
         webhook_secret = None
         try:
             with self.db.tx() as c:
@@ -635,7 +637,8 @@ class NotifyService:
             caps = {**p.capabilities(), **d.capabilities}
             problems = p.config_problems() + p.device_problems(d.address)
             return {"target": f"device:{name}", "description": d.description, "owner": d.owner,
-                    "provider": d.provider, "enabled": d.enabled, "min_severity": d.min_severity.value,
+                    "provider": d.provider, "kind": cfg.device_kind(name), "opt_in": cfg.device_opt_in(name),
+                    "enabled": d.enabled, "min_severity": d.min_severity.value,
                     "ready": not problems, "problems": problems, "capabilities": caps}
 
         return {
@@ -650,7 +653,7 @@ class NotifyService:
         }
 
     def providers_info(self) -> list[dict[str, Any]]:
-        return [{"name": name, "type": p.type, **p.health(), "capabilities": p.capabilities()}
+        return [{"name": name, "type": p.type, "kind": p.kind, **p.health(), "capabilities": p.capabilities()}
                 for name, p in self.providers.items()]
 
     # ---------------------------------------------------------------- events

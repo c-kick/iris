@@ -91,18 +91,21 @@ def build_mcp(get_service: Any) -> FastMCP:
         data: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
         source: str | None = None,
+        kinds: list[Literal["push", "email"]] | None = None,
     ) -> dict[str, Any]:
         """Send a notification to logical targets (e.g. ["user:alex"]).
 
         severity: min (silent) | low (quiet) | normal | high (bypasses quiet hours) |
         critical (emergency: repeats until acknowledged — real emergencies only).
+        kinds: which delivery kinds to use; omitted = the default devices (push). email devices only
+        receive when 'email' is listed.
         ttl_seconds: drop/expire if not dispatched in time. Returns the notification with
         per-device deliveries, observable_states and capability_gaps."""
         client = _client(ctx)
         _need(client, Scope.send)
         req = NotificationIn(targets=targets, message=message, title=title, severity=severity, url=url,
                              url_title=url_title, tags=tags or [], ttl_seconds=ttl_seconds, require_ack=require_ack,
-                             data=data, idempotency_key=idempotency_key, source=source or f"mcp:{client.id}")
+                             data=data, idempotency_key=idempotency_key, source=source or f"mcp:{client.id}", kinds=kinds)
         out, created = await call(svc().submit, client, req)
         res = _compact(out)
         res["created"] = created
@@ -115,13 +118,17 @@ def build_mcp(get_service: Any) -> FastMCP:
         severity: Literal["min", "low", "normal", "high", "critical"] = "normal",
         require_ack: bool = False,
         ttl_seconds: int | None = None,
+        kinds: list[Literal["push", "email"]] | None = None,
     ) -> dict[str, Any]:
         """Dry run: which devices a notification would reach, what each can observably report,
-        and which requested features would be unsupported. Sends nothing."""
+        and which requested features would be unsupported. Sends nothing.
+
+        kinds: which delivery kinds to use; omitted = the default devices (push). email devices only
+        receive when 'email' is listed."""
         client = _client(ctx)
         _need(client, Scope.send)
         req = NotificationIn(targets=targets, message="(preview)", severity=severity, require_ack=require_ack,
-                             ttl_seconds=ttl_seconds, dry_run=True)
+                             ttl_seconds=ttl_seconds, dry_run=True, kinds=kinds)
         out, _ = await call(svc().submit, client, req)
         return out
 

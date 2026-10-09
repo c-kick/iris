@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .models import Scope, Severity
+from .models import KIND_OPT_IN_DEFAULT, Scope, Severity
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
@@ -96,6 +96,7 @@ class DeviceConfig(_Strict):
     owner: str | None = None
     description: str | None = None
     enabled: bool = True
+    opt_in: bool | None = Field(default=None, description="True = only reached when its kind is requested (or targeted directly); default per kind")
     min_severity: Severity = Severity.min
     address: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, Any] = Field(default_factory=dict, description="Narrow/override provider capabilities for this device")
@@ -186,6 +187,15 @@ class NotifyConfig(_Strict):
             raise ValueError(f"{where}: member {ref!r} must be user:NAME, device:NAME or group:NAME")
         if name not in getattr(self, kind + "s"):
             raise ValueError(f"{where}: unknown {kind} {name!r}")
+
+    def device_kind(self, name: str) -> str:
+        from .providers import REGISTRY
+        cls = REGISTRY.get(self.providers[self.devices[name].provider].type)
+        return cls.kind if cls else ""
+
+    def device_opt_in(self, name: str) -> bool:
+        opt_in = self.devices[name].opt_in
+        return opt_in if opt_in is not None else KIND_OPT_IN_DEFAULT.get(self.device_kind(name), False)
 
     def devices_of_user(self, user: str) -> list[str]:
         """Devices listed on the user plus devices declaring the user as owner."""

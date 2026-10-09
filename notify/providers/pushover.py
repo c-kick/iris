@@ -50,6 +50,7 @@ def _ts(v: Any) -> datetime | None:
 
 class PushoverProvider(Provider):
     type = "pushover"
+    kind = "push"
     label = "Pushover"
     max_concurrency = 2  # Pushover: no more than 2 concurrent connections
     secret_settings = frozenset({"app_token"})

@@ -203,6 +203,7 @@ async def delete_subscription(sid: str, request: Request, client: Client = Depen
 @_errors
 async def ingest_arr(request: Request, response: Response,
                      targets: list[str] = Query(description="Targets, repeated or comma-separated"),
+                     kinds: str | None = Query(default=None, description="Comma-separated delivery kinds: push, email"),
                      client: Client = Depends(require(Scope.send))) -> dict[str, Any]:
     """Radarr / Sonarr / Lidarr / Prowlarr "Webhook" connection. The token may be sent as the Basic-auth password."""
     try:
@@ -214,6 +215,9 @@ async def ingest_arr(request: Request, response: Response,
     wanted = [t.strip() for raw in targets for t in raw.split(",") if t.strip()]
     try:
         body = arr.translate(payload, wanted)
+        if kinds is not None:
+            body = NotificationIn.model_validate(
+                {**body.model_dump(), "kinds": [k.strip() for k in kinds.split(",") if k.strip()]})
     except ValueError as e:  # includes pydantic ValidationError (e.g. no targets)
         raise HTTPException(422, str(e)) from e
     out, created = service(request).submit(client, body)

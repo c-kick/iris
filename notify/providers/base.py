@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 import httpx
 
@@ -84,6 +84,7 @@ class ProviderError(Exception):
 
 class Provider(ABC):
     type: str = ""
+    kind: ClassVar[str] = ""
     label: str = ""
     max_concurrency: int = 2
     receipt_poll_seconds: float = 30

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -22,6 +22,10 @@ class Severity(str, Enum):
 
 
 SEVERITY_ORDER = [Severity.min, Severity.low, Severity.normal, Severity.high, Severity.critical]
+
+
+KINDS = ("push", "email")
+KIND_OPT_IN_DEFAULT = {"push": False, "email": True}
 
 
 class Scope(str, Enum):
@@ -168,6 +172,18 @@ class NotificationIn(BaseModel):
     idempotency_key: str | None = Field(default=None, max_length=200)
     webhook: WebhookIn | None = None
     dry_run: bool = False
+    kinds: list[Literal["push", "email"]] | None = Field(
+        default=None, description="Delivery kinds to use; omitted = default devices (push). email devices only receive when 'email' is listed")
+
+    @field_validator("kinds")
+    @classmethod
+    def _kinds(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        v = list(dict.fromkeys(v))
+        if not v:
+            raise ValueError("kinds must name at least one of push, email")
+        return v
 
     @field_validator("targets", mode="before")
     @classmethod
