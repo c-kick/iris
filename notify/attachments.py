@@ -105,8 +105,25 @@ def _ip(s: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
     return a
 
 
+def _in_deny(a: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return any(a.version == n.version and a in n for n in _DENY)
+
+
 def _denied(a: ipaddress.IPv4Address | ipaddress.IPv6Address | None) -> bool:
-    return a is None or any(a.version == n.version and a in n for n in _DENY)
+    """Also checks the IPv4 address embedded in IPv4-compatible, 6to4 and NAT64 forms."""
+    if a is None or _in_deny(a):
+        return True
+    if isinstance(a, ipaddress.IPv6Address):
+        n = int(a)
+        emb = []
+        if n >> 32 == 0:
+            emb.append(n & 0xFFFFFFFF)
+        if a.sixtofour:
+            emb.append(int(a.sixtofour))
+        if n >> 32 == int(ipaddress.IPv6Address("64:ff9b::")) >> 32:
+            emb.append(n & 0xFFFFFFFF)
+        return any(_in_deny(ipaddress.IPv4Address(e)) for e in emb)
+    return False
 
 
 def _host_port(url: str) -> tuple[str, int]:
@@ -129,8 +146,8 @@ def _allowed(host: str, port: int, allow: list[str]) -> bool:
         try:
             net = ipaddress.ip_network(e, strict=False)
         except ValueError:
-            h, _, p = e.partition(":")
-            if lit is None and h == host and (not p or int(p) == port):
+            m = re.fullmatch(r"([a-z0-9.-]+)(?::(\d{1,5}))?", e)
+            if m and lit is None and m.group(1) == host and (m.group(2) is None or int(m.group(2)) == port):
                 return True
             continue
         if lit is not None and lit.version == net.version and lit in net:
@@ -166,7 +183,7 @@ async def _fetch(i: int, it: AttachmentIn, allow: list[str], http: httpx.AsyncCl
         if not ips or any(_denied(_ip(x)) for x in ips):
             raise AttachmentError(f"attachment {i}: address not allowed")
         try:
-            async with http.stream("GET", url) as r:
+            async with http.stream("GET", url, headers={"Accept-Encoding": "identity"}, follow_redirects=False) as r:
                 if _peer_denied(r):
                     raise AttachmentError(f"attachment {i}: address not allowed")
                 if 300 <= r.status_code < 400 and r.headers.get("location"):
@@ -191,13 +208,15 @@ async def _fetch(i: int, it: AttachmentIn, allow: list[str], http: httpx.AsyncCl
     raise AttachmentError(f"attachment {i}: too many redirects")  # unreachable
 
 
-async def prepare(items: list[AttachmentIn], allow: list[str], http: httpx.AsyncClient,
+async def prepare(items: list[AttachmentIn], allow: list[str], transport: httpx.AsyncBaseTransport | None = None,
                   resolve: Callable[[str], Awaitable[list[str]]] = default_resolve) -> list[PreparedAttachment]:
     decoded = decode_inline(items)
     used = sum(p.size for p in decoded if p)
     out: list[PreparedAttachment] = []
     try:
-        async with asyncio.timeout(FETCH_BUDGET_SECONDS):
+        async with asyncio.timeout(FETCH_BUDGET_SECONDS), httpx.AsyncClient(
+                transport=transport, trust_env=False, follow_redirects=False,
+                timeout=httpx.Timeout(FETCH_BUDGET_SECONDS)) as http:
             for i, (it, p) in enumerate(zip(items, decoded)):
                 if p is None:
                     p = await _fetch(i, it, allow, http, resolve, used)

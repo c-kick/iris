@@ -22,19 +22,13 @@ def inline(data: bytes = b"hi", name: str = "a.txt", **kw) -> AttachmentIn:
     return AttachmentIn(filename=name, data_base64=b64(data), **kw)
 
 
-def client(handler) -> httpx.AsyncClient:
-    return httpx.AsyncClient(transport=httpx.MockTransport(handler), trust_env=False, follow_redirects=False)
-
-
 async def lan(host: str) -> list[str]:
     return ["192.168.1.10"]
 
 
 def run(items, allow, handler=None, resolve=lan):
-    async def go():
-        async with client(handler or (lambda r: httpx.Response(200, content=b"x"))) as c:
-            return await prepare(items, allow, c, resolve)
-    return asyncio.run(go())
+    t = httpx.MockTransport(handler or (lambda r: httpx.Response(200, content=b"x")))
+    return asyncio.run(prepare(items, allow, t, resolve))
 
 
 def fail(items, allow, handler=None, resolve=lan) -> str:
@@ -147,7 +141,7 @@ def test_disabled_by_default():
 
 # ------------------------------------------------------------------ deny ranges
 
-@pytest.mark.parametrize("ip", ["127.0.0.1", "::ffff:127.0.0.1", "169.254.169.254", "::1", "0.0.0.0", "::", "fe80::1", "0.1.2.3"])
+@pytest.mark.parametrize("ip", ["127.0.0.1", "::ffff:127.0.0.1", "::7f00:1", "2002:7f00:1::", "64:ff9b::7f00:1", "::a9fe:a9fe", "169.254.169.254", "::1", "0.0.0.0", "::", "fe80::1", "0.1.2.3"])
 def test_denied_addresses(ip):
     async def res(h):
         return [ip]
@@ -310,3 +304,44 @@ def test_config_retention_bounds():
     for d in (0, 91):
         with pytest.raises(ValidationError):
             ServerConfig(attachment_retention_days=d)
+
+
+def test_environment_proxies_are_ignored(monkeypatch):
+    for k in ("HTTP_PROXY", "ALL_PROXY", "http_proxy", "all_proxy"):
+        monkeypatch.setenv(k, "http://192.168.1.99:3128")
+    seen = []
+
+    def h(r):
+        seen.append((r.url.host, r.url.path))
+        return httpx.Response(200, content=b"x")
+    run([url("http://ha.lan/x")], ["ha.lan"], h)
+    assert seen == [("ha.lan", "/x")]
+
+
+def test_real_client_is_built_without_env_or_redirects(monkeypatch):
+    made = {}
+    real = httpx.AsyncClient
+
+    def spy(**kw):
+        made.update(kw)
+        return real(**kw)
+    monkeypatch.setattr(attachments.httpx, "AsyncClient", spy)
+    run([url("http://ha.lan/x")], ["ha.lan"])
+    assert made["trust_env"] is False and made["follow_redirects"] is False
+
+
+def test_identity_encoding_requested():
+    seen = []
+
+    def h(r):
+        seen.append(r.headers.get("accept-encoding"))
+        return httpx.Response(200, content=b"x")
+    run([url("http://ha.lan/x")], ["ha.lan"], h)
+    assert seen == ["identity"]
+
+
+def test_malformed_allowlist_entries_fail_closed():
+    for bad in ("h:x", "ha.lan:", ":80", "ha.lan:1:2"):
+        with pytest.raises(AttachmentError, match="not in the allowed list"):
+            check_url_allowed("http://ha.lan/x", [bad])
+    check_url_allowed("http://ha.lan/x", ["h:x", "ha.lan"])
