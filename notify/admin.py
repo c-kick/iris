@@ -257,8 +257,8 @@ async def put_provider(name: str, body: ProviderIn, request: Request, _: Client 
                     v = int(v)
                 except (TypeError, ValueError):
                     raise ConfigError(f"{spec['label']}: enter a whole number") from None
-            elif kind == "check" and v is not None:
-                v = bool(v)
+            elif kind == "check" and v is not None and not isinstance(v, bool):
+                raise ConfigError(f"{spec['label']}: must be true or false")
             elif kind == "select" and v not in (None, ""):
                 choices = [o[0] for o in spec["options"]]
                 if v not in choices:
@@ -318,7 +318,7 @@ class DeviceIn(BaseModel):
     description: str | None = None
     enabled: bool = True
     min_severity: Severity = Severity.min
-    opt_in: bool | None = None
+    opt_in: bool | None = None  # full replace: omitted = kind default
     address: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -235,3 +235,16 @@ def test_provider_test_connection(fresh, monkeypatch):
     assert r.status_code == 200 and r.json() == {"supported": True, "ok": True, "tls": "starttls", "size_limit": None}
     assert b.post("/admin/api/providers/pushover/test", headers=H).json() == {"supported": False}
     assert b.post("/admin/api/providers/nope/test", headers=H).status_code == 404
+
+
+def test_provider_setting_validation_and_test_endpoint_needs_admin(fresh):
+    srv = fresh()
+    b = setup_admin(srv)
+    r = _email_provider(b, verify_tls="false")
+    assert r.status_code == 422 and "must be true or false" in r.json()["detail"]
+    assert _email_provider(b, port="abc").status_code == 422
+    _email_provider(b)
+    tok = b.post("/admin/api/clients/sender", json={"scopes": ["send"]}, headers=H).json()["token"]
+    r = httpx.post(f"{srv.url}/admin/api/providers/mail/test", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 403
+    assert httpx.post(f"{srv.url}/admin/api/providers/mail/test").status_code == 401
