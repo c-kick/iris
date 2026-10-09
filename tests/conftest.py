@@ -19,6 +19,7 @@ from notify.config import NotifyConfig
 
 APP_TOKEN = "a" * 30
 USER_KEY = "u" * 30
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 56
 TOKENS = {"sender": "tok-sender", "reader": "tok-reader", "agent": "tok-agent", "admin": "tok-admin",
           "other": "tok-other"}
 
@@ -32,6 +33,7 @@ class FakePushover:
     cancelled: list[str] = field(default_factory=list)
     webhooks: list[httpx.Request] = field(default_factory=list)
     webhook_status: int = 200
+    file_requests: list[str] = field(default_factory=list)  # paths fetched from files.test
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -40,6 +42,14 @@ class FakePushover:
                 self.webhooks.append(request)
                 return httpx.Response(self.webhook_status)
             path = request.url.path
+            if request.url.host == "files.test":
+                self.file_requests.append(path)
+                if path == "/missing":
+                    return httpx.Response(404, content=b"not here")
+                if path == "/big":
+                    return httpx.Response(200, content=b"x" * (10 * 1024 * 1024 + 1),
+                                          headers={"content-type": "application/octet-stream"})
+                return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
             if path.endswith("/users/validate.json"):
                 form = dict(parse_qsl(request.content.decode()))
                 if form.get("user") == USER_KEY and form.get("token") == APP_TOKEN:
@@ -70,6 +80,10 @@ class FakePushover:
                     return httpx.Response(404, json={"status": 0, "errors": ["receipt not found"]})
                 return httpx.Response(200, json=self.receipts[receipt])
             return httpx.Response(404, json={"status": 0, "errors": ["unknown endpoint"]})
+
+
+async def fake_resolve(host: str) -> list[str]:
+    return ["192.168.1.10"]
 
 
 def make_config(**server: Any) -> NotifyConfig:
@@ -159,6 +173,7 @@ def server_factory(tmp_path, fake):
                          key_path=str(tmp_path / "master.key"), transport=httpx.MockTransport(fake.handler))
         srv = LiveServer(app, fake)
         srv.start()
+        srv.service.resolve = fake_resolve  # files.test does not resolve
         servers.append(srv)
         return srv
 

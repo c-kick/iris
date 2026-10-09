@@ -12,17 +12,20 @@ import logging
 import random
 import secrets
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
+from urllib.parse import urlsplit
 
+from . import attachments
+from .attachments import PreparedAttachment
 from .config import NotifyConfig
 from .db import Database, dumps, in_seconds, iso, loads, new_id, now_iso, parse_iso, utcnow
 from .models import (ACKNOWLEDGED, ACTIVE_STATES, CANCELLED, DELIVERED, DISPATCHED, EXPIRED,
                      FAILED, INTERACTED, QUEUED, SENDING, TRANSITIONS, NotificationIn, Scope,
                      Severity, SubscriptionIn, derive_notification_status, event_matches)
-from .providers.base import OutboundMessage, Provider, ReceiptStatus, SendResult
-from .routing import Router, RoutingError
+from .providers.base import AttachmentData, OutboundMessage, Provider, ReceiptStatus, SendResult
+from .routing import RoutePlan, Router, RoutingError
 
 log = logging.getLogger("notify.core")
 
@@ -74,6 +77,17 @@ class EventBus:
             pass
 
 
+@dataclass
+class SubmitPlan:
+    """A routed, planned notification that has not been written yet."""
+    now: datetime
+    expires_at: datetime | None
+    route: RoutePlan
+    nrow: dict[str, Any]
+    deliveries: list[dict[str, Any]]
+    attachment_meta: list[dict[str, Any]] = field(default_factory=list)
+
+
 def backoff_seconds(attempt: int, base: float, cap: float) -> float:
     delay = min(cap, base * (3 ** max(0, attempt - 1)))
     return max(5.0, delay * random.uniform(0.8, 1.2))
@@ -88,6 +102,10 @@ class NotifyService:
         self.bus = EventBus()
         self.wake = asyncio.Event()
         self.http: Any = None  # shared httpx client, set by the app
+        # attachment fetching builds its own locked-down client; these are seams for the app and tests
+        self.fetch_transport: Any = None
+        self.resolve = attachments.default_resolve
+        self._intake: asyncio.Semaphore | None = None  # created on first use, in the serving loop
 
     def reconfigure(self, config: NotifyConfig, providers: dict[str, Provider]) -> None:
         """Swap in a new configuration (admin UI edits). Queued deliveries keep their device names."""
@@ -117,13 +135,23 @@ class NotifyService:
             return f"{s.public_base_url.rstrip('/')}/v1/callbacks/{provider}/{s.callback_secret}"
         return None
 
-    def message_for(self, n: sqlite3.Row | dict, delivery_id: str, provider: str) -> OutboundMessage:
+    def message_for(self, n: sqlite3.Row | dict, delivery_id: str, provider: str, *, with_data: bool = False,
+                    attachments: list[AttachmentData] | None = None) -> OutboundMessage:
+        """`attachments` overrides the stored ones (planning before the notification is written);
+        with_data loads the bytes and leaves out purged attachments."""
+        if attachments is None:
+            attachments = [AttachmentData(r["filename"], r["content_type"], r["size"],
+                                          r["data"] if with_data else None)
+                           for r in self.db.query("SELECT * FROM attachments WHERE notification_id=? ORDER BY idx",
+                                                  (n["id"],))
+                           if not (with_data and r["purged_at"])]
         return OutboundMessage(
             notification_id=n["id"], delivery_id=delivery_id, title=n["title"], message=n["message"],
             severity=Severity(n["severity"]), url=n["url"], url_title=n["url_title"],
             actions=loads(n["actions_json"], []), tags=loads(n["tags_json"], []),
             require_ack=bool(n["require_ack"]), created_at=parse_iso(n["created_at"]),  # type: ignore[arg-type]
             expires_at=parse_iso(n["expires_at"]), callback_url=self.callback_url(provider),
+            attachments=attachments,
         )
 
     # ---------------------------------------------------------------- events
@@ -189,12 +217,40 @@ class NotifyService:
         self._refresh_status(c, d["notification_id"])
 
     # ---------------------------------------------------------------- intake
-    def submit(self, client: Client, req: NotificationIn) -> tuple[dict[str, Any], bool]:
+    def _replay(self, client: Client, req: NotificationIn) -> tuple[dict[str, Any], bool] | None:
         if req.idempotency_key and not req.dry_run:
             row = self.db.one("SELECT id FROM notifications WHERE client_id=? AND idempotency_key=?",
                               (client.id, req.idempotency_key))
             if row:
                 return self.get(client, row["id"], detail=False), False
+        return None
+
+    def _plan_deliveries(self, nrow: dict[str, Any], route: RoutePlan,
+                         attachment_meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        atts = [AttachmentData(m["filename"] or f"attachment-{i + 1}", m["content_type"] or "", m["size"])
+                for i, m in enumerate(attachment_meta)]
+        deliveries = []
+        for device_name, via in route.devices.items():
+            dev = self.config.devices[device_name]
+            provider = self.providers[dev.provider]
+            did = new_id("dlv")
+            plan = provider.plan(self.message_for(nrow, did, dev.provider, attachments=atts), dev.address)
+            gaps = list(plan.capability_gaps)
+            problems = provider.config_problems() + provider.device_problems(dev.address)
+            if problems:
+                gaps.append("provider not ready (will retry until fixed): " + "; ".join(problems))
+            deliveries.append({"id": did, "device": device_name, "provider": dev.provider, "via": via,
+                               "tracking": plan.tracking, "observable_states": plan.observable_states,
+                               "capability_gaps": gaps})
+        return deliveries
+
+    def plan_submit(self, client: Client, req: NotificationIn,
+                    attachment_meta: list[dict[str, Any]] | None = None) -> tuple[dict[str, Any], bool] | SubmitPlan:
+        """Everything before the transaction: idempotent replay, expiry, routing, per-device plans.
+        Returns the final result for a replay or dry run, else a plan for `commit`."""
+        replay = self._replay(client, req)
+        if replay:
+            return replay
 
         now = utcnow()
         expires_at: datetime | None = None
@@ -210,40 +266,44 @@ class NotifyService:
         except RoutingError as e:
             raise Invalid(str(e)) from e
 
-        nid = new_id("ntf")
-        source = req.source or client.id
         nrow = {
-            "id": nid, "client_id": client.id, "source": source, "title": req.title, "message": req.message,
-            "severity": req.severity.value, "url": req.url, "url_title": req.url_title,
+            "id": new_id("ntf"), "client_id": client.id, "source": req.source or client.id, "title": req.title,
+            "message": req.message, "severity": req.severity.value, "url": req.url, "url_title": req.url_title,
             "actions_json": dumps([a.model_dump() for a in req.actions]),
             "data_json": dumps(req.data) if req.data is not None else None,
             "tags_json": dumps(req.tags), "targets_json": dumps(req.targets),
             "require_ack": int(req.require_ack), "expires_at": iso(expires_at),
             "created_at": iso(now), "updated_at": iso(now), "idempotency_key": req.idempotency_key,
         }
-        deliveries = []
-        for device_name, via in route.devices.items():
-            dev = self.config.devices[device_name]
-            provider = self.providers[dev.provider]
-            did = new_id("dlv")
-            plan = provider.plan(self.message_for(nrow, did, dev.provider), dev.address)
-            gaps = list(plan.capability_gaps)
-            problems = provider.config_problems() + provider.device_problems(dev.address)
-            if problems:
-                gaps.append("provider not ready (will retry until fixed): " + "; ".join(problems))
-            deliveries.append({"id": did, "device": device_name, "provider": dev.provider, "via": via,
-                               "tracking": plan.tracking, "observable_states": plan.observable_states,
-                               "capability_gaps": gaps})
-
+        meta = attachment_meta or []
+        deliveries = self._plan_deliveries(nrow, route, meta)
         if req.dry_run:
             return {"dry_run": True, "severity": req.severity.value, "expires_at": iso(expires_at),
                     "routing": route.as_dict(),
                     "deliveries": [{k: v for k, v in d.items() if k != "id"} for d in deliveries]}, True
+        return SubmitPlan(now=now, expires_at=expires_at, route=route, nrow=nrow, deliveries=deliveries,
+                          attachment_meta=meta)
 
+    def commit(self, client: Client, req: NotificationIn, plan: SubmitPlan,
+               attachments: list[PreparedAttachment | None]) -> tuple[dict[str, Any], bool]:
+        """The transactional half of a submit. `attachments` holds one entry per request attachment
+        (None = not fetched); bytes are stored only when the plan has deliveries."""
+        nrow, deliveries, route = plan.nrow, plan.deliveries, plan.route
+        nid, source = nrow["id"], nrow["source"]
         status = derive_notification_status([QUEUED] * len(deliveries))
         routing = {"suppressed": route.suppressed, "via": {d["device"]: d["via"] for d in deliveries}}
         if req.kinds is not None:
             routing["kinds"] = req.kinds
+        rows = []
+        for i, (it, m) in enumerate(zip(req.attachments, plan.attachment_meta)):
+            p = attachments[i] if i < len(attachments) else None
+            if p is not None:
+                rows.append((nid, i, p.filename, p.content_type, p.size, p.sha256, p.source, p.source_host,
+                             p.data if deliveries else None))
+            else:  # URL attachment that was never fetched (no deliveries)
+                rows.append((nid, i, m["filename"] or f"attachment-{i + 1}", m["content_type"] or
+                             "application/octet-stream", m["size"] or 0, "", m["source"],
+                             urlsplit(it.url or "").hostname, None))
         webhook_secret = None
         try:
             with self.db.tx() as c:
@@ -255,6 +315,9 @@ class NotifyService:
                      req.url, req.url_title, nrow["actions_json"], nrow["data_json"], nrow["tags_json"],
                      nrow["targets_json"], nrow["require_ack"], nrow["expires_at"], status, dumps(routing),
                      nrow["created_at"], nrow["updated_at"]))
+                c.executemany(
+                    "INSERT INTO attachments(notification_id, idx, filename, content_type, size, sha256, source,"
+                    " source_host, data) VALUES (?,?,?,?,?,?,?,?,?)", rows)
                 if req.webhook is not None:
                     webhook_secret = req.webhook.secret or secrets.token_urlsafe(32)
                     c.execute(
@@ -279,16 +342,60 @@ class NotifyService:
                                 "capability_gaps": d["capability_gaps"]})
         except sqlite3.IntegrityError:
             # concurrent submit with the same idempotency key won the race
-            row = self.db.one("SELECT id FROM notifications WHERE client_id=? AND idempotency_key=?",
-                              (client.id, req.idempotency_key))
-            if row:
-                return self.get(client, row["id"], detail=False), False
+            replay = self._replay(client, req)
+            if replay:
+                return replay
             raise
         self._after_commit(dispatch=True)
         out = self.get(client, nid, detail=False)
         if webhook_secret:
             out["webhook_secret"] = webhook_secret
         return out, True
+
+    def submit(self, client: Client, req: NotificationIn) -> tuple[dict[str, Any], bool]:
+        """Synchronous submit for internal callers; URL attachments need `submit_async`."""
+        if any(a.url is not None for a in req.attachments):
+            raise Invalid("URL attachments need the asynchronous submit path")
+        try:
+            decoded = attachments.decode_inline(req.attachments)
+        except attachments.AttachmentError as e:
+            raise Invalid(str(e)) from e
+        res = self.plan_submit(client, req, attachments.metadata(req.attachments))
+        return res if isinstance(res, tuple) else self.commit(client, req, res, decoded)
+
+    async def submit_async(self, client: Client, req: NotificationIn, *,
+                           inline_limit: int | None = None) -> tuple[dict[str, Any], bool]:
+        """The intake path for REST, MCP and ingest adapters: fetches URL attachments only when
+        the notification will actually be delivered somewhere."""
+        try:
+            meta = attachments.metadata(req.attachments)
+            if inline_limit and sum(m["size"] for m in meta if m["source"] == "inline") > inline_limit:
+                raise Invalid(f"inline attachments over MCP are limited to {inline_limit // 1024} KiB;"
+                              " pass a url instead")
+            for i, it in enumerate(req.attachments):
+                if it.url is not None:
+                    attachments.check_url_allowed(it.url, self.config.server.attachment_url_hosts, i)
+            prepared: list[PreparedAttachment | None] = []
+            if req.dry_run:
+                attachments.decode_inline(req.attachments)
+            res = self.plan_submit(client, req, meta)
+            if isinstance(res, tuple):
+                return res
+            if req.attachments and res.deliveries:
+                if self._intake is None:
+                    self._intake = asyncio.Semaphore(1)
+                async with self._intake:
+                    prepared = list(await attachments.prepare(
+                        req.attachments, self.config.server.attachment_url_hosts, self.fetch_transport,
+                        self.resolve))
+                res.attachment_meta = [{"filename": p.filename, "content_type": p.content_type, "size": p.size,
+                                        "source": p.source} for p in prepared if p]
+                res.deliveries = self._plan_deliveries(res.nrow, res.route, res.attachment_meta)
+            elif req.attachments:
+                prepared = attachments.decode_inline(req.attachments)
+        except attachments.AttachmentError as e:
+            raise Invalid(str(e)) from e
+        return self.commit(client, req, res, prepared)
 
     # ------------------------------------------------------------ dispatcher
     def recover_leases(self, all_sending: bool = False) -> int:
@@ -323,13 +430,17 @@ class NotifyService:
             return []
         now = now_iso()
         claimed = []
+        lease: float = self.config.server.lease_seconds
+        p = self.providers.get(provider)
+        if p and p.send_deadline_seconds:
+            lease = max(lease, p.send_deadline_seconds + 30)
         with self.db.tx() as c:
             rows = c.execute(
                 "SELECT * FROM deliveries WHERE state=? AND provider=? AND next_attempt_at <= ?"
                 " ORDER BY next_attempt_at LIMIT ?", (QUEUED, provider, now, limit)).fetchall()
             for d in rows:
                 c.execute("UPDATE deliveries SET state=?, attempts=attempts+1, lease_until=?, updated_at=? WHERE id=?",
-                          (SENDING, in_seconds(self.config.server.lease_seconds), now, d["id"]))
+                          (SENDING, in_seconds(lease), now, d["id"]))
                 claimed.append(c.execute("SELECT * FROM deliveries WHERE id=?", (d["id"],)).fetchone())
         return claimed
 
@@ -498,11 +609,19 @@ class NotifyService:
             raise Conflict("notification has expired; submit a new one instead")
         results = []
         now = now_iso()
+        purged = self.db.scalar("SELECT COUNT(*) FROM attachments WHERE notification_id=? AND purged_at IS NOT NULL",
+                                (nid,))
+        gap = (f"attachments purged after {self.config.server.attachment_retention_days} days: {purged} not sent"
+               if purged else None)
         for d in self.db.query("SELECT * FROM deliveries WHERE notification_id=?", (nid,)):
             if d["state"] == FAILED:
+                fields: dict[str, Any] = {"attempts": 0, "next_attempt_at": now, "finalized_at": None,
+                                          "last_error": d["last_error"]}
+                gaps = loads(d["capability_gaps_json"], [])
+                if gap and gap not in gaps:
+                    fields["capability_gaps_json"] = dumps([*gaps, gap])
                 with self.db.tx() as c:
-                    self._transition(c, d, QUEUED, {"attempts": 0, "next_attempt_at": now, "finalized_at": None,
-                                                    "last_error": d["last_error"]},
+                    self._transition(c, d, QUEUED, fields,
                                      {"reason": f"manual retry by {client.id}", "previous_error": d["last_error"]})
                 results.append({"delivery": d["id"], "result": "requeued"})
             elif d["state"] == QUEUED:
@@ -555,7 +674,17 @@ class NotifyService:
             "require_ack": bool(n["require_ack"]), "idempotency_key": n["idempotency_key"],
             "created_at": n["created_at"], "updated_at": n["updated_at"], "expires_at": n["expires_at"],
             "suppressed": routing.get("suppressed", []), "delivery_counts": counts, "deliveries": deliveries,
+            **self._attachments_out(n["id"]),
         }
+
+    def _attachments_out(self, nid: str) -> dict[str, Any]:
+        rows = self.db.query("SELECT filename, content_type, size, sha256, source, purged_at FROM attachments"
+                             " WHERE notification_id=? ORDER BY idx", (nid,))
+        if not rows:
+            return {}  # notifications without attachments keep the 0.4.0 shape
+        return {"attachments": [{"filename": r["filename"], "content_type": r["content_type"], "size": r["size"],
+                                 "sha256": r["sha256"], "source": r["source"], "purged": r["purged_at"] is not None}
+                                for r in rows]}
 
     def get(self, client: Client, nid: str, detail: bool = True) -> dict[str, Any]:
         n = self._notification_row(client, nid)
@@ -774,6 +903,11 @@ class NotifyService:
                 c.execute("DELETE FROM notifications WHERE id=?", (nid,))
             c.execute("DELETE FROM subscriptions WHERE notification_id IS NOT NULL AND NOT EXISTS"
                       " (SELECT 1 FROM notifications n WHERE n.id=subscriptions.notification_id)")
+            att_cutoff = iso(utcnow() - timedelta(days=self.config.server.attachment_retention_days))
+            c.execute("UPDATE attachments SET data=NULL, purged_at=? WHERE data IS NOT NULL AND notification_id IN"
+                      " (SELECT id FROM notifications WHERE created_at < ?) AND NOT EXISTS (SELECT 1 FROM deliveries d"
+                      " WHERE d.notification_id=attachments.notification_id AND d.state IN (?,?))",
+                      (now_iso(), att_cutoff, QUEUED, SENDING))
         return len(ids)
 
     def stats(self) -> dict[str, Any]:

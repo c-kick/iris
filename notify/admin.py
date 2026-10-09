@@ -551,7 +551,7 @@ async def send_test(body: TestIn, request: Request, client: Client = Depends(adm
     req = NotificationIn(targets=body.targets, severity=body.severity, title=body.title, message=body.message,
                          source="admin-ui", tags=["test"])
     try:
-        out, _ = _svc(request).submit(client, req)
+        out, _ = await _svc(request).submit_async(client, req)
     except Invalid as e:
         raise HTTPException(422, str(e)) from e
     return out

@@ -8,6 +8,7 @@ from typing import Any, Literal
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+from .attachments import MCP_INLINE_MAX
 from .core import Client, Conflict, Invalid, NotFound, NotifyService
 from .models import NotificationIn, Scope
 
@@ -53,6 +54,7 @@ def _compact(n: dict[str, Any]) -> dict[str, Any]:
             "timestamps": {k: v for k, v in d["timestamps"].items() if v},
             **({"attempt_log": d["attempt_log"]} if "attempt_log" in d else {}),
         } for d in n["deliveries"]],
+        **({"attachments": n["attachments"]} if "attachments" in n else {}),
     }
 
 
@@ -92,6 +94,7 @@ def build_mcp(get_service: Any) -> FastMCP:
         idempotency_key: str | None = None,
         source: str | None = None,
         kinds: list[Literal["push", "email"]] | None = None,
+        attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Send a notification to logical targets (e.g. ["user:alex"]).
 
@@ -99,14 +102,18 @@ def build_mcp(get_service: Any) -> FastMCP:
         critical (emergency: repeats until acknowledged — real emergencies only).
         kinds: which delivery kinds to use; omitted = the default devices (push). email devices only
         receive when 'email' is listed.
+        attachments: up to 10 files, 10 MiB in total: {"url": ..., "filename"?: ...} (preferred; only from
+        hosts an admin allowed) or {"filename": ..., "content_type"?: ..., "data_base64": ...} (inline,
+        at most 256 KiB per notification over MCP).
         ttl_seconds: drop/expire if not dispatched in time. Returns the notification with
         per-device deliveries, observable_states and capability_gaps."""
         client = _client(ctx)
         _need(client, Scope.send)
         req = NotificationIn(targets=targets, message=message, title=title, severity=severity, url=url,
                              url_title=url_title, tags=tags or [], ttl_seconds=ttl_seconds, require_ack=require_ack,
-                             data=data, idempotency_key=idempotency_key, source=source or f"mcp:{client.id}", kinds=kinds)
-        out, created = await call(svc().submit, client, req)
+                             data=data, idempotency_key=idempotency_key, source=source or f"mcp:{client.id}", kinds=kinds,
+                             attachments=attachments or [])
+        out, created = await call(svc().submit_async, client, req, inline_limit=MCP_INLINE_MAX)
         res = _compact(out)
         res["created"] = created
         return res

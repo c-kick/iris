@@ -160,6 +160,20 @@ CREATE TABLE IF NOT EXISTS registrations (
 CREATE INDEX IF NOT EXISTS ix_registrations_status ON registrations(status, created_at);
 CREATE INDEX IF NOT EXISTS ix_registrations_token ON registrations(token_sha256);
 
+CREATE TABLE IF NOT EXISTS attachments (
+    notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    source TEXT NOT NULL,
+    source_host TEXT,
+    data BLOB,
+    purged_at TEXT,
+    PRIMARY KEY (notification_id, idx)
+);
+
 CREATE TABLE IF NOT EXISTS admin_sessions (
     id_hash TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -225,6 +239,7 @@ class Database:
         self.conn.execute("PRAGMA synchronous=FULL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA busy_timeout=10000")
+        self.conn.execute("PRAGMA journal_size_limit=67108864")
         self.conn.executescript(SCHEMA)
         self._add_missing_columns({"registrations": {"decision_sha256": "TEXT"}})
         with self.tx() as c:

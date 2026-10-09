@@ -83,6 +83,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
         providers = {name: build_provider(name, p.model_dump(), http) for name, p in cfg.providers.items()}
         service = NotifyService(cfg, db, providers)
         service.http = http
+        service.fetch_transport = transport  # attachment fetches never use the shared client
         holder["service"] = service
         app.state.service = service
         workers = Workers(service, http) if start_workers else None

@@ -57,7 +57,7 @@ async def submit(body: NotificationIn, response: Response, request: Request,
                  client: Client = Depends(require(Scope.send))) -> dict[str, Any]:
     if idempotency_key and not body.idempotency_key:
         body.idempotency_key = idempotency_key
-    out, created = service(request).submit(client, body)
+    out, created = await service(request).submit_async(client, body)
     if body.dry_run:
         response.status_code = 200
     elif not created:
@@ -220,7 +220,7 @@ async def ingest_arr(request: Request, response: Response,
                 {**body.model_dump(), "kinds": [k.strip() for k in kinds.split(",") if k.strip()]})
     except ValueError as e:  # includes pydantic ValidationError (e.g. no targets)
         raise HTTPException(422, str(e)) from e
-    out, created = service(request).submit(client, body)
+    out, created = await service(request).submit_async(client, body)
     if not created:
         response.status_code = 200
         response.headers["Idempotent-Replay"] = "true"

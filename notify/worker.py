@@ -104,7 +104,7 @@ class Workers:
                 result = SendResult(outcome="permanent",
                                     error=f"device {d['device']!r} or provider {d['provider']!r} is no longer configured")
             else:
-                msg = svc.message_for(n, d["id"], d["provider"])
+                msg = svc.message_for(n, d["id"], d["provider"], with_data=True)
                 try:
                     result = await provider.send(msg, dev.address)
                 except Exception as e:  # adapter bug: never lose the delivery

@@ -23,6 +23,14 @@ BASE_OBSERVABLE = [QUEUED, SENDING, DISPATCHED, FAILED, EXPIRED, CANCELLED]
 
 
 @dataclass
+class AttachmentData:
+    filename: str
+    content_type: str  # '' when not known yet (URL attachment before fetching)
+    size: int | None  # None when not known yet
+    data: bytes | None = None  # only loaded for sends
+
+
+@dataclass
 class OutboundMessage:
     notification_id: str
     delivery_id: str
@@ -37,6 +45,7 @@ class OutboundMessage:
     created_at: datetime
     expires_at: datetime | None
     callback_url: str | None = None
+    attachments: list[AttachmentData] = field(default_factory=list)
 
     def ttl_remaining(self, now: datetime) -> int | None:
         if self.expires_at is None:
@@ -88,6 +97,8 @@ class Provider(ABC):
     label: str = ""
     max_concurrency: int = 2
     receipt_poll_seconds: float = 30
+    # longest a single send may take; the dispatch lease is extended to cover it
+    send_deadline_seconds: float | None = None
     # settings/address keys that are secrets: encrypted at rest, never returned by the admin API
     secret_settings: frozenset[str] = frozenset()
     secret_address_fields: frozenset[str] = frozenset()
