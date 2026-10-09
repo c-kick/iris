@@ -13,9 +13,9 @@ EXAMPLE = Path(__file__).parent.parent / "config" / "notify.example.yaml"
 
 def test_example_config_loads_and_reports_missing_env():
     cfg = load_config(EXAMPLE, env={})
-    assert cfg.missing_env == ["PUSHOVER_APP_TOKEN", "PUSHOVER_USER_KEY"]
+    assert cfg.missing_env == ["PUSHOVER_APP_TOKEN", "PUSHOVER_USER_KEY", "SMTP_PASSWORD"]
     assert cfg.devices["alex-phone"].address["device"] == ""  # optional, defaults to all devices
-    env = {"PUSHOVER_APP_TOKEN": "a" * 30, "PUSHOVER_USER_KEY": "u" * 30, "PUSHOVER_DEVICE": "iphone"}
+    env = {"PUSHOVER_APP_TOKEN": "a" * 30, "PUSHOVER_USER_KEY": "u" * 30, "PUSHOVER_DEVICE": "iphone", "SMTP_PASSWORD": "s3cret"}
     cfg = load_config(EXAMPLE, env=env)
     assert cfg.missing_env == [] and cfg.providers["pushover"].app_token == "a" * 30  # type: ignore[attr-defined]
     assert cfg.devices["alex-phone"].address == {"user_key": "u" * 30, "device": "iphone"}

@@ -3,8 +3,8 @@
 Unified notification service for the LAN. Senders state *intent* (what, how
 urgent, for whom). hnl-notify owns routing, delivery, persistence, retries,
 status tracking and provider quirks. Pushover (phone push) is the first
-delivery path; nothing in the public REST or MCP interface is
-Pushover-specific.
+delivery path, email (SMTP, with file attachments) the second; nothing in the
+public REST or MCP interface is provider-specific.
 
 ## Shape
 
@@ -24,7 +24,7 @@ pydantic, plus the official MCP Python SDK.
  │ auth ─► intake ─► router ─► deliveries (SQLite, 1 per device)    │
  │                                  │                               │
  │   dispatcher ◄───────────────────┘   (lease, retry/backoff)      │
- │      │ provider adapter (pushover | later ntfy/HA/email/webpush) │
+ │      │ provider adapter (pushover | email (later ntfy/HA/webpush)) │
  │      ▼                                                           │
  │   receipt poller / inbound callbacks ─► state transitions        │
  │                                      │                           │
@@ -37,8 +37,8 @@ pydantic, plus the official MCP Python SDK.
 
 | Concept | Meaning | Example |
 |---|---|---|
-| **provider** | A delivery backend: adapter + declared capabilities | `pushover` |
-| **device** (endpoint) | One concrete address on one provider | `alex-phone` = Pushover user key + device `iphone` |
+| **provider** | A delivery backend: adapter + declared capabilities + a *kind* (`push` or `email`) | `pushover`, `mail` |
+| **device** (endpoint) | One concrete address on one provider | `alex-phone` = Pushover user key + device `iphone`; `alex-email` = `alex@example.org` |
 | **user** | A person; owns devices | `alex` |
 | **group** | A set of users/devices | `household` |
 | **channel** | A topic with subscribed targets and an optional severity floor | `infra` |
@@ -49,6 +49,24 @@ targets to a de-duplicated set of devices, applies channel/device
 `min_severity`, and creates one **delivery** per device. Provider identifiers
 (Pushover user keys, device names, app tokens) exist only in configuration and
 inside the adapter.
+
+### Kinds and opt-in
+
+Every provider has a *kind*: `push` (Pushover) or `email`. A request may carry
+`kinds: ["push"]`, `["email"]` or both (`via` keeps its existing meaning: the
+expansion path). A device is *opt-in* when `opt_in` is true; unset means the
+kind default (email: yes, push: no). Rules, applied after disabled-device,
+device `min_severity` and channel floors:
+
+- **No `kinds`**: opt-in devices are skipped, except a device named as a
+  top-level target (`device:alex-email`). Devices reached through a user, group
+  or channel obey `opt_in`. Skipped opt-in devices are not listed in
+  `suppressed`. A config without email devices therefore routes exactly as
+  before email existed.
+- **`kinds` given**: a device is included iff its kind is requested (opt-in is
+  ignored). A top-level device of another kind is suppressed ("device kind push
+  not requested"); a requested kind that a top-level target has no device for is
+  suppressed with "no email device". `routing_json` records the `kinds`.
 
 Configuration is managed in the **admin UI** (`/admin`) and stored in the
 same SQLite database (`settings` table). Fields each provider adapter declares
@@ -160,15 +178,82 @@ Severity → Pushover priority: `min`→−2, `low`→−1, `normal`→0, `high`
 `critical` is **not** silently escalated to an emergency alarm; it becomes the
 gap "acknowledgement on pushover requires severity=critical".
 
+## What email can and cannot report
+
+| Question | Email (SMTP) | Modelled as |
+|---|---|---|
+| Request accepted? | The SMTP server accepted the message (250) | `dispatched`; `provider_message_id` = Message-ID |
+| Delivered / read / acknowledged? | Never observable | not modelled; observable states end at `dispatched` |
+| Recall after sending | Impossible | no `cancel_after_dispatch`; `ttl` applies only before sending |
+| Action buttons / interactions | None; links only | `actions: 0` + `inline_links`; only http(s) links become clickable, anything else is shown as text |
+| Errors | 5xx reply = rejected for good; 4xx, connection errors, TLS errors, timeouts = try again | `permanent` / `retryable` attempt outcome |
+| Wrong credentials | Login rejected | retried after 15 min, text points at the admin UI |
+| Message too large | Server advertises `SIZE` | checked before login; `permanent` if the encoded message is larger |
+| Slow or stuck server | | hard session deadline (`timeout_seconds`, default 60, 10-300) enforced by a watchdog that closes the socket; the delivery lease is extended to timeout + 30 s so a running session is never reclaimed |
+
+The `Message-ID` is derived from the delivery id, so a resend after a crash
+(at-least-once) carries the same id and mail systems can collapse it. Subject
+is the prefix plus title, or the first message line (120 chars). `high` and
+`critical` set `Importance: high` / `X-Priority: 1`; `min` and `low` set
+`Importance: low`. Header values are stripped of control characters; the adapter
+never raises on sender input. One SMTP session at a time (`max_concurrency` 1);
+`smtplib` debug output stays off, the password is stored encrypted.
+
+## Attachments
+
+`attachments` on a submit (REST, MCP, not `/v1/ingest/arr`): up to **10**
+files, **10 MiB** decoded in total. Each item is either
+`{"filename", "content_type"?, "data_base64"}` (at most 14 200 000 base64
+characters) or `{"url", "filename"?}`. Over MCP, inline data is limited to
+256 KiB per notification; agents should send URLs. Filenames are reduced to a
+safe basename; content types are validated, guessed from the name, or fall back
+to `application/octet-stream`. Violations are a 422 naming the attachment.
+
+- **Email** sends all attachments. **Pushover** sends the first `image/*` up to
+  5 MiB (`attachment_base64`); the others are recorded as `capability_gaps`.
+- **Idempotent replays** are answered before any attachment check or fetch.
+  Fetching URLs can take a while, so a submit may be refused when its own TTL
+  ran out in the meantime. Intake of attachments is serialised (one at a time).
+- **Storage**: bytes live as BLOBs in the `attachments` table next to the
+  notification, with filename, type, size, sha256, source and (for URLs) the
+  host. A 10 MiB insert briefly holds the SQLite write lock, and the database
+  file does **not shrink** after purging (no auto_vacuum); freed pages are
+  reused. The retention sweep deletes the bytes after
+  `server.attachment_retention_days` (default 7, 1-90; Settings) once no delivery
+  is queued or sending; the metadata stays (`purged: true`). A retry after the
+  purge sends without them and records a gap. There is no download endpoint.
+  Plans with no deliveries (all suppressed) store no bytes.
+- **URL fetching** is off until an admin lists hosts in
+  `server.attachment_url_hosts` (Settings, "Hosts allowed for attachment URLs").
+  Host and `host:port` entries match host names; CIDR and bare-IP entries match
+  only URLs that use an IP literal (a host name is never matched against a
+  CIDR). Every hop, including each of at most 3 redirects, is checked again.
+  The resolved and the connected peer address are refused when they are in
+  `127.0.0.0/8`, `::1`, `0.0.0.0/8`, `::`, `169.254.0.0/16` or `fe80::/10`,
+  including IPv4-mapped, IPv4-compatible, 6to4 and NAT64 forms. The fetcher
+  builds its own client (no environment proxies, no automatic redirects), sends
+  `Accept-Encoding: identity` and has one 15 s budget for all URLs of a request.
+  The URL may carry a token, so it is never stored or logged; only the host is.
+  `dry_run` validates URLs against the allowlist but does not fetch them.
+
+## Request size
+
+A pure-ASGI limit rejects with **413** when a body exceeds 15 MiB on
+`POST /v1/notifications` and 1 MiB on every other route (MCP, ingest, admin),
+by `Content-Length` or by counting streamed bytes. Container memory is capped at
+320 MiB (`mem_limit` and `memswap_limit`); a 10 MiB request needs several times
+that in Python while it is decoded, which is why attachment intake and email
+sending are one at a time.
+
 ## REST API (bearer tokens; scopes `send`, `read`, `manage`, `admin`)
 
 | Method & path | Purpose |
 |---|---|
-| `POST /v1/notifications` | Submit. 202; 200 on idempotent replay; `dry_run: true` returns the routing plan only |
+| `POST /v1/notifications` | Submit (optional `kinds`, `attachments`). 202; 200 on idempotent replay; `dry_run: true` returns the routing plan only; 413 above 15 MiB |
 | `GET /v1/notifications` | History; filter by status/source/tag/since |
-| `GET /v1/notifications/{id}` | Full status: deliveries, attempts, events |
+| `GET /v1/notifications/{id}` | Full status: deliveries, attempts, events, attachment metadata |
 | `POST /v1/notifications/{id}/cancel`, `/retry` | Where meaningful; 409 with reason otherwise |
-| `GET /v1/targets` | Users, devices, groups, channels + effective capabilities |
+| `GET /v1/targets` | Users, devices (with `kind`, `opt_in`), groups, channels + effective capabilities |
 | `GET /v1/providers` | Provider capabilities, health, quota |
 | `GET /v1/events`, `GET /v1/events/stream` | Event history by cursor; Server-Sent Events |
 | `POST/GET/DELETE /v1/subscriptions` | Webhook subscriptions |
@@ -215,7 +300,9 @@ Event types: `notification.created`, `notification.status_changed`,
 ## MCP
 
 Streamable HTTP at `/mcp` in the same process, same bearer tokens and scopes.
-Tools: `send_notification`, `preview_routing`, `get_notification`,
+`send_notification` and `preview_routing` accept `kinds`; `send_notification`
+also takes `attachments` (URLs recommended, inline data up to 256 KiB). Tools:
+`send_notification`, `preview_routing`, `get_notification`,
 `list_notifications`, `list_attention` (failed / pending / stuck / awaiting ack),
 `list_targets`, `retry_notification`, `cancel_notification`. Resources:
 `notify://targets`, `notify://notifications/{id}`. Everything is phrased in

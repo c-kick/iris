@@ -11,6 +11,11 @@ server:
   retry_base_seconds: 10   # 10s, 30s, 90s, ... capped at retry_max_seconds
   retry_max_seconds: 900
   retention_days: 90
+  attachment_retention_days: 7      # attachment bytes are deleted after this (1-90)
+  # URL attachments are fetched only from these hosts (host, host:port; CIDR/IP entries
+  # match only URLs that use an IP literal). Empty = URL attachments disabled.
+  attachment_url_hosts: []
+  # attachment_url_hosts: [homeassistant.lan:8123]
 
 providers:
   pushover:
@@ -20,6 +25,17 @@ providers:
     emergency_expire_seconds: 3600  # stop re-alerting after this (max 10800)
     receipt_poll_seconds: 30        # critical alerts only (Pushover minimum 5)
     # sounds: {critical: siren, high: tugboat}
+  mail:
+    type: email
+    host: smtp.example.org
+    port: 587
+    security: starttls          # starttls | tls (implicit) | none
+    username: notify@example.org
+    password: ${SMTP_PASSWORD}
+    from_address: notify@example.org
+    from_name: hnl-notify
+    # subject_prefix: "[home]"
+    # timeout_seconds: 60       # hard limit for the whole SMTP session (10-300)
 
 devices:
   alex-phone:
@@ -29,11 +45,19 @@ devices:
     address:
       user_key: ${PUSHOVER_USER_KEY}
       device: ${PUSHOVER_DEVICE:-}   # Pushover device name; empty = all of the user's devices
+  alex-email:
+    provider: mail
+    owner: alex
+    description: Alex's mailbox
+    address:
+      to: alex@example.org
+    # opt_in: true   # default for email: only used when a sender asks for kinds ["email"]
+                     # or names device:alex-email directly
 
 users:
   alex:
     display_name: Alex
-    devices: [alex-phone]
+    devices: [alex-phone, alex-email]
 
 groups:
   household:

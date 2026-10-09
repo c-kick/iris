@@ -1,7 +1,7 @@
 services:
   notify:
     build: .
-    image: hnl-notify:0.4.0
+    image: hnl-notify:0.5.0
     container_name: hnl-notify
     restart: unless-stopped
     user: "1026:1026"
@@ -27,8 +27,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-    mem_limit: 192m
-    memswap_limit: 192m
+    mem_limit: 320m
+    memswap_limit: 320m
     cpus: 0.5
     pids_limit: 64
     stop_grace_period: 20s

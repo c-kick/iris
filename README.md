@@ -7,15 +7,16 @@ MCP. hnl-notify routes it to devices, delivers through provider adapters,
 retries, persists everything and reports status honestly: it only claims what
 the provider can actually observe.
 
-The first provider is **Pushover** (phone push notifications). Senders never
-see Pushover keys or priorities; adding ntfy, Home Assistant, email or Web
-Push later is a new adapter in `notify/providers/`, not an API change.
+Delivery paths are **Pushover** (phone push) and **email** (SMTP, with file
+attachments). Senders never see Pushover keys, priorities or SMTP settings;
+adding ntfy, Home Assistant or Web Push later is a new adapter in
+`notify/providers/`, not an API change.
 
 Design, data model, lifecycle and the full Pushover capability analysis:
 [docs/architecture.md](docs/architecture.md).
 
 - Stack: Python 3.12, FastAPI, SQLite (WAL) as durable queue, official MCP SDK
-- One container, one process, port **8930**; ~50 MiB resident idle
+- One container, one process, port **8930**; ~50 MiB resident idle (container limit 320 MiB, because attachments are held in memory while they are handled)
 - Intended for a trusted LAN/VPN: plain HTTP, bearer tokens. Put it behind a
   TLS reverse proxy if it has to leave the local network.
 
@@ -33,25 +34,33 @@ docker logs hnl-notify 2>&1 | grep "setup code"
 
 The container runs as UID/GID 1026 by default (`user:` in `compose.yaml`);
 make sure that account can write `data/` and `secrets/`, or change it.
-Resource limits (192 MiB, no extra swap, 0.5 CPU, 64 PIDs) are set in
+Resource limits (320 MiB, no extra swap, 0.5 CPU, 64 PIDs) are set in
 `compose.yaml`.
 
 Open **http://notify.lan:8930/admin**, enter the setup code and choose an
 admin password. Then, in the admin UI:
 
-1. **Pushover**: paste the API token of an application created at
-   [pushover.net/apps/build](https://pushover.net/apps/build).
+1. **Providers**: for push, paste the API token of an application created at
+   [pushover.net/apps/build](https://pushover.net/apps/build). For email, add
+   an *Email (SMTP)* provider: host (e.g. `smtp.example.org`), port, security
+   (`starttls`, `tls` or `none`), username and password if the server wants
+   a login, and the sender address; then press *Test connection*. Give the
+   session as much time as a slow relay needs (`timeout_seconds`, default 60).
 2. **People & groups → Add person**: add yourself (e.g. `alex`).
 3. **Devices → Add device**: name it (e.g. `alex-phone`), let it belong to
    you, paste your Pushover user key, press *Find devices* and pick the phone
-   (leave it empty to reach all your Pushover devices).
+   (leave it empty to reach all your Pushover devices). For email, add a
+   second device (e.g. `alex-email`), pick the email provider and enter the
+   address. By default an email device is used only when a sender asks for it
+   (`kinds`, below) or names it directly; untick *Only when an app asks for
+   this kind explicitly* to include it in normal sends too.
 4. **API access → Create token**: one per sender (Home Assistant, Node-RED,
    agents…), or let senders request access themselves (see below). A token is
    shown once, with ready-to-paste snippets.
 5. **Overview → Send test notification**.
 
 No `.env` and no config file are needed: everything lives in
-`data/notify.sqlite3`, with secrets (Pushover token and user keys) encrypted
+`data/notify.sqlite3`, with secrets (Pushover token, SMTP password, user keys) encrypted
 using the 32-byte key that the container generates in `secrets/master.key`
 (0600). **Back up both**; the database is useless without the key. Changes
 apply immediately, no restart.
@@ -101,6 +110,48 @@ because Pushover never reports whether it reached the phone.
 `capability_gaps` lists anything you asked for that the device could not do
 (e.g. `require_ack` below critical, action buttons).
 
+## Email and attachments
+
+Without `kinds` a notification goes to your push devices exactly as before.
+Add `kinds` to choose the path: `["email"]`, `["push"]` or `["push", "email"]`.
+A person without a device of a requested kind shows up under `suppressed` in
+the response. Naming an email device (`device:alex-email`) as a target also
+works without `kinds`.
+
+```sh
+# email only, with an inline attachment (base64, up to 10 MiB in total)
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $N/v1/notifications -d '{
+  "targets": ["user:alex"], "kinds": ["email"],
+  "title": "Monthly report", "message": "The report is attached",
+  "attachments": [{"filename": "report.pdf", "content_type": "application/pdf",
+                   "data_base64": "'"$(base64 -w0 report.pdf)"'"}]
+}'
+
+# push and email, attachment fetched from a URL
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $N/v1/notifications -d '{
+  "targets": ["user:alex"], "kinds": ["push", "email"],
+  "title": "Front door", "message": "Motion at the front door",
+  "attachments": [{"url": "http://homeassistant.lan:8123/api/camera_proxy/camera.door?token=...",
+                   "filename": "door.jpg"}]
+}'
+```
+
+- At most 10 attachments, 10 MiB decoded in total. Over MCP, inline data is
+  limited to 256 KiB; use URLs. Request bodies above 15 MiB (1 MiB on every
+  other route) get 413.
+- URL attachments are **disabled until an admin allows hosts**: *Settings →
+  Hosts allowed for attachment URLs* (`homeassistant.lan:8123`, a host name,
+  or an IP/CIDR for URLs that use an IP address). Redirects are re-checked,
+  loopback and link-local addresses are always refused, and the URL (which
+  may hold a token) is never stored or logged.
+- Pushover shows the first image up to 5 MiB; other attachments are listed in
+  the delivery's `capability_gaps`. Email carries all of them.
+- Email never reports more than "the mail server accepted it" (`dispatched`);
+  there is no delivery, read or acknowledgement state and no recall.
+- Attachment bytes are kept in the database for 7 days (*Settings → Keep
+  attachments for*), then deleted. The database file does not shrink when that
+  happens, so size the `data/` volume for your peak.
+
 ## REST examples
 
 ```sh
@@ -131,7 +182,8 @@ Add `"dry_run": true` to see routing, observable states and capability gaps
 without sending. Repeating a request with the same `idempotency_key` (or
 `Idempotency-Key` header) returns the original notification (HTTP 200).
 Optional `actions` (`[{"id", "label", "url"}]`) become extra links in the
-message text with Pushover; taps are not reported back. OpenAPI docs:
+message text with Pushover and email (only http(s) links are clickable); taps
+are not reported back. OpenAPI docs:
 `http://notify.lan:8930/docs`.
 
 Scopes: `send` (submit), `read` (own history, targets, events, subscriptions),
@@ -272,7 +324,9 @@ claude mcp add --transport http hnl-notify http://notify.lan:8930/mcp \
   --header "Authorization: Bearer ntk_..."
 ```
 
-Tools: `send_notification`, `preview_routing`, `get_notification`,
+`send_notification` and `preview_routing` take `kinds`; `send_notification`
+also takes `attachments` (URLs recommended, inline data up to 256 KiB). Tools:
+`send_notification`, `preview_routing`, `get_notification`,
 `list_notifications`, `list_attention`, `list_targets`, `retry_notification`,
 `cancel_notification`. Resources: `notify://targets`,
 `notify://notifications/{id}`. The server instructions tell agents not to
@@ -290,7 +344,7 @@ generated). Without that, nothing changes except latency.
 - Logs: `docker logs hnl-notify` (one JSON object per line; every state change is an `event` line with ids).
 - Health: `/health/live`, `/health/ready`. Metrics (Prometheus text): `/metrics`.
 - Admin UI: `/admin` (session login, CSRF header, strict CSP). Admin API calls also accept a bearer token with the `admin` scope.
-- Backup: `sqlite3 data/notify.sqlite3 ".backup data/notify-$(date +%F).sqlite3"` **plus** `secrets/master.key` (without it the stored Pushover secrets cannot be decrypted). History is kept 90 days (Settings).
+- Backup: `sqlite3 data/notify.sqlite3 ".backup data/notify-$(date +%F).sqlite3"` **plus** `secrets/master.key` (without it the stored Pushover and SMTP secrets cannot be decrypted). Backups include attachment bytes that have not yet been purged. History is kept 90 days (Settings).
 - Delivery guarantee: at-least-once. If the container dies in the few ms after
   Pushover accepts a message but before the result is committed, that message
   is sent again after restart (logged as "send interrupted").
@@ -299,15 +353,16 @@ generated). Without that, nothing changes except latency.
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest
-# on a shared host, cap it: systemd-run --user --scope -p MemoryMax=768M -p MemorySwapMax=0 -- .venv/bin/python -m pytest
+.venv/bin/python -m pytest -p no:warnings -o addopts=""   # addopts has -q, which hides the summary line
+# on a shared host, cap it: systemd-run --user --scope -p MemoryMax=768M -p MemorySwapMax=0 -- .venv/bin/python -m pytest -o addopts=""
 ```
 
 UI work without touching real Pushover: `.venv/bin/python scripts/dev_server.py
 --dir /tmp/notify-dev --demo --password devpassword123` serves the app on
 `127.0.0.1:18931` with a fake Pushover and demo data.
 
-Tests start a real uvicorn server with a fake Pushover API (httpx
+`aiosmtpd` (a dev dependency) provides a real local SMTP server for the email
+tests. Tests start a real uvicorn server with a fake Pushover API (httpx
 MockTransport) and exercise REST, SSE, webhooks, restart recovery and MCP via
 the official SDK client. Adding a provider: subclass `notify.providers.base.Provider`
 (capabilities, `plan`, `send`, optional receipts/cancel/callbacks) and
