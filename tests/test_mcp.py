@@ -69,3 +69,17 @@ def test_mcp_scopes_enforced(live):
         return await s.call_tool("send_notification", {"targets": ["user:alex"], "message": "x"})
     res = run_session(live, "reader", flow)
     assert res.isError and "lacks scope 'send'" in res.content[0].text
+
+
+def test_mcp_advertises_email_and_attachments(live):
+    """Clients that defer tool schemas only see the server instructions and tool descriptions up front."""
+    async def flow(s: ClientSession):
+        init = await s.initialize()
+        tools = {t.name: t.description for t in (await s.list_tools()).tools}
+        return init.instructions, tools
+
+    instructions, tools = run_session(live, "agent", flow)
+    for phrase in ("email", "kinds", "attachments", "image"):
+        assert phrase in instructions
+    for phrase in ("kind", "opt_in", "attachment"):
+        assert phrase in tools["list_targets"]

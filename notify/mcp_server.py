@@ -19,6 +19,17 @@ hnl-notify is the household notification service. Send notifications to logical
 targets (user:NAME, device:NAME, group:NAME, channel:NAME) — call list_targets
 first to see what exists and what each device can observably report.
 
+Delivery kinds: devices are either push (phone/desktop) or email. Email devices
+are opt-in: a notification reaches them only when send_notification lists
+kinds=["email"] (email only) or kinds=["push", "email"] (both); without kinds
+it goes to push devices only. list_targets shows each device's kind.
+
+attachments: send files with a notification, preferably by url (only from hosts
+an admin allowed; hnl-notify fetches them once) or inline as base64 (at most
+256 KiB over MCP). Up to 10 files, 10 MiB in total. Email carries every file;
+push (Pushover) shows the first image (image/*, at most 5 MiB) as a picture in
+the notification. Anything a device cannot carry is listed in capability_gaps.
+
 Delivery states: queued → sending → dispatched (provider accepted) → delivered →
 acknowledged; or failed / expired / cancelled. Only states listed in a delivery's
 observable_states can ever occur for it: e.g. a Pushover message below severity
@@ -174,7 +185,9 @@ def build_mcp(get_service: Any) -> FastMCP:
     @mcp.tool()
     async def list_targets(ctx: Context) -> dict[str, Any]:
         """Users, devices, groups and channels you can address, with each device's capabilities
-        (delivery receipts, acknowledgement, actions, links, cancel, TTL) and readiness."""
+        (delivery receipts, acknowledgement, actions, links, cancel, TTL, attachment limits) and
+        readiness. Each device has a kind (push or email) and opt_in: opt-in devices (email by default)
+        only receive when send_notification asks for their kind via kinds."""
         client = _client(ctx)
         _need(client, Scope.read)
         return svc().targets()
