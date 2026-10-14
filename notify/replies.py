@@ -43,6 +43,8 @@ class Replies:
     # ------------------------------------------------------------ inbound
     def classify(self, msg: EmailMessage, raw_headers: bytes, authserv_id: str) -> Verdict:
         """Spec §3 steps 2-6 on the header block only; the body is fetched only for an accept."""
+        if replyparse.header_block_problem(raw_headers):
+            return Verdict("quarantine", "malformed_headers")
         if replyparse.is_automatic(msg):
             return Verdict("quarantine", "automatic")
         db = self.svc.db

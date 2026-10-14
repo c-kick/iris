@@ -172,8 +172,9 @@ logs in, checks the folders and lists the `Authentication-Results` server names
 found in the newest message. Enter the one your mail server writes as
 *Mail server name in Authentication-Results* (`authserv_id`, e.g.
 `mx.example.org`); it is never filled in for you. Replies are accepted only when
-the mail server itself reports `dkim=pass` for the sender's domain, so this
-must be a server you trust to add that header to every inbound message.
+the mail server itself reports `dkim=pass` and `dmarc=pass` for the sender's
+domain, so this must be a server you trust to add that header (with DKIM and DMARC
+results) to every inbound message.
 
 **Sending.** Add `"reply": true` and an email kind:
 

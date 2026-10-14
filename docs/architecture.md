@@ -240,7 +240,14 @@ poll, never as a second reply.
 
 1. **Size and headers.** Headers are fetched bounded (first 64 KiB). A header
    block of 64 KiB or more, a size over 15 MiB (`RFC822.SIZE`) or a missing size
-   → `too_large`, without fetching the body.
+   → `too_large`, without fetching the body. Then the header block is checked byte
+   for byte, independent of Python's lenient parser (which silently ends the headers
+   at the first line it does not recognise and treats a bare CR as a line break):
+   CRLF line endings only, no control characters, every line a `Name:` header or a
+   continuation, exactly one `From` (also counting `From :`) → else
+   `malformed_headers`. This closes a replay attack where a validly signed mail
+   from another account of the same provider gets an extra From in front of a line
+   Python stops at.
 2. **Automatic mail** → `automatic`: `Auto-Submitted` other than `no`,
    `Precedence: bulk|junk|list`, empty or `MAILER-DAEMON` / `postmaster` return
    path or From, `multipart/report`.
@@ -262,7 +269,11 @@ poll, never as a second reply.
    equal the admin-entered `authserv_id`. RFC 8601 comments and quoted strings are
    stripped before parsing, so `;` and tokens inside them cannot forge a verdict.
    `dkim=pass` must be the method token of a result, with a standalone `header.d`
-   property equal to or a parent of the From domain.
+   property (containing a dot) equal to or a parent of the From domain, **and** the
+   same header must show `dmarc=pass` with `header.from` equal to the From domain.
+   DMARC is the server's own reading of the From header (it fails on multiple From
+   headers), which binds the signature to the address compared in step 4. A mail
+   server that does not run DMARC therefore accepts no replies.
 6. **Duplicate** (reply Message-ID, or a hash of the headers, already stored) →
    moved to Processed.
 7. **Accept.** The full message is fetched, parsed and stored; then the **full**

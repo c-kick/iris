@@ -56,6 +56,14 @@ def test_accept_claim_and_interacted(email_live):
     assert "reply.received" in types and "reply.claimed" in types and "delivery.interacted" in types
 
 
+def _hidden_from(did: str) -> bytes:
+    """Replay attack: a validly signed mail from mallory with an extra `From: alex` put in front of a line
+    Python's parser does not recognise, so Python would see only the extra From."""
+    raw = reply_raw(did, sender="mallory@example.org")
+    first, rest = raw.split(b"\r\n", 1)
+    return first + b"\r\nFrom: alex@example.org\r\nX-Pad : 1\r\n" + rest
+
+
 @pytest.mark.parametrize("make,reason", [
     (lambda did: reply_raw(did, extra=[("Auto-Submitted", "auto-replied")]), "automatic"),
     (lambda did: reply_raw("dlv_" + "f" * 22), "no_thread"),
@@ -63,12 +71,15 @@ def test_accept_claim_and_interacted(email_live):
     (lambda did: reply_raw(did, auth_results=["mx.example.org; dkim=none",
                                               "mx.example.org; dkim=pass header.d=example.org"]), "dkim_fail"),
     (lambda did: reply_raw(did, auth_results=[]), "dkim_fail"),
+    (lambda did: _hidden_from(did), "malformed_headers"),
 ])
 def test_quarantine_reasons(email_live, make, reason):
     nid, did = send(email_live)
     assert deliver(email_live, make(did)) is None
     row = email_live.service.db.one("SELECT reason, subject FROM reply_quarantine ORDER BY id DESC LIMIT 1")
-    assert row["reason"] == reason and row["subject"] == "Re: [home] Pick a design"
+    assert row["reason"] == reason
+    if reason != "malformed_headers":  # Python's parser never reaches the subject of a malformed block
+        assert row["subject"] == "Re: [home] Pick a design"
     assert email_live.service.db.scalar("SELECT COUNT(*) FROM replies") == 0
 
 

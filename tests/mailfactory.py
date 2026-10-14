@@ -17,7 +17,8 @@ def reply_raw(delivery_id: str, *, sender: str = "alex@example.org", text: str =
     m = EmailMessage()
     domain = sender.rpartition("@")[2]
     for ar in (auth_results if auth_results is not None else
-               [f"mx.example.org; dkim=pass (2048-bit key) header.d={domain} header.s=s1; spf=pass smtp.mailfrom={sender}"]):
+               [f"mx.example.org; dkim=pass (2048-bit key) header.d={domain} header.s=s1; spf=pass smtp.mailfrom={sender};"
+                f" dmarc=pass (policy=none) header.from={domain}"]):
         m["Authentication-Results"] = ar
     m["From"] = f"Alex <{sender}>"
     m["To"] = "replies@example.org"

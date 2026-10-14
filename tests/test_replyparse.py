@@ -54,7 +54,8 @@ def test_dkim_first_header_only():
     assert not rp.dkim_passes(forged, "mx.example.org", "example.org")
     assert not rp.dkim_passes(head(reply_raw(DLV, auth_results=[])), "mx.example.org", "example.org")
     parent = head(reply_raw(DLV, sender="alex@mail.example.org",
-                            auth_results=["mx.example.org; dkim=pass header.d=example.org"]))
+                            auth_results=["mx.example.org; dkim=pass header.d=example.org;"
+                                          " dmarc=pass header.from=mail.example.org"]))
     assert rp.dkim_passes(parent, "mx.example.org", "mail.example.org")
     assert not rp.dkim_passes(parent, "", "mail.example.org")
 
@@ -133,7 +134,8 @@ def test_hostile_headers_never_raise():
 
 
 def _dk(ar: str, dom: str = "example.org") -> bool:
-    return rp.dkim_passes(head(reply_raw(DLV, auth_results=[ar])), "mx.example.org", dom)
+    return rp.dkim_passes(head(reply_raw(DLV, auth_results=[f"{ar}; dmarc=pass header.from={dom}"])),
+                          "mx.example.org", dom)
 
 
 def test_dkim_rejects_injected_verdicts():
@@ -184,4 +186,47 @@ def test_from_rejects_ambiguous_forms():
               b"Alex <alex@example.org> trailing",
               b"Alex <\"alex\"@example.org>",
               b"alex@@example.org", b"", b"Alex"):
+        assert from_of(v) == "", v
+
+
+def test_from_parsing_is_linear_on_hostile_input():
+    import time
+    for v in (b" " * 50000, b"a " * 25000, b'"' + b"\\x" * 25000, b"a" * 50000 + b"@", b"x" * 30000 + b" <",
+              b"a@" + b"b." * 20000, b"a" + b" " * 60000 + b"b", b'"a' + b" " * 60000):
+        t = time.perf_counter()
+        assert from_of(v) == ""
+        assert time.perf_counter() - t < 0.5, v[:20]
+
+
+def test_dkim_requires_dmarc_for_the_from_domain():
+    def ok(ar: str) -> bool:
+        return rp.dkim_passes(head(reply_raw(DLV, auth_results=[ar])), "mx.example.org", "example.org")
+    assert ok("mx.example.org; dkim=pass header.d=example.org; dmarc=pass (p=none) header.from=example.org")
+    assert not ok("mx.example.org; dkim=pass header.d=example.org")                      # no DMARC verdict
+    assert not ok("mx.example.org; dkim=pass header.d=example.org; dmarc=fail header.from=example.org")
+    assert not ok("mx.example.org; dkim=pass header.d=example.org; dmarc=pass header.from=evil.org")
+    assert not ok("mx.example.org; dkim=pass header.d=org; dmarc=pass header.from=example.org")  # d without a dot
+    assert not ok("mx.example.org; dmarc=pass header.from=example.org")                  # no DKIM pass
+
+
+GOOD_BLOCK = (b"Authentication-Results: mx.example.org; dkim=pass header.d=example.org\r\n"
+              b"DKIM-Signature: v=1; a=rsa-sha256;\r\n\tb=abc\r\n"
+              b"From: Alex <alex@example.org>\r\nSubject: Re: x\r\n\r\n")
+
+
+def test_header_block_problem():
+    assert rp.header_block_problem(GOOD_BLOCK) is None
+    hidden = (b"From: victim@example.org\r\nX-Pad : 1\r\nFrom: mallory@example.org\r\n\r\n")  # Python stops at X-Pad
+    assert rp.header_block_problem(hidden) == "a header line has no valid name"
+    assert rp.header_block_problem(b"X-A: 1\rFrom: v@example.org\r\n\r\n") == "bare CR or LF in the headers"
+    assert rp.header_block_problem(b"X-A: 1\nFrom: v@example.org\r\n\r\n") == "bare CR or LF in the headers"
+    assert rp.header_block_problem(b"From: a\x01b@example.org\r\n\r\n") == "control character in the headers"
+    assert rp.header_block_problem(b"X-P\xe9: 1\r\nFrom: v@example.org\r\n\r\n") == "a header line has no valid name"
+    assert rp.header_block_problem(b" X: 1\r\nFrom: v@example.org\r\n\r\n") == "headers start with a continuation line"
+    assert rp.header_block_problem(b"Subject: x\r\n\r\n") == "not exactly one From header"
+    assert rp.header_block_problem(b"From: a@example.org\r\nfrom: b@example.org\r\n\r\n") == "not exactly one From header"
+
+
+def test_from_rejects_control_characters():
+    for v in (b"\x1fv@example.org\x1f", b"a\x00b <v@example.org>", b'"a\x01" <v@example.org>'):
         assert from_of(v) == "", v

@@ -54,8 +54,11 @@ def thread_delivery_ids(msg: EmailMessage) -> list[str]:
 
 
 _ADDR = r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
-_FROM_BARE = re.compile(rf"\s*({_ADDR})\s*")
-_FROM_NAMED = re.compile(rf'\s*(?:"(?:[^"\\@]|\\[^@])*"|[^"<>@,;:()\\]*?)\s*<({_ADDR})>\s*')
+# One quantifier per stretch of input and no overlapping character classes, so matching stays linear
+# (an earlier version backtracked quadratically on long runs of spaces).
+_FROM_BARE = re.compile(rf"({_ADDR})")
+_FROM_NAMED = re.compile(rf'(?:"(?:[^"\\@\x00-\x1f\x7f]|\\[^@\x00-\x1f\x7f])*"[ \t]*|[^"<>@,;:()\\\x00-\x1f\x7f]*)<({_ADDR})>')
+_FROM_MAX = 998  # RFC 5322 line limit; longer From values are not genuine replies
 
 
 def from_address(msg: EmailMessage) -> str:
@@ -68,7 +71,9 @@ def from_address(msg: EmailMessage) -> str:
         return ""
     if len(values) != 1:
         return ""
-    raw = re.sub(r"\r?\n[ \t]+", " ", values[0])
+    raw = re.sub(r"\r?\n[ \t]+", " ", values[0]).strip(" \t")
+    if len(raw) > _FROM_MAX:
+        return ""
     m = _FROM_BARE.fullmatch(raw) or _FROM_NAMED.fullmatch(raw)
     return m.group(1).lower() if m else ""
 
@@ -118,9 +123,38 @@ def _strip_comments_quotes(v: str) -> str:
     return re.sub(r"\s+", " ", "".join(out))
 
 
+_HEADER_LINE = re.compile(rb"[!-9;-~]+:")
+_FROM_LINE = re.compile(rb"from[ \t]*:", re.I)
+
+
+def header_block_problem(raw_headers: bytes) -> str | None:
+    """Check the header block ourselves, so Python's lenient parser (which silently ends the headers at
+    the first line it does not recognise, and treats a bare CR as a line break) can never see a different
+    set of headers than the mail server and its DKIM/DMARC checks did. Returns a reason, or None."""
+    end = raw_headers.find(b"\r\n\r\n")
+    block = raw_headers if end < 0 else raw_headers[:end]
+    if re.search(rb"\r(?!\n)|(?<!\r)\n", block):
+        return "bare CR or LF in the headers"
+    if re.search(rb"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", block):
+        return "control character in the headers"
+    lines = block.split(b"\r\n")
+    if not lines or lines[0][:1] in (b" ", b"\t"):
+        return "headers start with a continuation line"
+    froms = 0
+    for line in lines:
+        if line[:1] in (b" ", b"\t"):
+            continue
+        if not _HEADER_LINE.match(line):
+            return "a header line has no valid name"
+        froms += bool(_FROM_LINE.match(line))
+    return None if froms == 1 else "not exactly one From header"
+
+
 def dkim_passes(msg: EmailMessage, authserv_id: str, from_domain: str) -> bool:
     """Only the first Authentication-Results header counts: the receiving server prepends its own,
-    and anything below it may have been written by the sender."""
+    and anything below it may have been written by the sender. It must show dkim=pass for the From
+    domain (or a parent) AND dmarc=pass for exactly that From domain: DMARC is the server's own reading
+    of the From header, which binds the signature to the address we compare."""
     if not authserv_id or not from_domain:
         return False
     try:
@@ -133,13 +167,17 @@ def dkim_passes(msg: EmailMessage, authserv_id: str, from_domain: str) -> bool:
     if not parts[0] or parts[0].split()[0].lower() != authserv_id.strip().lower():
         return False
     from_domain = from_domain.lower().rstrip(".")
+    dkim = dmarc = False
     for p in parts[1:]:
         if re.match(r"dkim\s*=\s*pass(?:\s|$)", p, re.I):
             m = re.search(r"(?:^|\s)header\.d\s*=\s*([a-z0-9.-]+)", p, re.I)
             d = m.group(1).lower().rstrip(".") if m else ""
-            if d and (from_domain == d or from_domain.endswith("." + d)):
-                return True
-    return False
+            if "." in d and (from_domain == d or from_domain.endswith("." + d)):
+                dkim = True
+        elif re.match(r"dmarc\s*=\s*pass(?:\s|$)", p, re.I):
+            m = re.search(r"(?:^|\s)header\.from\s*=\s*([a-z0-9.-]+)", p, re.I)
+            dmarc = dmarc or bool(m and m.group(1).lower().rstrip(".") == from_domain)
+    return dkim and dmarc
 
 
 def strip_quotes(text: str) -> tuple[str, bool]:
