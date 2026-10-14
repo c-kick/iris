@@ -249,7 +249,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $N
 
 curl -s -H "Authorization: Bearer $TOKEN" $N/v1/notifications/ntf_...     # status + attempts + events
 curl -s -H "Authorization: Bearer $TOKEN" "$N/v1/notifications?status=failed,expired&limit=20"
-curl -s -H "Authorization: Bearer $TOKEN" $N/v1/attention                   # failed / stuck / awaiting ack
+curl -s -H "Authorization: Bearer $TOKEN" $N/v1/attention                   # failed / stuck / awaiting ack (dismissible in Admin → Activity)
 curl -s -H "Authorization: Bearer $TOKEN" $N/v1/targets                     # targets + capabilities
 curl -s -X POST -H "Authorization: Bearer $TOKEN" $N/v1/notifications/ntf_.../retry
 curl -s -X POST -H "Authorization: Bearer $TOKEN" $N/v1/notifications/ntf_.../cancel

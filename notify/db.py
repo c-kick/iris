@@ -289,7 +289,7 @@ class Database:
             "notifications": {"reply_wanted": "INTEGER NOT NULL DEFAULT 0", "in_reply_to": "TEXT",
                               "conversation_id": "TEXT", "listener_seen_at": "TEXT",
                               "auto_submitted": "INTEGER NOT NULL DEFAULT 0"},
-            "deliveries": {"recipient_address": "TEXT"},
+            "deliveries": {"recipient_address": "TEXT", "dismissed_at": "TEXT"},
         })
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")

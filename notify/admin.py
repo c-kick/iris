@@ -613,6 +613,8 @@ async def manage(nid: str, action: str, request: Request, client: Client = Depen
             return svc.retry(client, nid)
         if action == "cancel":
             return await svc.cancel(client, nid)
+        if action == "dismiss":
+            return svc.dismiss(client, nid)
     except Conflict as e:
         raise HTTPException(409, str(e)) from e
     except NotFound as e:

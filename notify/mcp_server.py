@@ -193,8 +193,9 @@ def build_mcp(get_service: Any) -> FastMCP:
 
     @mcp.tool()
     async def list_attention(ctx: Context) -> dict[str, Any]:
-        """Deliveries needing attention: failed or expired (last 7 days), retrying, stuck in the queue,
-        critical alerts still awaiting acknowledgement, and providers that are not ready."""
+        """Deliveries needing attention: failed or expired (last 7 days, unless an admin dismissed them),
+        retrying, stuck in the queue, critical alerts still awaiting acknowledgement, and providers that are
+        not ready. Each item's `at` is when it last changed (for failed/expired: when it failed)."""
         client = _client(ctx)
         _need(client, Scope.read)
         return await call(svc().attention, client)

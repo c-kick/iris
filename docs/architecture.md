@@ -460,7 +460,8 @@ Streamable HTTP at `/mcp` in the same process, same bearer tokens and scopes.
 also takes `attachments` (URLs recommended, inline data up to 256 KiB), `reply` and
 `in_reply_to`. Tools:
 `send_notification`, `preview_routing`, `get_notification`,
-`list_notifications`, `list_attention` (failed / pending / stuck / awaiting ack),
+`list_notifications`, `list_attention` (failed / pending / stuck / awaiting ack; failed and expired items
+an admin dismissed in Admin → Activity are left out, `deliveries.dismissed_at`, cleared by a retry),
 `list_targets`, `retry_notification`, `cancel_notification`, `get_replies`
 (conversation replies with state; text only for claimed ones). Resources:
 `notify://targets`, `notify://notifications/{id}`. Everything is phrased in

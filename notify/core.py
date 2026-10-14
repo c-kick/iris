@@ -681,7 +681,7 @@ class NotifyService:
         for d in self.db.query("SELECT * FROM deliveries WHERE notification_id=?", (nid,)):
             if d["state"] == FAILED:
                 fields: dict[str, Any] = {"attempts": 0, "next_attempt_at": now, "finalized_at": None,
-                                          "last_error": d["last_error"]}
+                                          "last_error": d["last_error"], "dismissed_at": None}
                 gaps = loads(d["capability_gaps_json"], [])
                 if gap and gap not in gaps:
                     fields["capability_gaps_json"] = dumps([*gaps, gap])
@@ -699,6 +699,16 @@ class NotifyService:
         if not any(r["result"] in ("requeued", "retry_now") for r in results):
             raise Conflict("nothing to retry (only failed or waiting deliveries can be retried)", results)
         return {"notification": self.get(client, nid, detail=False), "results": results}
+
+    def dismiss(self, client: Client, nid: str) -> dict[str, Any]:
+        """Take a notification's failed/expired deliveries off the attention list; history is unchanged."""
+        self._notification_row(client, nid)
+        with self.db.tx() as c:
+            n = c.execute("UPDATE deliveries SET dismissed_at=? WHERE notification_id=? AND state IN (?,?)"
+                          " AND dismissed_at IS NULL", (now_iso(), nid, FAILED, EXPIRED)).rowcount
+        if not n:
+            raise Conflict("nothing to dismiss (no failed or expired deliveries left on the attention list)")
+        return {"dismissed": n}
 
     # --------------------------------------------------------------- queries
     def _delivery_out(self, d: sqlite3.Row, attempts: list[sqlite3.Row] | None = None) -> dict[str, Any]:
@@ -814,11 +824,12 @@ class NotifyService:
             return [{"notification_id": r["notification_id"], "delivery_id": r["id"], "title": r["title"],
                      "severity": r["severity"], "source": r["source"], "device": r["device"], "state": r["state"],
                      "attempts": r["attempts"], "last_error": r["last_error"], "created_at": r["n_created"],
+                     "at": r["updated_at"],
                      "next_attempt_at": r["next_attempt_at"] if r["state"] == QUEUED else None} for r in res]
 
         return {
-            "failed": rows("d.state=? AND d.updated_at >= ?", [FAILED, since]),
-            "expired": rows("d.state=? AND d.updated_at >= ?", [EXPIRED, since]),
+            "failed": rows("d.state=? AND d.updated_at >= ? AND d.dismissed_at IS NULL", [FAILED, since]),
+            "expired": rows("d.state=? AND d.updated_at >= ? AND d.dismissed_at IS NULL", [EXPIRED, since]),
             "retrying": rows("d.state=? AND d.attempts > 0", [QUEUED]),
             "stuck": rows("d.state IN (?,?) AND d.created_at <= ?", [QUEUED, SENDING, stuck_cut]),
             "awaiting_acknowledgement": rows("d.tracking='receipt' AND d.state IN (?,?)", [DISPATCHED, DELIVERED]),

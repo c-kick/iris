@@ -74,6 +74,15 @@ function toast(msg) {
   toast.t = setTimeout(() => (toastEl.hidden = true), 3200);
 }
 
+function ago(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso)) / 1000);
+  if (!iso || Number.isNaN(s)) return "";
+  if (s < 90) return "just now";
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  if (s < 129600) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} days ago`;
+}
+
 function when(iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -885,12 +894,29 @@ async function loadRecent(el, limit, attentionEl) {
   catch (ex) { el.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
   if (attentionEl) {
     const a = data.attention;
-    const items = [...a.failed, ...a.stuck, ...a.retrying];
+    const groups = new Map(); // one row per notification and kind, listing its devices
+    for (const [kind, list] of [["failed", a.failed], ["expired", a.expired], ["stuck", a.stuck], ["retrying", a.retrying]]) {
+      for (const x of list) {
+        const key = `${kind}:${x.notification_id}`;
+        const g = groups.get(key) || { kind, x, devices: [], at: x.at };
+        g.devices.push(x.device);
+        if (x.at > g.at) g.at = x.at;
+        groups.set(key, g);
+      }
+    }
+    const items = [...groups.values()].sort((p, q) => (q.at || "").localeCompare(p.at || ""));
     attentionEl.innerHTML = items.length || a.awaiting_acknowledgement.length ? `
       <h3>Needs attention</h3><div class="rows">
       ${a.awaiting_acknowledgement.map((x) => `<div class="row"><span class="lamp warn"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">Critical alert on ${esc(x.device)} not acknowledged yet</div></div></div>`).join("")}
-      ${items.map((x) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">${esc(x.state)} on ${esc(x.device)} after ${x.attempts} attempts: ${esc(x.last_error || "")}</div></div></div>`).join("")}
+      ${items.map(({ kind, x, devices, at }) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
+        <div class="sub">${esc(when(at))} (${esc(ago(at))})</div>
+        <div class="sub">${esc(kind)} on ${esc(devices.join(", "))} after ${x.attempts} attempts: ${esc(x.last_error || "")}</div></div>
+        ${kind === "failed" || kind === "expired" ? `<div class="actions"><button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button></div>` : ""}</div>`).join("")}
       </div>` : "";
+    attentionEl.querySelectorAll("[data-dismiss]").forEach((b) => (b.onclick = async () => {
+      try { await api("POST", `/notifications/${b.dataset.dismiss}/dismiss`); toast("Dismissed"); loadRecent(el, limit, attentionEl); }
+      catch (ex) { toast(ex.message); }
+    }));
   }
   if (!data.notifications.length) { el.innerHTML = `<div class="empty">Nothing sent yet.</div>`; return; }
   el.innerHTML = data.notifications.map((n) => `
