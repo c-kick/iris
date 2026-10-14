@@ -5,8 +5,9 @@ from __future__ import annotations
 import functools
 import hmac
 import json
+import re
 from typing import Any, AsyncIterator
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
@@ -101,6 +102,37 @@ async def cancel(nid: str, request: Request, client: Client = Depends(require(Sc
 @_errors
 async def retry(nid: str, request: Request, client: Client = Depends(require(Scope.manage))) -> dict[str, Any]:
     return service(request).retry(client, nid)
+
+
+# ------------------------------------------------------------------ replies
+
+@router.post("/v1/notifications/{nid}/replies/claim", tags=["replies"], responses={204: {"description": "no reply yet"}})
+@_errors
+async def claim_reply(nid: str, request: Request,
+                      waiter: str = Query(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$",
+                                          description="Opaque id of this wait; a retry with the same id gets the same reply"),
+                      wait: float = Query(default=50, ge=0, le=55, description="Seconds to wait for a reply"),
+                      client: Client = Depends(require(Scope.read))) -> Response:
+    out = await service(request).replies.claim(client, nid, waiter, wait)
+    return Response(status_code=204) if out is None else JSONResponse(out)
+
+
+@router.get("/v1/notifications/{nid}/replies", tags=["replies"])
+@_errors
+async def list_replies(nid: str, request: Request, client: Client = Depends(require(Scope.read))) -> dict[str, Any]:
+    return {"items": service(request).replies.list(client, nid)}
+
+
+@router.get("/v1/replies/{rid}/attachments/{idx}", tags=["replies"])
+@_errors
+async def reply_attachment(rid: str, idx: int, request: Request,
+                           client: Client = Depends(require(Scope.read))) -> Response:
+    filename, ctype, data = service(request).replies.attachment(client, rid, idx)
+    if not re.fullmatch(r"[\w.+-]+/[\w.+-]+", ctype):
+        ctype = "application/octet-stream"
+    return Response(content=data, media_type=ctype,
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
+                             "X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/v1/attention", tags=["notifications"])

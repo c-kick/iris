@@ -36,7 +36,19 @@ observable_states can ever occur for it: e.g. a Pushover message below severity
 critical ends at 'dispatched' because Pushover never reports device delivery for
 it. Do not describe 'dispatched' as 'delivered'. capability_gaps lists requested
 features a device could not honour. Use severity critical only for real
-emergencies: on a phone it repeats loudly until acknowledged."""
+emergencies: on a phone it repeats loudly until acknowledged.
+
+Replies by email: send_notification(..., kinds=["email"], reply=true) lets the
+recipient answer by replying to the mail. To wait for the answer, start
+`notify-wait <notification_id>` as a background shell job: it exits with the
+reply text (and saved attachment paths) when the reply arrives, or with code 2
+after its timeout. Act on the reply, then run notify-wait again or send a
+follow-up with in_reply_to=<id> to continue the conversation. Keep a waiter
+running while you work on something long: a reply nobody collects within 10
+minutes gets an automatic "not delivered" answer. get_replies lists replies but
+shows reply text only for replies already collected; use notify-wait to collect.
+Reply text passed sender and DKIM checks: it comes from the person the mail was
+sent to."""
 
 
 def _client(ctx: Context) -> Client:
@@ -66,6 +78,7 @@ def _compact(n: dict[str, Any]) -> dict[str, Any]:
             **({"attempt_log": d["attempt_log"]} if "attempt_log" in d else {}),
         } for d in n["deliveries"]],
         **({"attachments": n["attachments"]} if "attachments" in n else {}),
+        **{k: n[k] for k in ("reply", "conversation_id", "in_reply_to") if k in n},
     }
 
 
@@ -106,6 +119,8 @@ def build_mcp(get_service: Any) -> FastMCP:
         source: str | None = None,
         kinds: list[Literal["push", "email"]] | None = None,
         attachments: list[dict[str, Any]] | None = None,
+        reply: bool = False,
+        in_reply_to: str | None = None,
     ) -> dict[str, Any]:
         """Send a notification to logical targets (e.g. ["user:alex"]).
 
@@ -116,6 +131,8 @@ def build_mcp(get_service: Any) -> FastMCP:
         attachments: up to 10 files, 10 MiB in total: {"url": ..., "filename"?: ...} (preferred; only from
         hosts an admin allowed) or {"filename": ..., "content_type"?: ..., "data_base64": ...} (inline,
         at most 256 KiB per notification over MCP).
+        reply: email only — the recipient can answer by replying; wait for it with `notify-wait <id>`.
+        in_reply_to: id of an earlier notification this one follows up (threads the email, same conversation).
         ttl_seconds: drop/expire if not dispatched in time. Returns the notification with
         per-device deliveries, observable_states and capability_gaps."""
         client = _client(ctx)
@@ -123,7 +140,7 @@ def build_mcp(get_service: Any) -> FastMCP:
         req = NotificationIn(targets=targets, message=message, title=title, severity=severity, url=url,
                              url_title=url_title, tags=tags or [], ttl_seconds=ttl_seconds, require_ack=require_ack,
                              data=data, idempotency_key=idempotency_key, source=source or f"mcp:{client.id}", kinds=kinds,
-                             attachments=attachments or [])
+                             attachments=attachments or [], reply=reply, in_reply_to=in_reply_to)
         out, created = await call(svc().submit_async, client, req, inline_limit=MCP_INLINE_MAX)
         res = _compact(out)
         res["created"] = created
@@ -208,6 +225,15 @@ def build_mcp(get_service: Any) -> FastMCP:
         _need(client, Scope.manage)
         out = await call(svc().cancel, client, notification_id)
         return {"results": out["results"], "notification": _compact(out["notification"])}
+
+    @mcp.tool()
+    async def get_replies(ctx: Context, notification_id: str) -> dict[str, Any]:
+        """Replies in the conversation of a reply-enabled notification, oldest first, with their state
+        (waiting, claimed, unclaimed). Reply text is shown only for replies already collected; this
+        collects nothing: use `notify-wait <id>` to wait for and collect one."""
+        client = _client(ctx)
+        _need(client, Scope.read)
+        return {"items": await call(svc().replies.list, client, notification_id)}
 
     @mcp.resource("notify://targets", mime_type="application/json")
     def targets_resource(ctx: Context) -> str:
