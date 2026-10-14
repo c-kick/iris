@@ -243,7 +243,10 @@ def email_factory(tmp_path, fake, sent_mail):
         srv = LiveServer(app, fake)
         srv.start()
         srv.service.resolve = fake_resolve
-        srv.mailbox = None  # replaced by a FakeMailbox once tests/mailfactory.py exists (Task 5)
+        from tests.mailfactory import FakeMailbox
+        srv.mailbox = FakeMailbox()
+        srv.service.open_mailbox = lambda provider, box=srv.mailbox: box
+        srv.app.state.workers.inbound_interval = 3600.0  # tests poll explicitly unless they shorten this
         servers.append(srv)
         return srv
 

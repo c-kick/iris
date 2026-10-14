@@ -200,6 +200,10 @@ class EmailProvider(Provider):
     def message_id(self, delivery_id: str) -> str:
         return f"<{delivery_id}@{self.from_address.rpartition('@')[2]}>"
 
+    def mailbox(self) -> Any:
+        from .email_inbound import ImapMailbox
+        return ImapMailbox.for_provider(self)
+
     # --- capabilities ---
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -458,4 +462,8 @@ class EmailProvider(Provider):
         problems = self.config_problems()
         if problems:
             return {"supported": True, "ok": False, "error": "; ".join(problems)}
-        return await asyncio.to_thread(self._test_sync)
+        out = await asyncio.to_thread(self._test_sync)
+        if any(getattr(self, k) for k in _REPLY_KEYS):
+            rp = self.replies_problems()
+            out["imap"] = {"ok": False, "error": "; ".join(rp)} if rp else await asyncio.to_thread(self.mailbox().test)
+        return out

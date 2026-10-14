@@ -14,6 +14,7 @@ import httpx
 from .core import Client, Conflict, NotifyService
 from .db import dumps, now_iso
 from .providers.base import ProviderError, SendResult
+from .providers.email_inbound import poll_once
 
 log = logging.getLogger("notify.worker")
 
@@ -33,11 +34,13 @@ class Workers:
         self._busy: dict[str, int] = {name: 0 for name in service.providers}
         self._stopping = False
         self.receipt_pause = 5.0  # Pushover: poll no faster than once per 5 s
+        self.inbound_interval = 30.0
 
     # ---------------------------------------------------------------- control
     def start(self) -> None:
         self.service.recover_leases(all_sending=True)
-        for coro in (self._dispatch_loop(), self._receipt_loop(), self._webhook_loop(), self._sweep_loop()):
+        for coro in (self._dispatch_loop(), self._receipt_loop(), self._webhook_loop(), self._sweep_loop(),
+                     self._inbound_loop()):
             self._tasks.append(asyncio.create_task(coro))
 
     async def stop(self, grace: float = 10.0) -> None:
@@ -139,6 +142,35 @@ class Workers:
                 await asyncio.sleep(self.receipt_pause)
             await asyncio.sleep(self.receipt_pause)
         await self._guard("receipts", once, 5.0)
+
+    # ------------------------------------------------------------------ replies
+    async def _inbound_loop(self) -> None:
+        failures: dict[str, int] = {}
+        next_at: dict[str, float] = {}
+
+        async def once() -> None:
+            start = time.monotonic()
+            while time.monotonic() - start < self.inbound_interval:  # re-read each second: tests shorten it
+                await asyncio.sleep(min(1.0, self.inbound_interval))
+            svc = self.service
+            for name, p in list(svc.providers.items()):
+                if not getattr(p, "replies_ready", False) or time.monotonic() < next_at.get(name, 0.0):
+                    continue
+                status = svc.inbound_status.setdefault(name, {"last_success": None, "last_error": None})
+                try:
+                    mailbox = svc.open_mailbox(p) if svc.open_mailbox else p.mailbox()  # type: ignore[attr-defined]
+                    status["last_stats"] = await poll_once(svc, p, mailbox)  # type: ignore[arg-type]
+                    status.update(last_success=now_iso(), last_error=None)
+                    failures[name] = 0
+                except Exception as e:
+                    failures[name] = failures.get(name, 0) + 1
+                    delay = min(900.0, 10.0 * 3 ** (failures[name] - 1))
+                    next_at[name] = time.monotonic() + delay
+                    status["last_error"] = f"{type(e).__name__}: {e}"[:300]
+                    log.warning("reply mailbox check failed",
+                                extra={"provider": name, "error": status["last_error"], "retry_in": delay})
+            svc.replies.sweep_unclaimed()
+        await self._guard("inbound", once, 30.0)
 
     # ---------------------------------------------------------------- webhooks
     async def _webhook_loop(self) -> None:

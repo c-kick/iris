@@ -305,7 +305,7 @@ async def metrics(request: Request) -> PlainTextResponse:
         if quota:
             lines.append(f'notify_provider_quota_remaining{{provider="{name}"}} {quota["remaining"]}')
     workers = request.app.state.workers
-    for name in ("dispatcher", "receipts", "webhooks"):
+    for name in ("dispatcher", "receipts", "webhooks", "inbound"):
         age = workers.heartbeat_age(name) if workers else None
         if age is not None:
             lines.append(f'notify_worker_heartbeat_age_seconds{{worker="{name}"}} {age:.1f}')

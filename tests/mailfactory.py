@@ -43,3 +43,48 @@ def split_headers(raw: bytes) -> bytes:
     """What IMAP BODY.PEEK[HEADER] returns: the header block including the blank line."""
     end = raw.find(b"\r\n\r\n")
     return raw if end < 0 else raw[:end + 4]
+
+
+class FakeMailbox:
+    """In-memory stand-in for ImapMailbox."""
+
+    def __init__(self) -> None:
+        self.inbox, self.processed, self.quarantine = "INBOX", "Processed", "Quarantine"
+        self.messages: dict[bytes, bytes] = {}
+        self.sizes: dict[bytes, int] = {}
+        self.folders: dict[str, list[bytes]] = {self.inbox: [], self.processed: [], self.quarantine: []}
+        self.fail_move_once = False
+        self.fetched: list[bytes] = []
+        self.opened = self.closed = 0
+        self._next = 1
+
+    def add(self, raw: bytes, size: int | None = None) -> bytes:
+        uid = str(self._next).encode()
+        self._next += 1
+        self.messages[uid] = raw
+        self.sizes[uid] = len(raw) if size is None else size
+        self.folders[self.inbox].append(uid)
+        return uid
+
+    def open(self) -> None:
+        self.opened += 1
+
+    def close(self) -> None:
+        self.closed += 1
+
+    def list(self) -> list[tuple[bytes, int]]:
+        return [(u, self.sizes[u]) for u in self.folders[self.inbox]]
+
+    def fetch_headers(self, uid: bytes) -> bytes:
+        return split_headers(self.messages[uid])
+
+    def fetch(self, uid: bytes) -> bytes:
+        self.fetched.append(uid)
+        return self.messages[uid]
+
+    def move(self, uid: bytes, folder: str) -> None:
+        if self.fail_move_once:
+            self.fail_move_once = False
+            raise OSError("connection reset during MOVE")
+        self.folders[self.inbox].remove(uid)
+        self.folders[folder].append(uid)
