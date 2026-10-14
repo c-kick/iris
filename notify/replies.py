@@ -140,12 +140,17 @@ class Replies:
         n = self.svc._notification_row(client, nid)
         rows = self.svc.db.query("SELECT * FROM replies WHERE conversation_id=? ORDER BY received_at, id",
                                  (n["conversation_id"] or n["id"],))
-        return [self._out(r) for r in rows]
+        out = [self._out(r) for r in rows]
+        if not client.admin:  # content of a reply nobody claimed is never handed to an agent
+            for o in out:
+                if o["state"] != "claimed":
+                    o.update(text=None, attachments=[], dropped_attachments=[])
+        return out
 
     def attachment(self, client: Client, rid: str, idx: int) -> tuple[str, str, bytes]:
         from .core import NotFound
-        r = self.svc.db.one("SELECT notification_id FROM replies WHERE id=?", (rid,))
-        if r is None:
+        r = self.svc.db.one("SELECT notification_id, state FROM replies WHERE id=?", (rid,))
+        if r is None or (not client.admin and r["state"] != "claimed"):
             raise NotFound(f"reply {rid} not found")
         self.svc._notification_row(client, r["notification_id"])
         a = self.svc.db.one("SELECT filename, content_type, data FROM reply_attachments WHERE reply_id=? AND idx=?",
@@ -181,13 +186,21 @@ class Replies:
         swept = 0
         for r in rows:
             with self.svc.db.tx() as c:
-                if c.execute("SELECT state FROM replies WHERE id=?", (r["id"],)).fetchone()["state"] != "waiting":
+                cur = c.execute("SELECT state FROM replies WHERE id=?", (r["id"],)).fetchone()
+                if cur is None or cur["state"] != "waiting":
                     continue
+                seen = c.execute("SELECT listener_seen_at FROM notifications WHERE id=?",
+                                 (r["conversation_id"],)).fetchone()
+                if seen is not None and seen[0] and seen[0] >= iso(now - timedelta(seconds=LISTEN_SECONDS)):
+                    continue  # someone started listening since the query
                 c.execute("UPDATE replies SET state='unclaimed' WHERE id=?", (r["id"],))
                 n = c.execute("SELECT * FROM notifications WHERE id=?", (r["notification_id"],)).fetchone()
                 self.svc._emit(c, "reply.unclaimed", n, r["delivery_id"], {"reply_id": r["id"]})
             swept += 1
-            self._autoreply(r)
+            try:
+                self._autoreply(r)
+            except Exception:
+                log.exception("autoreply failed", extra={"reply_id": r["id"]})
         if swept:
             self.svc._after_commit()
         return swept

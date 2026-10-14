@@ -156,6 +156,7 @@ def test_active_listener_prevents_sweep(email_live):
 def test_attachment_download_and_purge(email_live):
     nid, did = send(email_live)
     rid = deliver(email_live, reply_raw(did, attachment=PNG))
+    claim(email_live, nid)
     assert email_live.service.replies.attachment(AGENT, rid, 0) == ("shot.png", "image/png", PNG)
     with pytest.raises(NotFound):
         email_live.service.replies.attachment(OTHER, rid, 0)
@@ -164,3 +165,60 @@ def test_attachment_download_and_purge(email_live):
     email_live.call(email_live.service.retention_sweep)
     with pytest.raises(NotFound):
         email_live.service.replies.attachment(AGENT, rid, 0)
+
+
+ADMIN = Client("admin", frozenset({Scope.admin}))
+
+
+def test_unclaimed_content_not_listed_or_downloadable(email_live):
+    nid, did = send(email_live)
+    rid = deliver(email_live, reply_raw(did, attachment=PNG))
+    replies = email_live.service.replies
+    r = replies.list(AGENT, nid)[0]
+    assert r["state"] == "waiting" and r["text"] is None and r["attachments"] == [] and r["from"]
+    assert replies.list(ADMIN, nid)[0]["text"] == "Go with B."
+    with pytest.raises(NotFound):
+        replies.attachment(AGENT, rid, 0)
+    assert replies.attachment(ADMIN, rid, 0)[0] == "shot.png"
+    claim(email_live, nid)
+    assert replies.list(AGENT, nid)[0]["text"] == "Go with B."
+    assert replies.attachment(AGENT, rid, 0)[0] == "shot.png"
+    with email_live.service.db.tx() as c:
+        c.execute("UPDATE replies SET state='unclaimed' WHERE id=?", (rid,))
+    with pytest.raises(NotFound):
+        replies.attachment(AGENT, rid, 0)
+    assert replies.list(AGENT, nid)[0]["text"] is None
+
+
+def test_sweep_survives_autoreply_failure(email_live, sent_mail):
+    n1, d1 = send(email_live)
+    n2, d2 = send(email_live)
+    r1 = deliver(email_live, reply_raw(d1, message_id="<a@x>"))
+    r2 = deliver(email_live, reply_raw(d2, message_id="<b@x>"))
+    svc, replies = email_live.service, email_live.service.replies
+    real, calls = svc.submit, []
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return real(*a, **kw)
+
+    svc.submit = flaky
+    later = utcnow() + timedelta(seconds=GRACE_SECONDS + 60)
+    replies.now = lambda: later
+    assert email_live.call(replies.sweep_unclaimed) == 2
+    assert len(calls) == 2
+    rows = {r["id"]: r for r in svc.db.query("SELECT id, state, autoreply_notification_id FROM replies")}
+    assert rows[r1]["state"] == rows[r2]["state"] == "unclaimed"
+    assert sum(1 for r in rows.values() if r["autoreply_notification_id"]) == 1
+
+
+def test_claimed_reply_never_swept(email_live):
+    nid, did = send(email_live)
+    rid = deliver(email_live, reply_raw(did))
+    claim(email_live, nid)
+    replies = email_live.service.replies
+    replies.now = lambda: utcnow() + timedelta(seconds=GRACE_SECONDS * 3)
+    assert email_live.call(replies.sweep_unclaimed) == 0
+    assert email_live.service.db.scalar("SELECT state FROM replies WHERE id=?", (rid,)) == "claimed"
