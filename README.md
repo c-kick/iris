@@ -39,6 +39,8 @@ Resource limits (320 MiB, no extra swap, 0.5 CPU, 64 PIDs) are set in
 
 Upgrading to 0.5.0 migrates the database in place. Rolling back to 0.4.0
 requires restoring the pre-0.5.0 database backup (take one before upgrading).
+Upgrading to 0.6.0 migrates the database in place. Rolling back to 0.5.1
+requires restoring the pre-0.6.0 database backup.
 
 Open **http://notify.lan:8930/admin**, enter the setup code and choose an
 admin password. Then, in the admin UI:
@@ -154,6 +156,75 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $N
 - Attachment bytes are kept in the database for 7 days (*Settings → Keep
   attachments for*), then deleted. The database file does not shrink when that
   happens, so size the `data/` volume for your peak.
+
+## Replies to agents
+
+An agent can ask a question by email and get the answer back: the person presses
+Reply in their normal mail client and the new text (and attachments) reaches the
+agent that is waiting for it. Email only; the agent must still be running.
+
+**Setup (admin).** Create a dedicated mailbox (e.g. `replies@example.org`) on a
+mail server you run, with IMAP over TLS. In *Providers → Email*, fill the reply
+fields: *Reply mailbox address* (the `Reply-To`), IMAP server, port (993),
+username and password, and optionally the folder names (`INBOX`, `Processed`,
+`Quarantine`; the last two are created if missing). Press *Test connection*: it
+logs in, checks the folders and lists the `Authentication-Results` server names
+found in the newest message. Enter the one your mail server writes as
+*Mail server name in Authentication-Results* (`authserv_id`, e.g.
+`mx.example.org`); it is never filled in for you. Replies are accepted only when
+the mail server itself reports `dkim=pass` for the sender's domain, so this
+must be a server you trust to add that header to every inbound message.
+
+**Sending.** Add `"reply": true` and an email kind:
+
+```sh
+curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $N/v1/notifications -d '{
+  "targets": ["user:alex"], "kinds": ["email"], "reply": true,
+  "title": "Pick a header design", "message": "A or B? Reply with your choice."
+}'
+# a follow-up in the same thread: "in_reply_to": "<id of the first notification>"
+```
+
+The mail gets `Reply-To` and a footer ("Reply to this email to answer the
+agent."). A push device or an email provider without a reply mailbox shows the
+gap `replies` in `capability_gaps`; the notification is still sent. Once an
+agent collects the first reply, the email delivery becomes `interacted`.
+
+**Waiting.** Start `scripts/notify-wait` as a background job and act when it
+exits:
+
+```
+notify-wait NOTIFICATION_ID [--timeout 60m] [--save-dir DIR] [--url URL] [--json]
+
+Reply from alex@example.org (2026-10-14 15:02 CEST) to "Pick a header design" [rpl_...]:
+Go with B, but use the darker blue.
+Attachments: /tmp/notify-reply-x1y2/screenshot.png
+```
+
+It reads the service address and token from `NOTIFY_URL` / `NOTIFY_TOKEN`, or from
+the `hnl-notify` MCP entry in `~/.claude.json`; the token is never printed.
+Attachments are saved under sanitised names without overwriting anything.
+Exit codes: **0** reply printed, **1** error (credentials, unknown notification,
+bad response), **2** no reply before `--timeout`. Run it again, or send a
+follow-up with `in_reply_to`, to continue. `GET /v1/notifications/{id}/replies`
+and the MCP tool `get_replies` list the replies of a thread; agents see a
+reply's text and attachments only once it has been collected. A reply to an older mail of a thread reaches the
+current waiter.
+
+**When nobody is waiting.** A conversation counts as listened to while a waiter
+polled in the last 2 minutes. A reply that no waiter collects within 10 minutes
+is marked `unclaimed` and the sender gets an automatic mail in the same thread
+saying the agent is no longer listening and the reply was not delivered (at
+most one per conversation per hour). The reply is not handed to an agent later.
+
+**Quarantine.** Mail that fails a check is moved to the `Quarantine` folder and
+listed (reason, sender, subject) under *Activity → Replies*; its content is not
+stored and agents never see it. Reasons: `automatic` (auto-replies, bulk,
+bounces), `no_thread` (not a reply to our mail), `not_reply_enabled`,
+`sender_mismatch` (not from the address the mail was sent to), `dkim_fail`,
+`too_large` (over 15 MiB, or an oversized or unsized header), `header_mismatch`,
+`unreadable`. Reply text is capped at 8000 characters; at most 10 attachments
+and 10 MiB are kept.
 
 ## REST examples
 
@@ -284,7 +355,8 @@ is disabled after 50 consecutive failures (visible in `GET /v1/subscriptions`).
 Event types: `notification.created`, `notification.status_changed`,
 `delivery.queued`, `delivery.attempt_failed`, `delivery.dispatched`,
 `delivery.delivered`, `delivery.acknowledged`, `delivery.interacted`,
-`delivery.failed`, `delivery.expired`, `delivery.cancelled`.
+`delivery.failed`, `delivery.expired`, `delivery.cancelled`, `reply.received`,
+`reply.claimed`, `reply.unclaimed`, `reply.quarantined`.
 
 ## Letting apps ask for access (self-registration)
 
@@ -328,10 +400,11 @@ claude mcp add --transport http hnl-notify http://notify.lan:8930/mcp \
 ```
 
 `send_notification` and `preview_routing` take `kinds`; `send_notification`
-also takes `attachments` (URLs recommended, inline data up to 256 KiB). Tools:
+also takes `attachments` (URLs recommended, inline data up to 256 KiB),
+`reply` and `in_reply_to`. Tools:
 `send_notification`, `preview_routing`, `get_notification`,
 `list_notifications`, `list_attention`, `list_targets`, `retry_notification`,
-`cancel_notification`. Resources: `notify://targets`,
+`cancel_notification`, `get_replies`. Resources: `notify://targets`,
 `notify://notifications/{id}`. The server instructions tell agents not to
 report `dispatched` as `delivered` and to reserve `critical` for emergencies.
 
