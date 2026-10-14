@@ -130,3 +130,31 @@ def test_hostile_headers_never_raise():
     assert rp.thread_delivery_ids(m) == []
     assert not rp.dkim_passes(m, "mx.example.org", "example.org")
     assert rp.is_automatic(m) in (True, False)
+
+
+def _dk(ar: str, dom: str = "example.org") -> bool:
+    return rp.dkim_passes(head(reply_raw(DLV, auth_results=[ar])), "mx.example.org", dom)
+
+
+def test_dkim_rejects_injected_verdicts():
+    assert _dk("mx.example.org; dkim=pass header.d=example.org")
+    assert not _dk("mx.example.org; dkim=fail (x; dkim=pass header.d=example.org)")
+    assert not _dk("mx.example.org; dkim=fail (a (b) ; dkim=pass header.d=example.org)")
+    assert not _dk('mx.example.org; dkim=fail reason="a; dkim=pass header.d=example.org"')
+    assert not _dk("mx.example.org; dkim=pass x-header.d=example.org")
+    assert not _dk("mx.example.org; dkim=pass-ish header.d=example.org")
+    assert _dk("mx.example.org; dkim=pass (good) header.d=example.org")
+
+
+def test_multiple_from_headers_rejected():
+    m = rp.parse_headers(b"From: a@example.org\r\nFrom: b@example.org\r\n\r\n")
+    assert rp.from_address(m) == ""
+
+
+def test_deeply_nested_multipart_raises_value_error():
+    import pytest
+    n = 3000
+    raw = b"".join(b"Content-Type: multipart/mixed; boundary=b%d\r\n\r\n--b%d\r\n" % (i, i) for i in range(n))
+    raw = b"From: a@example.org\r\nMIME-Version: 1.0\r\n" + raw + b"Content-Type: text/plain\r\n\r\nhi\r\n"
+    with pytest.raises(ValueError, match="too deeply nested"):
+        rp.parse_reply(raw)

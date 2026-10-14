@@ -54,6 +54,11 @@ def thread_delivery_ids(msg: EmailMessage) -> list[str]:
 
 
 def from_address(msg: EmailMessage) -> str:
+    try:
+        if len(msg.get_all("From") or []) > 1:
+            return ""
+    except Exception:
+        return ""
     addr = parseaddr(header(msg, "From"))[1].strip().lower()
     return addr if "@" in addr else ""
 
@@ -77,6 +82,32 @@ def is_automatic(msg: EmailMessage) -> bool:
     return msg.get_content_type() == "multipart/report"
 
 
+def _strip_comments_quotes(v: str) -> str:
+    """Drop RFC 8601 (nested) comments and quoted strings so ';' and tokens inside them cannot forge a verdict."""
+    out: list[str] = []
+    depth = 0
+    quoted = False
+    i = 0
+    while i < len(v):
+        c = v[i]
+        if c == "\\" and (quoted or depth) and i + 1 < len(v):
+            i += 2
+            continue
+        if quoted:
+            quoted = c != '"'
+        elif c == "(":
+            depth += 1
+        elif depth:
+            depth -= c == ")"
+        elif c == '"':
+            quoted = True
+            out.append(" ")
+        else:
+            out.append(c)
+        i += 1
+    return re.sub(r"\s+", " ", "".join(out))
+
+
 def dkim_passes(msg: EmailMessage, authserv_id: str, from_domain: str) -> bool:
     """Only the first Authentication-Results header counts: the receiving server prepends its own,
     and anything below it may have been written by the sender."""
@@ -88,13 +119,13 @@ def dkim_passes(msg: EmailMessage, authserv_id: str, from_domain: str) -> bool:
         return False
     if first is None:
         return False
-    parts = [p.strip() for p in re.sub(r"\s+", " ", first).split(";")]
-    if parts[0].split(" ")[0].lower() != authserv_id.strip().lower():
+    parts = [p.strip() for p in _strip_comments_quotes(first).split(";")]
+    if not parts[0] or parts[0].split()[0].lower() != authserv_id.strip().lower():
         return False
     from_domain = from_domain.lower().rstrip(".")
     for p in parts[1:]:
-        if re.match(r"dkim\s*=\s*pass\b", p, re.I):
-            m = re.search(r"\bheader\.d\s*=\s*([a-z0-9.-]+)", p, re.I)
+        if re.match(r"dkim\s*=\s*pass(?:\s|$)", p, re.I):
+            m = re.search(r"(?:^|\s)header\.d\s*=\s*([a-z0-9.-]+)", p, re.I)
             d = m.group(1).lower().rstrip(".") if m else ""
             if d and (from_domain == d or from_domain.endswith("." + d)):
                 return True
@@ -222,8 +253,11 @@ class ParsedReply:
 
 def parse_reply(raw: bytes) -> ParsedReply:
     """Full parse of an accepted reply. CPU and memory heavy for big mail: call it off the event loop."""
-    msg = parse_message(raw)
-    text, stripped = strip_quotes(body_text(msg))
-    atts, dropped = extract_attachments(msg)
+    try:
+        msg = parse_message(raw)
+        text, stripped = strip_quotes(body_text(msg))
+        atts, dropped = extract_attachments(msg)
+    except RecursionError:
+        raise ValueError("message structure too deeply nested") from None
     return ParsedReply(from_address(msg), header(msg, "Subject")[:300], text[:MAX_TEXT], stripped,
                        len(text) > MAX_TEXT, atts, dropped)
