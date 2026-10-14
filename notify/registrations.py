@@ -25,7 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from .auth import hash_token, new_token
 from .config import _NAME_RE, ConfigError
 from .configops import commit_config
-from .core import Client, Invalid
+from .core import SYSTEM_CLIENT, Client, Invalid
 from .db import dumps, iso, loads, new_id, now_iso, parse_iso, utcnow
 from .models import NotificationIn, Scope
 
@@ -37,7 +37,6 @@ PENDING_DAYS = 7
 PER_ADDRESS_PER_HOUR = 5
 MAX_PENDING = 20
 SELF_SCOPES = {Scope.send, Scope.read, Scope.manage}
-SYSTEM_CLIENT = Client("hnl-notify", frozenset({Scope.admin}))
 SCOPE_WORDS = {"send": "send notifications", "read": "read its own history",
                "manage": "retry or cancel its own notifications", "admin": "administer everything"}
 

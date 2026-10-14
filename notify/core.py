@@ -59,6 +59,9 @@ class Client:
         return self.admin or scope in self.scopes
 
 
+SYSTEM_CLIENT = Client("hnl-notify", frozenset({Scope.admin}))  # the service's own notifications
+
+
 class EventBus:
     """Wakes SSE streams when events are committed."""
 
@@ -274,6 +277,12 @@ class NotifyService:
             route = self.router.resolve(req.targets, req.severity, req.kinds)
         except RoutingError as e:
             raise Invalid(str(e)) from e
+        conversation_id = None
+        if req.in_reply_to:
+            prev = self.db.one("SELECT id, client_id, conversation_id FROM notifications WHERE id=?", (req.in_reply_to,))
+            if prev is None or not self._visible(client, prev["client_id"]):
+                raise Invalid(f"in_reply_to: notification {req.in_reply_to} not found")
+            conversation_id = prev["conversation_id"] or prev["id"]
 
         nrow = {
             "id": new_id("ntf"), "client_id": client.id, "source": req.source or client.id, "title": req.title,
@@ -284,6 +293,8 @@ class NotifyService:
             "require_ack": int(req.require_ack), "expires_at": iso(expires_at),
             "created_at": iso(now), "updated_at": iso(now), "idempotency_key": req.idempotency_key,
         }
+        nrow.update({"reply_wanted": int(req.reply), "in_reply_to": req.in_reply_to,
+                     "conversation_id": conversation_id or nrow["id"], "auto_submitted": int(req._auto_submitted)})
         meta = attachment_meta or []
         deliveries = self._plan_deliveries(nrow, route, meta)
         if req.dry_run:
@@ -319,11 +330,13 @@ class NotifyService:
                 c.execute(
                     "INSERT INTO notifications(id, client_id, idempotency_key, source, title, message, severity, url,"
                     " url_title, actions_json, data_json, tags_json, targets_json, require_ack, expires_at, status,"
-                    " routing_json, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " routing_json, created_at, updated_at, reply_wanted, in_reply_to, conversation_id, auto_submitted)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (nid, client.id, req.idempotency_key, source, req.title, req.message, req.severity.value,
                      req.url, req.url_title, nrow["actions_json"], nrow["data_json"], nrow["tags_json"],
                      nrow["targets_json"], nrow["require_ack"], nrow["expires_at"], status, dumps(routing),
-                     nrow["created_at"], nrow["updated_at"]))
+                     nrow["created_at"], nrow["updated_at"], nrow["reply_wanted"], nrow["in_reply_to"],
+                     nrow["conversation_id"], nrow["auto_submitted"]))
                 c.executemany(
                     "INSERT INTO attachments(notification_id, idx, filename, content_type, size, sha256, source,"
                     " source_host, data) VALUES (?,?,?,?,?,?,?,?,?)", rows)
@@ -699,6 +712,9 @@ class NotifyService:
             "created_at": n["created_at"], "updated_at": n["updated_at"], "expires_at": n["expires_at"],
             "suppressed": routing.get("suppressed", []), "delivery_counts": counts, "deliveries": deliveries,
             **self._attachments_out(n["id"]),
+            **({"reply": bool(n["reply_wanted"]), "in_reply_to": n["in_reply_to"],
+                "conversation_id": n["conversation_id"] or n["id"]}
+               if n["reply_wanted"] or n["in_reply_to"] else {}),
         }
 
     def _attachments_out(self, nid: str) -> dict[str, Any]:

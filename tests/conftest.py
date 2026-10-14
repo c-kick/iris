@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import socket
 import threading
 import time
@@ -139,6 +141,13 @@ class LiveServer:
 
     def client(self, who: str = "agent") -> httpx.Client:
         return httpx.Client(base_url=self.url, headers={"Authorization": f"Bearer {TOKENS[who]}"}, timeout=10)
+
+    def call(self, fn: Callable[[], Any], timeout: float = 70.0) -> Any:
+        """Run fn (sync, or returning an awaitable) on the server's event loop, as the app itself would."""
+        async def run() -> Any:
+            res = fn()
+            return await res if inspect.isawaitable(res) else res
+        return asyncio.run_coroutine_threadsafe(run(), self.app.state.loop).result(timeout)
 
     def fast_forward(self) -> None:
         """Make every waiting retry / receipt poll due now."""

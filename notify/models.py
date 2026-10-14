@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 
 class Severity(str, Enum):
@@ -78,6 +78,10 @@ EVENT_TYPES = [
     "delivery.failed",
     "delivery.expired",
     "delivery.cancelled",
+    "reply.received",
+    "reply.claimed",
+    "reply.unclaimed",
+    "reply.quarantined",
 ]
 
 
@@ -197,6 +201,11 @@ class NotificationIn(BaseModel):
     attachments: list[AttachmentIn] = Field(default_factory=list, max_length=10)
     kinds: list[Literal["push", "email"]] | None = Field(
         default=None, description="Delivery kinds to use; omitted = default devices (push). email devices only receive when 'email' is listed")
+    reply: bool = Field(default=False, description="Email: the recipient can answer by replying; collect replies"
+                                                   " with POST /v1/notifications/{id}/replies/claim")
+    in_reply_to: str | None = Field(default=None, max_length=64,
+                                    description="Notification id this one follows up: threads the email and joins its conversation")
+    _auto_submitted: bool = PrivateAttr(default=False)  # internal: the service's own automatic replies
 
     @field_validator("kinds")
     @classmethod

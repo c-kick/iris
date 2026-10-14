@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -86,6 +87,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
         service.http = http
         service.fetch_transport = transport  # attachment fetches never use the shared client
         holder["service"] = service
+        app.state.loop = asyncio.get_running_loop()
         app.state.service = service
         workers = Workers(service, http) if start_workers else None
         app.state.workers = workers

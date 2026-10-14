@@ -179,6 +179,49 @@ CREATE TABLE IF NOT EXISTS admin_sessions (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS replies (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    notification_id TEXT NOT NULL REFERENCES notifications(id) ON DELETE CASCADE,
+    delivery_id TEXT NOT NULL,
+    message_id TEXT NOT NULL UNIQUE,
+    from_address TEXT NOT NULL,
+    subject TEXT,
+    received_at TEXT NOT NULL,
+    text TEXT NOT NULL,
+    stripped INTEGER NOT NULL DEFAULT 1,
+    truncated INTEGER NOT NULL DEFAULT 0,
+    dropped_attachments_json TEXT NOT NULL DEFAULT '[]',
+    state TEXT NOT NULL,
+    claimed_at TEXT,
+    claimed_by TEXT,
+    waiter_id TEXT,
+    autoreply_notification_id TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_replies_conversation ON replies(conversation_id, state, received_at);
+
+CREATE TABLE IF NOT EXISTS reply_attachments (
+    reply_id TEXT NOT NULL REFERENCES replies(id) ON DELETE CASCADE,
+    idx INTEGER NOT NULL,
+    filename TEXT NOT NULL,
+    content_type TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    data BLOB,
+    purged_at TEXT,
+    PRIMARY KEY (reply_id, idx)
+);
+
+CREATE TABLE IF NOT EXISTS reply_quarantine (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    received_at TEXT NOT NULL,
+    from_address TEXT,
+    subject TEXT,
+    message_id TEXT,
+    reason TEXT NOT NULL,
+    notification_id TEXT
+);
 """
 
 
@@ -241,7 +284,15 @@ class Database:
         self.conn.execute("PRAGMA busy_timeout=10000")
         self.conn.execute("PRAGMA journal_size_limit=67108864")
         self.conn.executescript(SCHEMA)
-        self._add_missing_columns({"registrations": {"decision_sha256": "TEXT"}})
+        self._add_missing_columns({
+            "registrations": {"decision_sha256": "TEXT"},
+            "notifications": {"reply_wanted": "INTEGER NOT NULL DEFAULT 0", "in_reply_to": "TEXT",
+                              "conversation_id": "TEXT", "listener_seen_at": "TEXT",
+                              "auto_submitted": "INTEGER NOT NULL DEFAULT 0"},
+            "deliveries": {"recipient_address": "TEXT"},
+        })
+        # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")
         with self.tx() as c:
             c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
