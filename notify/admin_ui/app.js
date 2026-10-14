@@ -900,7 +900,7 @@ async function loadRecent(el, limit, attentionEl) {
         const key = `${kind}:${x.notification_id}`;
         const g = groups.get(key) || { kind, x, devices: [], at: x.at };
         g.devices.push(x.device);
-        if (x.at > g.at) g.at = x.at;
+        if (x.at > g.at) { g.at = x.at; g.x = x; } // attempts and error from the latest delivery
         groups.set(key, g);
       }
     }
@@ -909,13 +909,15 @@ async function loadRecent(el, limit, attentionEl) {
       <h3>Needs attention</h3><div class="rows">
       ${a.awaiting_acknowledgement.map((x) => `<div class="row"><span class="lamp warn"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">Critical alert on ${esc(x.device)} not acknowledged yet</div></div></div>`).join("")}
       ${items.map(({ kind, x, devices, at }) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
-        <div class="sub">${esc(when(at))} (${esc(ago(at))})</div>
+        <div class="sub">${kind === "failed" || kind === "expired" ? "" : "last change "}${esc(when(at))} (${esc(ago(at))})</div>
         <div class="sub">${esc(kind)} on ${esc(devices.join(", "))} after ${x.attempts} attempts: ${esc(x.last_error || "")}</div></div>
         ${kind === "failed" || kind === "expired" ? `<div class="actions"><button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button></div>` : ""}</div>`).join("")}
       </div>` : "";
     attentionEl.querySelectorAll("[data-dismiss]").forEach((b) => (b.onclick = async () => {
-      try { await api("POST", `/notifications/${b.dataset.dismiss}/dismiss`); toast("Dismissed"); loadRecent(el, limit, attentionEl); }
+      b.disabled = true;
+      try { await api("POST", `/notifications/${b.dataset.dismiss}/dismiss`); toast("Dismissed"); }
       catch (ex) { toast(ex.message); }
+      loadRecent(el, limit, attentionEl); // also after a 409: another tab may have dismissed it already
     }));
   }
   if (!data.notifications.length) { el.innerHTML = `<div class="empty">Nothing sent yet.</div>`; return; }
