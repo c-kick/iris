@@ -282,8 +282,8 @@ signature after `-- ` are cut; if nothing is left the unstripped text is kept
 (`stripped: false`). At most 8000 characters (`truncated: true`). Attachments:
 up to 10 files and 10 MiB; the rest are listed as dropped.
 
-**Conversations.** Notifications chained by `in_reply_to` (same client; the system
-client may reference any; unknown or foreign id → 422) share a `conversation_id`,
+**Conversations.** Notifications chained by `in_reply_to` (same client; admin
+clients, including the system client, may reference any; unknown or foreign id → 422) share a `conversation_id`,
 the root notification id. The follow-up's email carries `In-Reply-To` and
 `References` derived from delivery ids. Listening, claiming and the grace period
 apply per conversation, so a reply to an older mail of a thread reaches the
@@ -341,6 +341,7 @@ endpoint with one waiter id per run, prints the reply and saves attachments.
   leading dot removed, capped at 200 bytes, collisions numbered; files are created
   exclusively (`xb`), never overwritten.
 - Control characters in the printed output are stripped (terminal escapes).
+- `--timeout` defaults to 60 minutes; a bare number means minutes. If saving attachments fails the reply is still printed (stderr note, exit 0).
 - Exit codes: 0 reply printed, 1 error (auth, 404/422, bad config, unexpected
   response, download or save failure), 2 no reply before `--timeout`.
 - Network errors and 5xx are retried with backoff and the same waiter id.
@@ -405,7 +406,7 @@ image sets `MALLOC_MMAP_THRESHOLD_` so freed buffers return to the OS.
 | `GET /v1/notifications/{id}` | Full status: deliveries, attempts, events, attachment metadata |
 | `POST /v1/notifications/{id}/cancel`, `/retry` | Where meaningful; 409 with reason otherwise |
 | `POST /v1/notifications/{id}/replies/claim?waiter=…&wait=…` | Long-poll for the oldest waiting reply of the conversation: 200 with the reply, 204 when none came in time (`read`; own notification or `admin`) |
-| `GET /v1/notifications/{id}/replies` | Replies of the conversation with state; text and attachments only for claimed replies (all for `admin`) |
+| `GET /v1/notifications/{id}/replies` | Replies of the conversation with state; subject, text and attachments only for claimed replies (all for `admin`) |
 | `GET /v1/replies/{id}/attachments/{idx}` | Download an attachment of a claimed reply |
 | `GET /v1/targets` | Users, devices (with `kind`, `opt_in`), groups, channels + effective capabilities |
 | `GET /v1/providers` | Provider capabilities, health, quota |

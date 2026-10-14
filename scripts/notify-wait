@@ -4,7 +4,7 @@
   notify-wait NOTIFICATION_ID [--timeout 60m] [--save-dir DIR] [--url URL] [--json]
 
 Long-polls POST /v1/notifications/{id}/replies/claim with one waiter id per run, so a retry after a
-lost response gets the same reply. Exit codes: 0 reply printed, 1 error, 2 no reply before --timeout.
+lost response gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error, 2 no reply before --timeout.
 Base URL: --url, else NOTIFY_URL, else the url of the hnl-notify entry in ~/.claude.json without /mcp.
 Token: NOTIFY_TOKEN, else that entry's Authorization header. The token is never printed.
 """
@@ -211,8 +211,15 @@ def main(argv: list[str] | None = None) -> int:
         if reply is None:
             print(f"No reply within {_fmt(args.timeout)}; listener stopped. Later replies get an autoreply.")
             return EXIT_TIMEOUT
-        paths = save_attachments(base, token, reply, args.save_dir)
+        paths: list[str] = []
+        failed = ""
+        try:
+            paths = save_attachments(base, token, reply, args.save_dir)
+        except Fatal as e:  # the reply is already claimed by this run: print it anyway
+            failed = str(e)
         print(json.dumps({**reply, "saved": paths}, indent=2) if args.json else render(reply, paths))
+        if failed:
+            print(f"notify-wait: could not save attachments: {_clean(failed)}", file=sys.stderr)
         return EXIT_REPLY
     except (KeyError, ValueError, TypeError, AttributeError):
         print("notify-wait: unexpected reply format from the service", file=sys.stderr)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import imaplib
+import sqlite3
 from typing import Any
 
 import pytest
@@ -71,6 +72,28 @@ def test_unreadable_message_is_quarantined(email_live, monkeypatch):
     assert poll(email_live)["quarantined"] == 1
     assert mb.folders["Quarantine"] == [uid]
     assert email_live.service.db.scalar("SELECT reason FROM reply_quarantine") == "unreadable"
+
+
+def test_transient_db_error_aborts_pass_and_is_retried(email_live, monkeypatch):
+    nid, did = send(email_live)
+    mb = email_live.mailbox
+    uid = mb.add(reply_raw(did))
+    replies = email_live.service.replies
+    real, calls = replies.store, []
+
+    def locked(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real(*a, **kw)
+    monkeypatch.setattr(replies, "store", locked)
+    with pytest.raises(sqlite3.OperationalError):
+        poll(email_live)
+    assert mb.folders["Processed"] == [] and mb.folders["Quarantine"] == []
+    assert email_live.service.db.scalar("SELECT COUNT(*) FROM reply_quarantine") == 0
+    assert poll(email_live)["accepted"] == 1
+    assert mb.folders["Processed"] == [uid]
+    assert email_live.service.db.scalar("SELECT COUNT(*) FROM replies") == 1
 
 
 def test_worker_loop_polls_and_reports_status(email_live):

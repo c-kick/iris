@@ -212,6 +212,8 @@ async def poll_once(svc: NotifyService, provider: EmailProvider, mailbox: Any) -
                             verdict = Verdict("duplicate")
             except (MailboxError, OSError, imaplib.IMAP4.error):
                 raise  # connection trouble: stop this pass, retry later
+            except sqlite3.Error:
+                raise  # transient database trouble (locked, busy): retry the pass; duplicates were handled above
             except Exception:
                 log.exception("reply could not be read", extra={"uid": uid.decode(errors="replace")})
                 verdict = Verdict("quarantine", "unreadable")

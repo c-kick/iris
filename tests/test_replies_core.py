@@ -176,7 +176,9 @@ def test_unclaimed_content_not_listed_or_downloadable(email_live):
     replies = email_live.service.replies
     r = replies.list(AGENT, nid)[0]
     assert r["state"] == "waiting" and r["text"] is None and r["attachments"] == [] and r["from"]
+    assert r["subject"] is None
     assert replies.list(ADMIN, nid)[0]["text"] == "Go with B."
+    assert replies.list(ADMIN, nid)[0]["subject"]
     with pytest.raises(NotFound):
         replies.attachment(AGENT, rid, 0)
     assert replies.attachment(ADMIN, rid, 0)[0] == "shot.png"
@@ -222,3 +224,23 @@ def test_claimed_reply_never_swept(email_live):
     replies.now = lambda: utcnow() + timedelta(seconds=GRACE_SECONDS * 3)
     assert email_live.call(replies.sweep_unclaimed) == 0
     assert email_live.service.db.scalar("SELECT state FROM replies WHERE id=?", (rid,)) == "claimed"
+
+
+def test_listener_seen_survives_deleted_root(email_live):
+    nid, did = send(email_live)
+    n2, d2 = send(email_live, in_reply_to=nid)
+    deliver(email_live, reply_raw(d2))
+    claim(email_live, n2, waiter="a" * 12)  # stamps the whole conversation; the reply is now claimed
+    deliver(email_live, reply_raw(d2, message_id="<second@x>"))
+    with email_live.service.db.tx() as c:
+        c.execute("DELETE FROM notifications WHERE id=?", (nid,))
+    replies = email_live.service.replies
+    replies.now = lambda: utcnow() + timedelta(seconds=GRACE_SECONDS + 60)
+    # follow-up was stamped at real now; "now" is GRACE+60 later, so move the stamp inside the listen window
+    with email_live.service.db.tx() as c:
+        c.execute("UPDATE notifications SET listener_seen_at=? WHERE id=?",
+                  (iso(replies.now() - timedelta(seconds=LISTEN_SECONDS - 10)), n2))
+    assert email_live.call(replies.sweep_unclaimed) == 0
+    with email_live.service.db.tx() as c:
+        c.execute("UPDATE notifications SET listener_seen_at=NULL WHERE id=?", (n2,))
+    assert email_live.call(replies.sweep_unclaimed) == 1

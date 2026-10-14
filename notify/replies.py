@@ -114,7 +114,7 @@ class Replies:
     def _claim_once(self, client: Client, conv: str, waiter: str) -> sqlite3.Row | None:
         now = iso(self.now())
         with self.svc.db.tx() as c:
-            c.execute("UPDATE notifications SET listener_seen_at=? WHERE id=?", (now, conv))
+            c.execute("UPDATE notifications SET listener_seen_at=? WHERE id=? OR conversation_id=?", (now, conv, conv))
             r = c.execute("SELECT * FROM replies WHERE conversation_id=? AND state='claimed' AND waiter_id=?"
                           " ORDER BY received_at, id LIMIT 1", (conv, waiter)).fetchone()
             if r is not None:
@@ -144,7 +144,7 @@ class Replies:
         if not client.admin:  # content of a reply nobody claimed is never handed to an agent
             for o in out:
                 if o["state"] != "claimed":
-                    o.update(text=None, attachments=[], dropped_attachments=[])
+                    o.update(subject=None, text=None, attachments=[], dropped_attachments=[])
         return out
 
     def attachment(self, client: Client, rid: str, idx: int) -> tuple[str, str, bytes]:
@@ -179,9 +179,9 @@ class Replies:
     def sweep_unclaimed(self) -> int:
         now = self.now()
         rows = self.svc.db.query(
-            "SELECT r.* FROM replies r LEFT JOIN notifications root ON root.id=r.conversation_id"
-            " WHERE r.state='waiting' AND r.received_at <= ?"
-            " AND (root.listener_seen_at IS NULL OR root.listener_seen_at < ?) ORDER BY r.received_at",
+            "SELECT r.* FROM replies r WHERE r.state='waiting' AND r.received_at <= ?"
+            " AND COALESCE((SELECT MAX(listener_seen_at) FROM notifications"
+            " WHERE id=r.conversation_id OR conversation_id=r.conversation_id), '') < ? ORDER BY r.received_at",
             (iso(now - timedelta(seconds=GRACE_SECONDS)), iso(now - timedelta(seconds=LISTEN_SECONDS))))
         swept = 0
         for r in rows:
@@ -189,8 +189,8 @@ class Replies:
                 cur = c.execute("SELECT state FROM replies WHERE id=?", (r["id"],)).fetchone()
                 if cur is None or cur["state"] != "waiting":
                     continue
-                seen = c.execute("SELECT listener_seen_at FROM notifications WHERE id=?",
-                                 (r["conversation_id"],)).fetchone()
+                seen = c.execute("SELECT MAX(listener_seen_at) FROM notifications WHERE id=:c OR conversation_id=:c",
+                                 {"c": r["conversation_id"]}).fetchone()
                 if seen is not None and seen[0] and seen[0] >= iso(now - timedelta(seconds=LISTEN_SECONDS)):
                     continue  # someone started listening since the query
                 c.execute("UPDATE replies SET state='unclaimed' WHERE id=?", (r["id"],))

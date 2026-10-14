@@ -183,6 +183,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $N
   "title": "Pick a header design", "message": "A or B? Reply with your choice."
 }'
 # a follow-up in the same thread: "in_reply_to": "<id of the first notification>"
+# (your own notifications only; admin clients may reference any client's)
 ```
 
 The mail gets `Reply-To` and a footer ("Reply to this email to answer the
@@ -204,11 +205,13 @@ Attachments: /tmp/notify-reply-x1y2/screenshot.png
 It reads the service address and token from `NOTIFY_URL` / `NOTIFY_TOKEN`, or from
 the `hnl-notify` MCP entry in `~/.claude.json`; the token is never printed.
 Attachments are saved under sanitised names without overwriting anything.
+`--timeout` defaults to 60 minutes; a bare number means minutes (`90s`, `30m`, `2h` also work).
+If saving an attachment fails the reply is still printed, a note goes to stderr and the exit code is 0.
 Exit codes: **0** reply printed, **1** error (credentials, unknown notification,
 bad response), **2** no reply before `--timeout`. Run it again, or send a
 follow-up with `in_reply_to`, to continue. `GET /v1/notifications/{id}/replies`
 and the MCP tool `get_replies` list the replies of a thread; agents see a
-reply's text and attachments only once it has been collected. A reply to an older mail of a thread reaches the
+reply's subject, text and attachments only once it has been collected. A reply to an older mail of a thread reaches the
 current waiter.
 
 **When nobody is waiting.** A conversation counts as listened to while a waiter

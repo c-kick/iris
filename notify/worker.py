@@ -24,6 +24,25 @@ def sign(secret: str, timestamp: int, body: bytes) -> str:
     return f"t={timestamp},v1={mac}"
 
 
+_REPLY_SETTINGS = ("imap_host", "imap_port", "imap_user", "imap_password", "authserv_id", "reply_address",
+                   "reply_inbox", "reply_processed", "reply_quarantine")
+
+
+def reconcile_inbound(providers: dict[str, Any], status: dict[str, Any], failures: dict[str, int],
+                      next_at: dict[str, float], prints: dict[str, tuple]) -> None:
+    """Forget backoff when a provider's reply settings changed; drop state of providers gone or not reply-ready."""
+    live = {n: p for n, p in providers.items() if getattr(p, "replies_ready", False)}
+    for n, p in live.items():
+        fp = tuple(getattr(p, k, None) for k in _REPLY_SETTINGS)
+        if n in prints and prints[n] != fp:
+            failures.pop(n, None)
+            next_at.pop(n, None)
+        prints[n] = fp
+    for d in (status, failures, next_at, prints):
+        for n in [n for n in d if n not in live]:
+            del d[n]
+
+
 class Workers:
     def __init__(self, service: NotifyService, http: httpx.AsyncClient):
         self.service = service
@@ -147,12 +166,14 @@ class Workers:
     async def _inbound_loop(self) -> None:
         failures: dict[str, int] = {}
         next_at: dict[str, float] = {}
+        prints: dict[str, tuple] = {}
 
         async def once() -> None:
             start = time.monotonic()
             while time.monotonic() - start < self.inbound_interval:  # re-read each second: tests shorten it
                 await asyncio.sleep(min(1.0, self.inbound_interval))
             svc = self.service
+            reconcile_inbound(svc.providers, svc.inbound_status, failures, next_at, prints)
             for name, p in list(svc.providers.items()):
                 if not getattr(p, "replies_ready", False) or time.monotonic() < next_at.get(name, 0.0):
                     continue

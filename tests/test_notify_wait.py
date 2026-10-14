@@ -178,3 +178,26 @@ def test_render_strips_escapes():
     out = nw.render({"id": "r", "notification_id": "n", "from": "a\x1b[31m@example.org", "received_at": "2026-01-01T00:00:00Z",
                      "text": "x\x1b]0;pwned\x07y\x1b[2J\nline\ttab"}, ["/tmp/\x1b[1mf"])
     assert "\x1b" not in out and "\x07" not in out and "line\ttab" in out
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_attachment_failure_still_prints_reply(email_live, tmp_path, monkeypatch, capsys, as_json):
+    nid, did = send(email_live)
+    email_live.mailbox.add(reply_raw(did, attachment=PNG))
+    email_live.call(lambda: inbound.poll_once(email_live.service, email_live.service.providers["mail"], email_live.mailbox))
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    real = nw._request
+
+    def flaky(method, url, token, timeout):
+        if method == "GET":
+            raise nw.urllib.error.URLError("boom")
+        return real(method, url, token, timeout)
+    monkeypatch.setattr(nw, "_request", flaky)
+    argv = [nid, "--url", email_live.url, "--save-dir", str(tmp_path), "--timeout", "30s"] + (["--json"] if as_json else [])
+    assert nw.main(argv) == 0
+    cap = capsys.readouterr()
+    assert "Go with B." in cap.out
+    if as_json:
+        assert json.loads(cap.out)["saved"] == []
+    assert "notify-wait: could not save attachments:" in cap.err and "boom" in cap.err
+    assert TOKENS["agent"] not in cap.out + cap.err
