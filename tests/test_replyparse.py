@@ -158,3 +158,30 @@ def test_deeply_nested_multipart_raises_value_error():
     raw = b"From: a@example.org\r\nMIME-Version: 1.0\r\n" + raw + b"Content-Type: text/plain\r\n\r\nhi\r\n"
     with pytest.raises(ValueError, match="too deeply nested"):
         rp.parse_reply(raw)
+
+
+def from_of(value: bytes):
+    return rp.from_address(rp.parse_headers(b"From: " + value + b"\r\n\r\n"))
+
+
+def test_from_accepts_only_plain_forms():
+    assert from_of(b"alex@example.org") == "alex@example.org"
+    assert from_of(b"Alex <Alex@Example.org>") == "alex@example.org"
+    assert from_of(b'"Alex, Home" <alex@example.org>') == "alex@example.org"
+    assert from_of(b"=?utf-8?q?Al=C3=A9x?= <alex@example.org>") == "alex@example.org"  # encoded display name is fine
+
+
+def test_from_rejects_ambiguous_forms():
+    for v in (b"alex@example.org)<mallory@example.net>",          # CVE-2023-27043 shape
+              b"mallory@example.net <alex@example.org>",           # address-looking display name
+              b'"alex@example.org" <mallory@example.net>',
+              b"alex@example.org, mallory@example.net",            # address list
+              b"Alex <alex@example.org>, Bob <bob@example.org>",
+              b"=?utf-8?q?alex=40example.org?=",                   # encoded word as the address
+              b"Alex <=?utf-8?q?alex=40example.org?=>",
+              b"alex@example.org (mallory@example.net)",           # comment
+              b"<@route.example:alex@example.org>",                # source route
+              b"Alex <alex@example.org> trailing",
+              b"Alex <\"alex\"@example.org>",
+              b"alex@@example.org", b"", b"Alex"):
+        assert from_of(v) == "", v

@@ -53,14 +53,24 @@ def thread_delivery_ids(msg: EmailMessage) -> list[str]:
     return out
 
 
+_ADDR = r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"
+_FROM_BARE = re.compile(rf"\s*({_ADDR})\s*")
+_FROM_NAMED = re.compile(rf'\s*(?:"(?:[^"\\@]|\\[^@])*"|[^"<>@,;:()\\]*?)\s*<({_ADDR})>\s*')
+
+
 def from_address(msg: EmailMessage) -> str:
+    """The sender, read strictly from the raw header: `addr` or `Name <addr>` with a dot-atom address.
+    Anything a lenient parser could read differently from the receiving server (address lists, comments,
+    source routes, encoded words or @ outside the address, CVE-2023-27043 shapes) yields ""."""
     try:
-        if len(msg.get_all("From") or []) > 1:
-            return ""
+        values = [str(v) for k, v in msg.raw_items() if k.lower() == "from"]
     except Exception:
         return ""
-    addr = parseaddr(header(msg, "From"))[1].strip().lower()
-    return addr if "@" in addr else ""
+    if len(values) != 1:
+        return ""
+    raw = re.sub(r"\r?\n[ \t]+", " ", values[0])
+    m = _FROM_BARE.fullmatch(raw) or _FROM_NAMED.fullmatch(raw)
+    return m.group(1).lower() if m else ""
 
 
 def message_key(msg: EmailMessage, raw_headers: bytes) -> str:

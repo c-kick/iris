@@ -250,7 +250,11 @@ poll, never as a second reply.
    (including every mail sent before 0.6.0) → `not_reply_enabled`.
 4. **Sender.** The bare From address, lower-cased, must equal the delivery's stored
    `recipient_address`; a message with more than one From header never matches
-   → `sender_mismatch`.
+   → `sender_mismatch`. The From header is read strictly from its raw form: only
+   `addr@domain` or `Name <addr@domain>` (dot-atom address, no `@` in the display
+   name, no address lists, comments, source routes or encoded words in the address).
+   Anything else yields no sender, so a lenient parser can never read a different
+   address than the receiving server and DKIM alignment saw (CVE-2023-27043 class).
 5. **DKIM** → `dkim_fail`. Only the **first** `Authentication-Results` header
    counts, because the receiving server prepends its own and anything below may
    have been written by the sender (checked against the deployment's mail server:
