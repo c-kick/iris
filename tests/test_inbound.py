@@ -88,6 +88,7 @@ class FakeIMAP:
     instances: list["FakeIMAP"] = []
     move_ok = True
     login_ok = True
+    create_adds = True
 
     def __init__(self, host: str, port: int, ssl_context: Any = None, timeout: float | None = None):
         self.calls: list[tuple] = []
@@ -109,6 +110,8 @@ class FakeIMAP:
 
     def create(self, name):
         self.calls.append(("create", name))
+        if self.create_adds:
+            self.folders.append(b'(\\HasNoChildren) "." ' + name.encode())
         return ("OK", [b""])
 
     def uid(self, cmd, *args):
@@ -116,7 +119,7 @@ class FakeIMAP:
         if cmd == "FETCH" and args[1] == "(RFC822.SIZE)":
             return ("OK", [b"1 (UID 7 RFC822.SIZE 1234)", b"2 (UID 9 RFC822.SIZE 99)"])
         if cmd == "FETCH":
-            return ("OK", [(b"1 (UID 7 BODY[HEADER] {5}", b"X: y\r\n"), b")"])
+            return ("OK", [(b"1 (UID 7 BODY[HEADER]<0> {5}", b"X: y\r\n"), b")"])
         if cmd == "MOVE":
             if not self.move_ok:
                 raise imaplib.IMAP4.error("MOVE not supported")
@@ -137,6 +140,7 @@ def fake_imap(monkeypatch):
         instances: list = []
         move_ok = True
         login_ok = True
+        create_adds = True
     monkeypatch.setattr(inbound.imaplib, "IMAP4_SSL", F)
     return F
 
@@ -166,7 +170,7 @@ def test_imap_move_falls_back_to_copy_delete(fake_imap):
     mb.close()
     calls = fake_imap.instances[0].calls
     assert ("uid", "COPY", b"7", '"Processed"') in calls
-    assert ("uid", "STORE", b"7", "+FLAGS.SILENT", "(\\Deleted)") in calls and ("expunge",) in calls
+    assert ("uid", "STORE", b"7", "+FLAGS.SILENT", "(\\Deleted)") in calls and ("uid", "EXPUNGE", b"7") in calls
 
 
 def test_imap_login_failure_raises(fake_imap):
@@ -174,7 +178,9 @@ def test_imap_login_failure_raises(fake_imap):
     mb = box()
     with pytest.raises(imaplib.IMAP4.error):
         mb.open()
-    mb.close()
+    assert mb._imap is None
+    mb._timer.join(1)
+    assert not mb._timer.is_alive()
 
 
 def test_imap_test_reports_authserv_ids(fake_imap, monkeypatch):
@@ -183,3 +189,68 @@ def test_imap_test_reports_authserv_ids(fake_imap, monkeypatch):
         ("OK", [(b"1 (UID 7 BODY[HEADER] {9}", b"Authentication-Results: mx.example.org; dkim=pass\r\n\r\n"), b")"])))
     out = box().test()
     assert out["ok"] and out["messages"] == 1 and out["authserv_ids"] == ["mx.example.org"]
+
+
+def test_imap_move_falls_back_to_plain_expunge(fake_imap, monkeypatch):
+    fake_imap.move_ok = False
+    orig = fake_imap.uid
+
+    def uid(self, cmd, *a):
+        if cmd == "EXPUNGE":
+            raise imaplib.IMAP4.error("no UIDPLUS")
+        return orig(self, cmd, *a)
+    monkeypatch.setattr(fake_imap, "uid", uid)
+    mb = box()
+    mb.open()
+    mb.move(b"7", "Processed")
+    mb.close()
+    assert ("expunge",) in fake_imap.instances[0].calls
+
+
+def test_imap_missing_folder_that_cannot_be_created_raises(fake_imap):
+    fake_imap.create_adds = False
+    mb = box()
+    with pytest.raises(inbound.MailboxError, match="'Quarantine'"):
+        mb.open()
+    assert mb._imap is None
+
+
+def test_imap_header_fetch_is_bounded(fake_imap):
+    mb = box()
+    mb.open()
+    mb.fetch_headers(b"7")
+    mb.close()
+    assert ("uid", "FETCH", b"7", "(BODY.PEEK[HEADER]<0.65536>)") in fake_imap.instances[0].calls
+
+
+def test_imap_hard_deadline_unblocks_stalled_call(fake_imap):
+    import threading
+    import time
+    ev = threading.Event()
+
+    def stall(self, cmd, *a):
+        ev.wait(10)
+        raise OSError("socket closed")
+    fake_imap.uid = stall
+    shut: list[int] = []
+
+    def open_with_sock():
+        mb = inbound.ImapMailbox("imap.test", 993, "u", "p", timeout=0.2)
+        mb.open()
+        mb._imap.sock = type("S", (), {"shutdown": lambda s, h: (shut.append(h), ev.set()), "close": lambda s: None})()
+        return mb
+    mb = open_with_sock()
+    t0 = time.monotonic()
+    with pytest.raises(OSError):
+        mb.list()
+    assert time.monotonic() - t0 < 2 and shut
+    mb.close()
+
+
+def test_zero_or_missing_size_is_quarantined_unfetched(email_live):
+    nid, did = send(email_live)
+    mb = email_live.mailbox
+    uid = mb.add(reply_raw(did), size=0)
+    assert poll(email_live) == {"accepted": 0, "quarantined": 1, "duplicates": 0}
+    assert mb.folders["Quarantine"] == [uid] and mb.fetched == []
+    assert email_live.service.db.scalar("SELECT reason FROM reply_quarantine") == "too_large"

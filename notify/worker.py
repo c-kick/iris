@@ -166,7 +166,11 @@ class Workers:
                     failures[name] = failures.get(name, 0) + 1
                     delay = min(900.0, 10.0 * 3 ** (failures[name] - 1))
                     next_at[name] = time.monotonic() + delay
-                    status["last_error"] = f"{type(e).__name__}: {e}"[:300]
+                    err = f"{type(e).__name__}: {e}"
+                    pw = getattr(p, "imap_password", "") or ""
+                    if len(pw) >= 4:
+                        err = err.replace(pw, "***")
+                    status["last_error"] = err[:300]
                     log.warning("reply mailbox check failed",
                                 extra={"provider": name, "error": status["last_error"], "retry_in": delay})
             svc.replies.sweep_unclaimed()

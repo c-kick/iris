@@ -71,6 +71,13 @@ class ImapMailbox:
                 pass
 
     def open(self) -> None:
+        try:
+            self._open()
+        except BaseException:
+            self.close()
+            raise
+
+    def _open(self) -> None:
         ctx = ssl.create_default_context()
         if not self.verify_tls:
             ctx.check_hostname = False
@@ -84,6 +91,10 @@ class ImapMailbox:
         for f in (self.processed, self.quarantine):
             if f not in have:
                 self._imap.create(_q(f))  # result ignored: it may exist with other flags or case
+        have = self.folders()
+        for f in (self.processed, self.quarantine):
+            if f not in have:
+                raise MailboxError(f"reply folder {f!r} does not exist and could not be created")
         _ok(self._imap.select(_q(self.inbox)), f"select {self.inbox}")
 
     def close(self) -> None:
@@ -126,7 +137,7 @@ class ImapMailbox:
         return part[1]
 
     def fetch_headers(self, uid: bytes) -> bytes:
-        return self._fetch(uid, "(BODY.PEEK[HEADER])")
+        return self._fetch(uid, "(BODY.PEEK[HEADER]<0.65536>)")
 
     def fetch(self, uid: bytes) -> bytes:
         return self._fetch(uid, "(BODY.PEEK[])")
@@ -139,7 +150,10 @@ class ImapMailbox:
             pass  # no MOVE extension
         _ok(self._imap.uid("COPY", uid, _q(folder)), f"copy to {folder}")
         _ok(self._imap.uid("STORE", uid, "+FLAGS.SILENT", "(\\Deleted)"), "flag deleted")
-        self._imap.expunge()
+        try:
+            _ok(self._imap.uid("EXPUNGE", uid), "expunge")  # UIDPLUS: only this message
+        except imaplib.IMAP4.error:
+            self._imap.expunge()
 
     def test(self) -> dict[str, Any]:
         """Admin connection test: log in, check folders, show which authserv-ids the newest message carries."""
@@ -173,7 +187,7 @@ async def poll_once(svc: NotifyService, provider: EmailProvider, mailbox: Any) -
             raw_headers = await asyncio.to_thread(mailbox.fetch_headers, uid)
             head = replyparse.parse_headers(raw_headers)
             try:
-                verdict = (Verdict("quarantine", "too_large") if size > MAX_MESSAGE_BYTES
+                verdict = (Verdict("quarantine", "too_large") if size > MAX_MESSAGE_BYTES or size <= 0
                            else replies.classify(head, raw_headers, provider.authserv_id))
                 if verdict.action == "accept":
                     raw = await asyncio.to_thread(mailbox.fetch, uid)
