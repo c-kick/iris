@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+"""Wait for a reply to an hnl-notify notification and print it.
+
+  notify-wait NOTIFICATION_ID [--timeout 60m] [--save-dir DIR] [--url URL] [--json]
+
+Long-polls POST /v1/notifications/{id}/replies/claim with one waiter id per run, so a retry after a
+lost response gets the same reply. Exit codes: 0 reply printed, 1 error, 2 no reply before --timeout.
+Base URL: --url, else NOTIFY_URL, else the url of the hnl-notify entry in ~/.claude.json without /mcp.
+Token: NOTIFY_TOKEN, else that entry's Authorization header. The token is never printed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import secrets
+import sys
+import tempfile
+import time
+import unicodedata
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+EXIT_REPLY, EXIT_ERROR, EXIT_TIMEOUT = 0, 1, 2
+
+
+class Fatal(Exception):
+    pass
+
+
+def parse_duration(s: str) -> int:
+    """90s, 30m, 2h; a bare number means minutes."""
+    m = re.fullmatch(r"(\d+)([smh]?)", s.strip())
+    if not m:
+        raise argparse.ArgumentTypeError(f"not a duration: {s!r} (e.g. 90s, 30m, 2h)")
+    return int(m.group(1)) * {"": 60, "s": 1, "m": 60, "h": 3600}[m.group(2)]
+
+
+def mcp_entry(path: Path = Path.home() / ".claude.json") -> dict[str, Any]:
+    try:
+        data = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        return {}
+    entry = (data.get("mcpServers") or {}).get("hnl-notify")
+    for proj in (data.get("projects") or {}).values():
+        entry = entry or ((proj or {}).get("mcpServers") or {}).get("hnl-notify")
+    return entry or {}
+
+
+def settings(url: str | None, entry: dict[str, Any]) -> tuple[str, str]:
+    base = url or os.environ.get("NOTIFY_URL") or re.sub(r"/mcp/?$", "", entry.get("url") or "")
+    auth = (entry.get("headers") or {}).get("Authorization") or ""
+    token = os.environ.get("NOTIFY_TOKEN") or re.sub(r"^Bearer\s+", "", auth, flags=re.I)
+    if not base:
+        raise Fatal("no service URL: pass --url or set NOTIFY_URL")
+    if not token:
+        raise Fatal("no token: set NOTIFY_TOKEN or add the hnl-notify MCP entry to ~/.claude.json")
+    return base.rstrip("/"), token
+
+
+def safe_filename(name: str, taken: set[str]) -> str:
+    base = name.replace("\\", "/").rpartition("/")[2]
+    base = "".join(c for c in base if unicodedata.category(c)[0] != "C" and c not in ":").strip().lstrip(".")
+    base = base[:120] or "attachment"
+    stem, dot, ext = base.rpartition(".")
+    if not dot or not stem:
+        stem, ext = base, ""
+    cand, n = base, 2
+    while cand.lower() in taken:
+        cand = f"{stem}-{n}.{ext}" if ext else f"{stem}-{n}"
+        n += 1
+    taken.add(cand.lower())
+    return cand
+
+
+def _request(method: str, url: str, token: str, timeout: float) -> tuple[int, bytes]:
+    req = urllib.request.Request(url, method=method, headers={"Authorization": f"Bearer {token}",
+                                                              "User-Agent": "notify-wait"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.status, r.read()
+
+
+def claim_loop(base: str, token: str, nid: str, deadline: float) -> dict[str, Any] | None:
+    waiter = secrets.token_hex(12)
+    failures = 0
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return None
+        wait = int(max(0, min(50, left)))
+        url = (f"{base}/v1/notifications/{urllib.parse.quote(nid, safe='')}/replies/claim"
+               f"?wait={wait}&waiter={waiter}")
+        try:
+            status, body = _request("POST", url, token, timeout=wait + 15)
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403, 404, 422):
+                raise Fatal(f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from None
+            status, body = 0, b""
+        except (urllib.error.URLError, OSError):
+            status, body = 0, b""
+        if status == 200:
+            return json.loads(body)
+        if status == 204:
+            failures = 0
+            if wait == 0:
+                time.sleep(min(1.0, max(0.0, left)))
+            continue
+        failures += 1  # service restarting or unreachable: retry with the same waiter id
+        time.sleep(min(20.0, 2.0 ** min(failures, 5), max(0.0, deadline - time.monotonic())))
+        if time.monotonic() >= deadline:
+            return None
+
+
+def save_attachments(base: str, token: str, reply: dict[str, Any], save_dir: str | None) -> list[str]:
+    wanted = [a for a in reply.get("attachments") or [] if not a.get("purged")]
+    if not wanted:
+        return []
+    d = Path(save_dir) if save_dir else Path(tempfile.mkdtemp(prefix="notify-reply-"))
+    d.mkdir(parents=True, exist_ok=True)
+    taken = {p.name.lower() for p in d.iterdir()}
+    paths = []
+    for a in wanted:
+        try:
+            _, data = _request("GET", base + a["url"], token, timeout=60)
+        except (urllib.error.URLError, OSError) as e:
+            raise Fatal(f"could not download {a['filename']!r}: {e}") from None
+        path = d / safe_filename(a["filename"], taken)
+        with open(path, "xb") as f:  # never follow or overwrite an existing file
+            f.write(data)
+        paths.append(str(path))
+    return paths
+
+
+def render(reply: dict[str, Any], paths: list[str]) -> str:
+    when = datetime.fromisoformat(reply["received_at"].replace("Z", "+00:00")).astimezone()
+    title = reply.get("notification_title") or reply["notification_id"]
+    lines = [f'Reply from {reply["from"]} ({when:%Y-%m-%d %H:%M %Z}) to "{title}" [{reply["id"]}]:', reply["text"]]
+    if reply.get("truncated"):
+        lines.append("(reply cut at 8000 characters)")
+    if paths:
+        lines.append("Attachments: " + ", ".join(paths))
+    if reply.get("dropped_attachments"):
+        lines.append("Not kept (over the limit): " + ", ".join(reply["dropped_attachments"]))
+    return "\n".join(lines)
+
+
+def _fmt(seconds: int) -> str:
+    return f"{seconds // 60} min" if seconds >= 60 and seconds % 60 == 0 else f"{seconds} s"
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="notify-wait", description="Wait for a reply to an hnl-notify notification.")
+    ap.add_argument("notification_id")
+    ap.add_argument("--timeout", type=parse_duration, default=3600, help="how long to wait (90s, 30m, 2h; default 60m)")
+    ap.add_argument("--save-dir", help="where to save attachments (default: a new temporary folder)")
+    ap.add_argument("--url", help="service base URL (default: NOTIFY_URL or ~/.claude.json)")
+    ap.add_argument("--json", action="store_true", help="print the reply as JSON")
+    args = ap.parse_args(argv)
+    try:
+        base, token = settings(args.url, mcp_entry())
+        reply = claim_loop(base, token, args.notification_id, time.monotonic() + args.timeout)
+        if reply is None:
+            print(f"No reply within {_fmt(args.timeout)}; listener stopped. Later replies get an autoreply.")
+            return EXIT_TIMEOUT
+        paths = save_attachments(base, token, reply, args.save_dir)
+        print(json.dumps({**reply, "saved": paths}, indent=2) if args.json else render(reply, paths))
+        return EXIT_REPLY
+    except Fatal as e:
+        print(f"notify-wait: {e}", file=sys.stderr)
+        return EXIT_ERROR
+    except KeyboardInterrupt:
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())
