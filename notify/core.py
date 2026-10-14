@@ -109,6 +109,10 @@ class NotifyService:
         self.fetch_transport: Any = None
         self.resolve = attachments.default_resolve
         self._intake: asyncio.Semaphore | None = None  # created on first use, in the serving loop
+        from .replies import Replies  # replies imports core for types; import here to avoid a cycle
+        self.replies = Replies(self)
+        self.inbound_status: dict[str, dict[str, Any]] = {}  # per provider: last_success, last_error, last_stats
+        self.open_mailbox: Any = None  # seam: tests return a fake mailbox; None = the provider's own
 
     def reconfigure(self, config: NotifyConfig, providers: dict[str, Provider]) -> None:
         """Swap in a new configuration (admin UI edits). Queued deliveries keep their device names."""
@@ -972,6 +976,9 @@ class NotifyService:
                       " (SELECT id FROM notifications WHERE created_at < ?) AND NOT EXISTS (SELECT 1 FROM deliveries d"
                       " WHERE d.notification_id=attachments.notification_id AND d.state IN (?,?))",
                       (now_iso(), att_cutoff, QUEUED, SENDING))
+            c.execute("UPDATE reply_attachments SET data=NULL, purged_at=? WHERE data IS NOT NULL AND reply_id IN"
+                      " (SELECT id FROM replies WHERE received_at < ?)", (now_iso(), att_cutoff))
+            c.execute("DELETE FROM reply_quarantine WHERE received_at < ?", (cutoff,))
         return len(ids)
 
     def stats(self) -> dict[str, Any]:
