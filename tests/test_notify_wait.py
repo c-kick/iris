@@ -62,6 +62,28 @@ def test_settings_from_claude_json(tmp_path, monkeypatch):
         nw.settings(None, {})
 
 
+def test_token_file(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOTIFY_TOKEN", "tok-env")
+    tf = tmp_path / "codex-token"
+    tf.write_text("tok-file\n")
+    assert nw.settings("http://h:1", {}, tf) == ("http://h:1", "tok-file")  # beats NOTIFY_TOKEN
+    with pytest.raises(nw.Fatal) as e:
+        nw.settings("http://h:1", {}, tmp_path / "missing")
+    assert "cannot read token file" in str(e.value)
+    (tmp_path / "empty").write_text("")
+    with pytest.raises(nw.Fatal):
+        nw.settings("http://h:1", {}, tmp_path / "empty")
+
+
+def test_cli_token_file(email_live, tmp_path, monkeypatch, capsys):
+    nid, _ = send(email_live)
+    monkeypatch.delenv("NOTIFY_TOKEN", raising=False)
+    tf = tmp_path / "tok"
+    tf.write_text(TOKENS["agent"])
+    assert nw.main([nid, "--url", email_live.url, "--token-file", str(tf), "--timeout", "1s"]) == 2
+    assert TOKENS["agent"] not in capsys.readouterr().out
+
+
 def send(srv) -> tuple[str, str]:
     with srv.client() as c:
         out = c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "Pick", "title": "Pick",

@@ -203,7 +203,8 @@ Attachments: /tmp/notify-reply-x1y2/screenshot.png
 ```
 
 It reads the service address and token from `NOTIFY_URL` / `NOTIFY_TOKEN`, or from
-the `hnl-notify` MCP entry in `~/.claude.json`; the token is never printed.
+the `hnl-notify` MCP entry in `~/.claude.json`; `--token-file PATH` reads it from a file instead
+(for agents without that entry, e.g. Codex). The token is never printed.
 Attachments are saved under sanitised names without overwriting anything.
 `--timeout` defaults to 60 minutes; a bare number means minutes (`90s`, `30m`, `2h` also work).
 If saving an attachment fails the reply is still printed, a note goes to stderr and the exit code is 0.

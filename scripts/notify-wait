@@ -6,7 +6,7 @@
 Long-polls POST /v1/notifications/{id}/replies/claim with one waiter id per run, so a retry after a
 lost response gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error, 2 no reply before --timeout.
 Base URL: --url, else NOTIFY_URL, else the url of the hnl-notify entry in ~/.claude.json without /mcp.
-Token: NOTIFY_TOKEN, else that entry's Authorization header. The token is never printed.
+Token: --token-file, else NOTIFY_TOKEN, else that entry's Authorization header. The token is never printed.
 """
 
 from __future__ import annotations
@@ -54,10 +54,16 @@ def mcp_entry(path: Path = Path.home() / ".claude.json") -> dict[str, Any]:
     return entry or {}
 
 
-def settings(url: str | None, entry: dict[str, Any]) -> tuple[str, str]:
+def settings(url: str | None, entry: dict[str, Any], token_file: str | Path | None = None) -> tuple[str, str]:
     base = url or os.environ.get("NOTIFY_URL") or re.sub(r"/mcp/?$", "", entry.get("url") or "")
     auth = (entry.get("headers") or {}).get("Authorization") or ""
-    token = os.environ.get("NOTIFY_TOKEN") or re.sub(r"^Bearer\s+", "", auth, flags=re.I)
+    if token_file is not None:
+        try:
+            token = Path(token_file).read_text().strip()
+        except (OSError, UnicodeError) as e:
+            raise Fatal(f"cannot read token file {str(token_file)!r}: {type(e).__name__}") from None
+    else:
+        token = os.environ.get("NOTIFY_TOKEN") or re.sub(r"^Bearer\s+", "", auth, flags=re.I)
     if not base:
         raise Fatal("no service URL: pass --url or set NOTIFY_URL")
     if not token:
@@ -204,9 +210,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--save-dir", help="where to save attachments (default: a new temporary folder)")
     ap.add_argument("--url", help="service base URL (default: NOTIFY_URL or ~/.claude.json)")
     ap.add_argument("--json", action="store_true", help="print the reply as JSON")
+    ap.add_argument("--token-file", help="read the token from this file (e.g. a Codex agent's token) instead of"
+                                       " NOTIFY_TOKEN / ~/.claude.json")
     args = ap.parse_args(argv)
     try:
-        base, token = settings(args.url, mcp_entry())
+        base, token = settings(args.url, mcp_entry(), args.token_file)
         reply = claim_loop(base, token, args.notification_id, time.monotonic() + args.timeout)
         if reply is None:
             print(f"No reply within {_fmt(args.timeout)}; listener stopped. Later replies get an autoreply.")

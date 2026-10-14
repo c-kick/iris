@@ -333,7 +333,7 @@ tokens of at most 100 characters; anything else, and `text/html` and
 **`scripts/notify-wait`** (stdlib-only) is the agent side: it long-polls the claim
 endpoint with one waiter id per run, prints the reply and saves attachments.
 
-- Base URL and token: `--url` / `NOTIFY_URL` / `NOTIFY_TOKEN`, else the
+- Base URL and token: `--url` / `NOTIFY_URL`, `--token-file` / `NOTIFY_TOKEN`, else the
   `hnl-notify` MCP entry in `~/.claude.json`. The token is never printed.
 - Attachment URLs from the service must be relative paths on the service; the
   token is only ever sent to the configured base URL and redirects are not followed.
