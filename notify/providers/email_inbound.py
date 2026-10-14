@@ -28,6 +28,7 @@ log = logging.getLogger("notify.inbound")
 
 MAX_MESSAGE_BYTES = 15728640
 SESSION_SECONDS = 120
+HEADER_FETCH_BYTES = 65536
 
 
 class MailboxError(Exception):
@@ -137,7 +138,7 @@ class ImapMailbox:
         return part[1]
 
     def fetch_headers(self, uid: bytes) -> bytes:
-        return self._fetch(uid, "(BODY.PEEK[HEADER]<0.65536>)")
+        return self._fetch(uid, f"(BODY.PEEK[HEADER]<0.{HEADER_FETCH_BYTES}>)")
 
     def fetch(self, uid: bytes) -> bytes:
         return self._fetch(uid, "(BODY.PEEK[])")
@@ -187,16 +188,28 @@ async def poll_once(svc: NotifyService, provider: EmailProvider, mailbox: Any) -
             raw_headers = await asyncio.to_thread(mailbox.fetch_headers, uid)
             head = replyparse.parse_headers(raw_headers)
             try:
-                verdict = (Verdict("quarantine", "too_large") if size > MAX_MESSAGE_BYTES or size <= 0
+                verdict = (Verdict("quarantine", "too_large")
+                           if size > MAX_MESSAGE_BYTES or size <= 0 or len(raw_headers) >= HEADER_FETCH_BYTES
                            else replies.classify(head, raw_headers, provider.authserv_id))
                 if verdict.action == "accept":
                     raw = await asyncio.to_thread(mailbox.fetch, uid)
                     parsed = await asyncio.to_thread(replyparse.parse_reply, raw)
+                    # The verdict came from a truncated header fetch: judge the stored message's own headers again.
+                    full_headers = raw[:raw.find(b"\r\n\r\n") + 4] if b"\r\n\r\n" in raw else raw
                     del raw
-                    try:
-                        replies.store(verdict, replyparse.message_key(head, raw_headers), parsed)
-                    except sqlite3.IntegrityError:
-                        verdict = Verdict("duplicate")
+                    full = replyparse.parse_headers(full_headers)
+                    again = replies.classify(full, full_headers, provider.authserv_id)
+                    same = (again.action == "accept" and again.delivery is not None and verdict.delivery is not None
+                            and again.delivery["id"] == verdict.delivery["id"]
+                            and replyparse.from_address(full) == replyparse.from_address(head))
+                    if not same:
+                        head = full
+                        verdict = Verdict("quarantine", "header_mismatch", verdict.delivery, verdict.notification)
+                    else:
+                        try:
+                            replies.store(again, replyparse.message_key(full, full_headers), parsed)
+                        except sqlite3.IntegrityError:
+                            verdict = Verdict("duplicate")
             except (MailboxError, OSError, imaplib.IMAP4.error):
                 raise  # connection trouble: stop this pass, retry later
             except Exception:

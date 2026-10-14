@@ -254,3 +254,26 @@ def test_zero_or_missing_size_is_quarantined_unfetched(email_live):
     assert poll(email_live) == {"accepted": 0, "quarantined": 1, "duplicates": 0}
     assert mb.folders["Quarantine"] == [uid] and mb.fetched == []
     assert email_live.service.db.scalar("SELECT reason FROM reply_quarantine") == "too_large"
+
+
+def test_header_differential_is_quarantined(email_live):
+    nid, did = send(email_live)
+    mb = email_live.mailbox
+    forged = reply_raw(did, auth_results=["mx.example.org; dkim=none", "mx.example.org; dkim=pass header.d=example.org"])
+    uid = mb.add(forged)
+    benign = split_headers(reply_raw(did))
+    mb.fetch_headers = lambda u: benign  # what a truncated fetch would have shown
+    assert poll(email_live) == {"accepted": 0, "quarantined": 1, "duplicates": 0}
+    assert mb.folders["Quarantine"] == [uid]
+    assert email_live.service.db.scalar("SELECT reason FROM reply_quarantine") == "header_mismatch"
+    assert email_live.service.db.scalar("SELECT COUNT(*) FROM replies") == 0
+
+
+def test_truncated_header_block_is_too_large(email_live):
+    nid, did = send(email_live)
+    mb = email_live.mailbox
+    uid = mb.add(reply_raw(did, extra=[("X-Pad", "a" * 70000)]))
+    mb.fetch_headers = lambda u: mb.messages[u][:inbound.HEADER_FETCH_BYTES]
+    assert poll(email_live)["quarantined"] == 1
+    assert mb.folders["Quarantine"] == [uid] and mb.fetched == []
+    assert email_live.service.db.scalar("SELECT reason FROM reply_quarantine") == "too_large"
