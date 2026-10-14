@@ -46,6 +46,9 @@ class OutboundMessage:
     expires_at: datetime | None
     callback_url: str | None = None
     attachments: list[AttachmentData] = field(default_factory=list)
+    reply: bool = False
+    thread_delivery_ids: list[str] = field(default_factory=list)  # earlier deliveries to this device, oldest first
+    auto_submitted: bool = False
 
     def ttl_remaining(self, now: datetime) -> int | None:
         if self.expires_at is None:
@@ -125,6 +128,10 @@ class Provider(ABC):
 
     def device_problems(self, address: dict[str, Any]) -> list[str]:
         return []
+
+    def recipient(self, address: dict[str, Any]) -> str | None:
+        """The concrete address a delivery goes to, when replies can come back from it."""
+        return None
 
     @property
     def configured(self) -> bool:

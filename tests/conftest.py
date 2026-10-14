@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import email
+import email.policy
 import inspect
 import socket
 import threading
@@ -194,3 +196,62 @@ def server_factory(tmp_path, fake):
 @pytest.fixture
 def live(server_factory) -> LiveServer:
     return server_factory()
+
+
+MAIL = {"type": "email", "host": "mail.test", "port": 25, "security": "none", "from_address": "hnl@example.org"}
+REPLY_MAILBOX = {"reply_address": "replies@example.org", "imap_host": "imap.test", "imap_user": "replies",
+                 "imap_password": "imap-secret", "authserv_id": "mx.example.org"}
+
+
+def make_email_config(reply_mailbox: bool = True, **server: Any) -> NotifyConfig:
+    d = make_config(**server).model_dump(mode="json", exclude_none=True)
+    d["providers"]["mail"] = {**MAIL, **(REPLY_MAILBOX if reply_mailbox else {})}
+    d["devices"]["alex-email"] = {"provider": "mail", "owner": "alex", "address": {"to": "alex@example.org"}}
+    d["users"]["alex"]["devices"] = ["alex-phone", "alex-email"]
+    return NotifyConfig.model_validate(d)
+
+
+@dataclass
+class SentMail:
+    raws: list[bytes] = field(default_factory=list)
+
+    def last(self) -> Any:
+        return email.message_from_bytes(self.raws[-1], policy=email.policy.default)
+
+
+@pytest.fixture
+def sent_mail(monkeypatch) -> SentMail:
+    from notify.providers.base import SendResult
+    from notify.providers.email import EmailProvider
+    box = SentMail()
+
+    def capture(self: Any, raw: bytes, sender: str, to: str) -> SendResult:
+        box.raws.append(raw)
+        return SendResult(outcome="success")
+    monkeypatch.setattr(EmailProvider, "_send_sync", capture)
+    return box
+
+
+@pytest.fixture
+def email_factory(tmp_path, fake, sent_mail):
+    servers: list[LiveServer] = []
+
+    def make(reply_mailbox: bool = True, **server_cfg: Any) -> LiveServer:
+        app = create_app(make_email_config(reply_mailbox, **server_cfg),
+                         db_path=str(tmp_path / f"mail{len(servers)}.sqlite3"),
+                         key_path=str(tmp_path / "master.key"), transport=httpx.MockTransport(fake.handler))
+        srv = LiveServer(app, fake)
+        srv.start()
+        srv.service.resolve = fake_resolve
+        srv.mailbox = None  # replaced by a FakeMailbox once tests/mailfactory.py exists (Task 5)
+        servers.append(srv)
+        return srv
+
+    yield make
+    for s in servers:
+        s.stop()
+
+
+@pytest.fixture
+def email_live(email_factory) -> LiveServer:
+    return email_factory()

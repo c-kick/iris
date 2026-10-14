@@ -139,7 +139,8 @@ class NotifyService:
         return None
 
     def message_for(self, n: sqlite3.Row | dict, delivery_id: str, provider: str, *, with_data: bool = False,
-                    atts: list[AttachmentData] | None = None) -> OutboundMessage:
+                    atts: list[AttachmentData] | None = None,
+                    device: str | None = None) -> OutboundMessage:
         """`atts` overrides the stored attachments (planning before the notification is written);
         with_data loads the bytes and leaves out purged attachments."""
         if atts is None:
@@ -163,8 +164,25 @@ class NotifyService:
             actions=loads(n["actions_json"], []), tags=loads(n["tags_json"], []),
             require_ack=bool(n["require_ack"]), created_at=parse_iso(n["created_at"]),  # type: ignore[arg-type]
             expires_at=parse_iso(n["expires_at"]), callback_url=self.callback_url(provider),
-            attachments=atts,
+            attachments=atts, reply=bool(n["reply_wanted"]), auto_submitted=bool(n["auto_submitted"]),
+            thread_delivery_ids=self._thread_delivery_ids(n["in_reply_to"], device) if device else [],
         )
+
+    def _thread_delivery_ids(self, ref: str | None, device: str) -> list[str]:
+        """Deliveries to the same device along the in_reply_to chain, oldest first (for email threading)."""
+        ids: list[str] = []
+        seen: set[str] = set()
+        while ref and ref not in seen and len(seen) < 20:
+            seen.add(ref)
+            prev = self.db.one("SELECT in_reply_to FROM notifications WHERE id=?", (ref,))
+            if prev is None:
+                break
+            d = self.db.one("SELECT id FROM deliveries WHERE notification_id=? AND device=? ORDER BY created_at, id"
+                            " LIMIT 1", (ref, device))
+            if d is not None:
+                ids.append(d["id"])
+            ref = prev["in_reply_to"]
+        return ids[::-1]
 
     # ---------------------------------------------------------------- events
     def _emit(self, c: sqlite3.Connection, etype: str, n: sqlite3.Row | dict, delivery_id: str | None,
@@ -248,6 +266,10 @@ class NotifyService:
             did = new_id("dlv")
             plan = provider.plan(self.message_for(nrow, did, dev.provider, atts=atts), dev.address)
             gaps = list(plan.capability_gaps)
+            if nrow.get("reply_wanted"):
+                replies = provider.capabilities().get("replies") or {}
+                if not replies.get("supported"):
+                    gaps.append(f"replies: {replies.get('note') or 'not supported on this path'}")
             problems = provider.config_problems() + provider.device_problems(dev.address)
             if problems:
                 gaps.append("provider not ready (will retry until fixed): " + "; ".join(problems))
@@ -476,8 +498,10 @@ class NotifyService:
                 "SELECT * FROM deliveries WHERE state=? AND provider=? AND next_attempt_at <= ?"
                 " ORDER BY next_attempt_at LIMIT ?", (QUEUED, provider, now, limit)).fetchall()
             for d in rows:
-                c.execute("UPDATE deliveries SET state=?, attempts=attempts+1, lease_until=?, updated_at=? WHERE id=?",
-                          (SENDING, in_seconds(lease), now, d["id"]))
+                dev = self.config.devices.get(d["device"])
+                recipient = p.recipient(dev.address) if p is not None and dev is not None else None
+                c.execute("UPDATE deliveries SET state=?, attempts=attempts+1, lease_until=?, recipient_address=?,"
+                          " updated_at=? WHERE id=?", (SENDING, in_seconds(lease), recipient, now, d["id"]))
                 claimed.append(c.execute("SELECT * FROM deliveries WHERE id=?", (d["id"],)).fetchone())
         return claimed
 

@@ -23,16 +23,19 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ..models import Severity
+from ..models import INTERACTED, Severity
 from .base import BASE_OBSERVABLE, DeliveryPlan, OutboundMessage, Provider, SendResult
 
 MAX_SUBJECT_LINE = 120
 MAX_ATTACHMENTS = 10
 MAX_ATTACHMENT_BYTES = 10485760
+REPLY_FOOTER = "Reply to this email to answer the agent."
+_REPLY_KEYS = ("reply_address", "imap_host", "imap_user", "imap_password", "authserv_id")
 _ADDR_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 _SECURITY = ("starttls", "tls", "none")
 _KEYS = {"type", "host", "port", "security", "username", "password", "from_address", "from_name",
-         "subject_prefix", "timeout_seconds", "verify_tls"}
+         "subject_prefix", "timeout_seconds", "verify_tls", "reply_address", "imap_host", "imap_port", "imap_user",
+         "imap_password", "authserv_id", "reply_inbox", "reply_processed", "reply_quarantine"}
 
 
 class _NoStartTLS(smtplib.SMTPNotSupportedError):
@@ -95,7 +98,7 @@ class EmailProvider(Provider):
     kind = "email"
     label = "Email (SMTP)"
     max_concurrency = 1
-    secret_settings = frozenset({"password"})
+    secret_settings = frozenset({"password", "imap_password"})
     settings_schema = {
         "host": {"label": "SMTP server", "kind": "text", "help": "Host name of your mail server or relay, e.g. smtp.example.org."},
         "port": {"label": "Port", "kind": "int", "default": 587},
@@ -109,6 +112,17 @@ class EmailProvider(Provider):
         "subject_prefix": {"label": "Subject prefix", "kind": "text", "help": "Optional, e.g. [home]."},
         "timeout_seconds": {"label": "Give up a send after (seconds)", "kind": "int", "default": 60},
         "verify_tls": {"label": "Check the server's TLS certificate", "kind": "check", "default": True},
+        "reply_address": {"label": "Reply mailbox address", "kind": "text",
+                          "help": "Optional. Set this and the IMAP fields to let people answer agents by replying, e.g. replies@example.org."},
+        "imap_host": {"label": "Reply mailbox IMAP server", "kind": "text", "help": "TLS from the start (IMAPS)."},
+        "imap_port": {"label": "IMAP port", "kind": "int", "default": 993},
+        "imap_user": {"label": "IMAP username", "kind": "text"},
+        "imap_password": {"label": "IMAP password", "kind": "secret"},
+        "authserv_id": {"label": "Mail server name in Authentication-Results", "kind": "text",
+                        "help": "The name your mail server writes first in the Authentication-Results header it adds. Test connection shows what it sees."},
+        "reply_inbox": {"label": "Folder to read", "kind": "text", "default": "INBOX"},
+        "reply_processed": {"label": "Folder for handled replies", "kind": "text", "default": "Processed"},
+        "reply_quarantine": {"label": "Folder for rejected mail", "kind": "text", "default": "Quarantine"},
     }
     address_schema = {
         "to": {"label": "Email address", "kind": "text", "help": "One address; make several devices for several addresses."},
@@ -127,6 +141,15 @@ class EmailProvider(Provider):
         self.timeout = max(10, min(300, _int(settings.get("timeout_seconds", 60), 60)))
         self.verify_tls = bool(settings.get("verify_tls", True))
         self.send_deadline_seconds = float(self.timeout)
+        self.reply_address = str(settings.get("reply_address") or "").strip()
+        self.imap_host = str(settings.get("imap_host") or "").strip()
+        self.imap_port = _int(settings.get("imap_port", 993), 0)
+        self.imap_user = str(settings.get("imap_user") or "")
+        self.imap_password = str(settings.get("imap_password") or "")
+        self.authserv_id = str(settings.get("authserv_id") or "").strip()
+        self.reply_inbox = str(settings.get("reply_inbox") or "INBOX")
+        self.reply_processed = str(settings.get("reply_processed") or "Processed")
+        self.reply_quarantine = str(settings.get("reply_quarantine") or "Quarantine")
         self._unknown = sorted(set(settings) - _KEYS)
 
     # --- configuration ---
@@ -156,6 +179,27 @@ class EmailProvider(Provider):
             return ["address.to is not a valid email address"]
         return []
 
+    def recipient(self, address: dict[str, Any]) -> str | None:
+        return str(address.get("to") or "").strip().lower() or None
+
+    def replies_problems(self) -> list[str]:
+        """Why replies are off; never part of config_problems, so ordinary email keeps working."""
+        if not any(getattr(self, k) for k in _REPLY_KEYS):
+            return ["reply mailbox not configured"]
+        problems = [f"{k} is not set" for k in _REPLY_KEYS if not getattr(self, k)]
+        if self.reply_address and not _valid_address(self.reply_address):
+            problems.append("reply_address is not a valid email address")
+        if not 1 <= self.imap_port <= 65535:
+            problems.append("imap_port must be between 1 and 65535")
+        return problems
+
+    @property
+    def replies_ready(self) -> bool:
+        return not self.replies_problems()
+
+    def message_id(self, delivery_id: str) -> str:
+        return f"<{delivery_id}@{self.from_address.rpartition('@')[2]}>"
+
     # --- capabilities ---
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -170,6 +214,8 @@ class EmailProvider(Provider):
             "links": {"max": 10, "note": "shown in the message body, not reported back"},
             "cancel_after_dispatch": {"supported": False},
             "ttl": {"supported": False, "note": "email cannot be recalled; expiry applies only before sending"},
+            "replies": {"supported": self.replies_ready,
+                        "note": None if self.replies_ready else "; ".join(self.replies_problems())},
             "severities": [s.value for s in Severity],
             "max_title_length": None,
             "max_message_length": None,
@@ -186,7 +232,8 @@ class EmailProvider(Provider):
                 gaps.append(f"action {a['id']!r} shown as text (url is not http/https)")
         if msg.url and not _http(msg.url):
             gaps.append("url shown as text (not http/https)")
-        return DeliveryPlan(tracking="none", observable_states=list(BASE_OBSERVABLE), capability_gaps=gaps)
+        observable = list(BASE_OBSERVABLE) + ([INTERACTED] if msg.reply and self.replies_ready else [])
+        return DeliveryPlan(tracking="none", observable_states=observable, capability_gaps=gaps)
 
     # --- message ---
     def build_message(self, msg: OutboundMessage, address: dict[str, Any]) -> EmailMessage:
@@ -196,7 +243,16 @@ class EmailProvider(Provider):
         out["From"] = formataddr((_header_safe(self.from_name), self.from_address))
         out["To"] = str(address.get("to") or "")
         out["Date"] = format_datetime(msg.created_at)
-        out["Message-ID"] = f"<{msg.delivery_id}@{self.from_address.rpartition('@')[2]}>"
+        out["Message-ID"] = self.message_id(msg.delivery_id)
+        if msg.thread_delivery_ids:
+            refs = [self.message_id(i) for i in msg.thread_delivery_ids]
+            out["In-Reply-To"] = refs[-1]
+            out["References"] = " ".join(refs)
+        if msg.auto_submitted:
+            out["Auto-Submitted"] = "auto-replied"
+        reply_on = msg.reply and self.replies_ready
+        if reply_on:
+            out["Reply-To"] = self.reply_address
         out["X-Notify-Notification"] = _header_safe(msg.notification_id)
         if msg.severity in (Severity.high, Severity.critical):
             out["Importance"] = "high"
@@ -207,6 +263,8 @@ class EmailProvider(Provider):
         text = msg.message
         if links:
             text += "\n\n" + "\n".join(f"{label}: {url}" if label else url for label, url in links)
+        if reply_on:
+            text += "\n\n" + REPLY_FOOTER
         parts = ['<div style="font-family:sans-serif">', html.escape(msg.message).replace("\r\n", "\n").replace("\n", "<br>")]
         for label, url in links:
             if _http(url):
@@ -215,6 +273,8 @@ class EmailProvider(Provider):
                              f'{html.escape(label or url)}</a></p>')
             else:
                 parts.append(f"<p>{html.escape(f'{label}: {url}' if label else url)}</p>")
+        if reply_on:
+            parts.append(f'<p style="color:#666;font-size:90%">{html.escape(REPLY_FOOTER)}</p>')
         parts.append("</div>")
         out.set_content(text)
         out.add_alternative("".join(parts), subtype="html")
