@@ -12,6 +12,7 @@ Token: NOTIFY_TOKEN, else that entry's Authorization header. The token is never 
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -67,22 +68,40 @@ def settings(url: str | None, entry: dict[str, Any]) -> tuple[str, str]:
 def safe_filename(name: str, taken: set[str]) -> str:
     base = name.replace("\\", "/").rpartition("/")[2]
     base = "".join(c for c in base if unicodedata.category(c)[0] != "C" and c not in ":").strip().lstrip(".")
-    base = base[:120] or "attachment"
+    base = base or "attachment"
     stem, dot, ext = base.rpartition(".")
     if not dot or not stem:
         stem, ext = base, ""
-    cand, n = base, 2
+    if dot and stem:
+        ext = ext.encode()[:20].decode(errors="ignore")
+    ext_part = f".{ext}" if ext else ""
+
+    def build(n: int) -> str:
+        suffix = f"-{n}" if n > 1 else ""
+        room = 200 - len((suffix + ext_part).encode())
+        return (stem.encode()[:room].decode(errors="ignore").rstrip() or "attachment") + suffix + ext_part
+
+    n = 1
+    cand = build(n)
     while cand.lower() in taken:
-        cand = f"{stem}-{n}.{ext}" if ext else f"{stem}-{n}"
         n += 1
+        cand = build(n)
     taken.add(cand.lower())
     return cand
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a: Any, **k: Any) -> None:
+        return None  # a 3xx surfaces as HTTPError; the bearer token never follows a redirect
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _request(method: str, url: str, token: str, timeout: float) -> tuple[int, bytes]:
     req = urllib.request.Request(url, method=method, headers={"Authorization": f"Bearer {token}",
                                                               "User-Agent": "notify-wait"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _OPENER.open(req, timeout=timeout) as r:
         return r.status, r.read()
 
 
@@ -102,10 +121,13 @@ def claim_loop(base: str, token: str, nid: str, deadline: float) -> dict[str, An
             if e.code in (401, 403, 404, 422):
                 raise Fatal(f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from None
             status, body = 0, b""
-        except (urllib.error.URLError, OSError):
+        except (urllib.error.URLError, OSError, http.client.HTTPException):
             status, body = 0, b""
         if status == 200:
-            return json.loads(body)
+            try:
+                return json.loads(body)
+            except ValueError:
+                status = 0  # malformed body: retry with the same waiter
         if status == 204:
             failures = 0
             if wait == 0:
@@ -121,23 +143,44 @@ def save_attachments(base: str, token: str, reply: dict[str, Any], save_dir: str
     wanted = [a for a in reply.get("attachments") or [] if not a.get("purged")]
     if not wanted:
         return []
-    d = Path(save_dir) if save_dir else Path(tempfile.mkdtemp(prefix="notify-reply-"))
-    d.mkdir(parents=True, exist_ok=True)
-    taken = {p.name.lower() for p in d.iterdir()}
+    try:
+        d = Path(save_dir) if save_dir else Path(tempfile.mkdtemp(prefix="notify-reply-"))
+        d.mkdir(parents=True, exist_ok=True)
+        taken = {p.name.lower() for p in d.iterdir()}
+    except OSError as e:
+        raise Fatal(f"cannot use attachment folder: {e}") from None
     paths = []
     for a in wanted:
+        rel = a["url"]
+        if not isinstance(rel, str) or not rel.startswith("/") or rel.startswith("//"):
+            raise Fatal("unexpected attachment url from the service")
+        url = base + rel
+        if urllib.parse.urlsplit(url)[:2] != urllib.parse.urlsplit(base)[:2]:
+            raise Fatal("unexpected attachment url from the service")
         try:
-            _, data = _request("GET", base + a["url"], token, timeout=60)
-        except (urllib.error.URLError, OSError) as e:
+            _, data = _request("GET", url, token, timeout=60)
+        except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             raise Fatal(f"could not download {a['filename']!r}: {e}") from None
-        path = d / safe_filename(a["filename"], taken)
-        with open(path, "xb") as f:  # never follow or overwrite an existing file
-            f.write(data)
+        try:
+            path = d / safe_filename(a["filename"], taken)
+            with open(path, "xb") as f:  # never follow or overwrite an existing file
+                f.write(data)
+        except OSError as e:
+            raise Fatal(f"could not save {a['filename']!r}: {e}") from None
         paths.append(str(path))
     return paths
 
 
+def _clean(s: Any) -> str:
+    """Drop control/format characters (terminal escapes) except newline and tab."""
+    return "".join(c for c in str(s) if c in "\n\t" or unicodedata.category(c)[0] != "C")
+
+
 def render(reply: dict[str, Any], paths: list[str]) -> str:
+    return _clean(_render(reply, paths))
+
+
+def _render(reply: dict[str, Any], paths: list[str]) -> str:
     when = datetime.fromisoformat(reply["received_at"].replace("Z", "+00:00")).astimezone()
     title = reply.get("notification_title") or reply["notification_id"]
     lines = [f'Reply from {reply["from"]} ({when:%Y-%m-%d %H:%M %Z}) to "{title}" [{reply["id"]}]:', reply["text"]]
@@ -171,6 +214,9 @@ def main(argv: list[str] | None = None) -> int:
         paths = save_attachments(base, token, reply, args.save_dir)
         print(json.dumps({**reply, "saved": paths}, indent=2) if args.json else render(reply, paths))
         return EXIT_REPLY
+    except (KeyError, ValueError, TypeError, AttributeError):
+        print("notify-wait: unexpected reply format from the service", file=sys.stderr)
+        return EXIT_ERROR
     except Fatal as e:
         print(f"notify-wait: {e}", file=sys.stderr)
         return EXIT_ERROR

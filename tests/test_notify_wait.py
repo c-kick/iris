@@ -110,3 +110,71 @@ def test_cli_unreachable_service_times_out(monkeypatch, capsys):
     monkeypatch.setenv("NOTIFY_TOKEN", "tok")
     monkeypatch.setattr(nw.time, "sleep", lambda s: None)
     assert nw.main(["ntf_x", "--url", "http://127.0.0.1:9", "--timeout", "2s"]) == 2
+
+
+def test_safe_filename_long_and_dots():
+    taken: set[str] = set()
+    n = nw.safe_filename("😀" * 120 + ".png", taken)
+    assert len(n.encode()) <= 200 and n.endswith(".png")
+    n2 = nw.safe_filename("😀" * 120 + ".png", taken)
+    assert n2 != n and len(n2.encode()) <= 200 and n2.endswith("-2.png")
+    assert [nw.safe_filename(x, set()) for x in ("..", ".", "a/..")] == ["attachment"] * 3
+
+
+def test_long_name_saves(tmp_path):
+    nw_req = nw._request
+    nw._request = lambda *a, **k: (200, b"x")
+    try:
+        paths = nw.save_attachments("http://h", "t", {"attachments": [{"filename": "😀" * 120 + ".png", "url": "/v1/a"}]},
+                                    str(tmp_path))
+    finally:
+        nw._request = nw_req
+    assert len(paths) == 1 and Path(paths[0]).read_bytes() == b"x"
+
+
+@pytest.mark.parametrize("url", ["@evil.com/x", "//evil.com/x", "http://evil.com/x"])
+def test_hostile_attachment_url(url, tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(nw, "_request", lambda *a, **k: calls.append(a) or (200, b"x"))
+    with pytest.raises(nw.Fatal):
+        nw.save_attachments("http://h", "t", {"attachments": [{"filename": "a", "url": url}]}, str(tmp_path))
+    assert calls == []
+
+
+def test_no_redirect_follow():
+    import urllib.request
+    h = nw._NoRedirect()
+    req = urllib.request.Request("http://h/x")
+    assert h.redirect_request(req, None, 302, "Found", {}, "http://evil.com/") is None
+
+
+def test_retries_incomplete_read_and_bad_json(monkeypatch, capsys):
+    import http.client
+    monkeypatch.setattr(nw.time, "sleep", lambda s: None)
+    reply = {"id": "rpl_1", "notification_id": "n", "from": "a@example.org", "received_at": "2026-01-01T00:00:00Z",
+             "text": "hi", "attachments": []}
+    seq = [http.client.IncompleteRead(b""), (200, b"{nope"), (200, json.dumps(reply).encode())]
+
+    def fake(*a, **k):
+        v = seq.pop(0)
+        if isinstance(v, Exception):
+            raise v
+        return v
+
+    monkeypatch.setattr(nw, "_request", fake)
+    monkeypatch.setenv("NOTIFY_TOKEN", "tok")
+    assert nw.main(["n", "--url", "http://h", "--timeout", "30s"]) == 0
+    assert "hi" in capsys.readouterr().out
+
+
+def test_bad_reply_shape_is_error(monkeypatch, capsys):
+    monkeypatch.setattr(nw, "_request", lambda *a, **k: (200, b"{}"))
+    monkeypatch.setenv("NOTIFY_TOKEN", "tok")
+    assert nw.main(["n", "--url", "http://h", "--timeout", "30s"]) == 1
+    assert "unexpected reply format" in capsys.readouterr().err
+
+
+def test_render_strips_escapes():
+    out = nw.render({"id": "r", "notification_id": "n", "from": "a\x1b[31m@example.org", "received_at": "2026-01-01T00:00:00Z",
+                     "text": "x\x1b]0;pwned\x07y\x1b[2J\nline\ttab"}, ["/tmp/\x1b[1mf"])
+    assert "\x1b" not in out and "\x07" not in out and "line\ttab" in out
