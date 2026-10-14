@@ -84,3 +84,21 @@ def test_mcp_reply_send_and_get_replies(email_live):
                       params={"waiter": "abcdefgh12", "wait": 0}).status_code == 200
     _, replies = run_session(email_live, "agent", look)
     assert replies["items"][0]["text"] == "Go with B."
+
+
+def test_attachment_download_hardening(email_live):
+    nid, did = send(email_live)
+    arrive(email_live, reply_raw(did, attachment=PNG))
+    with email_live.client() as c:
+        body = c.post(f"/v1/notifications/{nid}/replies/claim", params={"waiter": "abcdefgh12", "wait": 0}).json()
+        url = body["attachments"][0]["url"]
+        for stored in ("text/ж", "text/html", "TEXT/HTML", "image/svg+xml", "a/" + "b" * 200):
+            with email_live.service.db.tx() as t:
+                t.execute("UPDATE reply_attachments SET content_type=? WHERE reply_id=?", (stored, body["id"]))
+            r = c.get(url)
+            assert r.status_code == 200 and r.headers["content-type"] == "application/octet-stream", stored
+        name = 'a"b\r\nX: y ж.png'
+        with email_live.service.db.tx() as t:
+            t.execute("UPDATE reply_attachments SET filename=? WHERE reply_id=?", (name, body["id"]))
+        cd = c.get(url).headers["content-disposition"]
+        assert cd == "attachment; filename*=UTF-8''a%22b%0D%0AX%3A%20y%20%D0%B6.png"

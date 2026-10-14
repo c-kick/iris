@@ -128,7 +128,8 @@ async def list_replies(nid: str, request: Request, client: Client = Depends(requ
 async def reply_attachment(rid: str, idx: int, request: Request,
                            client: Client = Depends(require(Scope.read))) -> Response:
     filename, ctype, data = service(request).replies.attachment(client, rid, idx)
-    if not re.fullmatch(r"[\w.+-]+/[\w.+-]+", ctype):
+    if (len(ctype) > 100 or not re.fullmatch(r"[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+", ctype)
+            or ctype.lower() in ("text/html", "image/svg+xml")):
         ctype = "application/octet-stream"
     return Response(content=data, media_type=ctype,
                     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename, safe='')}",
