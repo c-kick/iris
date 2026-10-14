@@ -73,6 +73,23 @@ Outcomes:
 
 Results go into the host documentation, not into tracked files.
 
+**Result (2026-10-14, checked against the deployment's server):** (1) yes, the
+server prepends its own `Authentication-Results` (Postfix + DKIM/DMARC milter)
+to every inbound message, directly below its own `Received` header; a genuine
+reply showed `dkim=pass` for the sender's domain. (2) No, forged
+`Authentication-Results` headers claiming the server's authserv-id are **not**
+removed; they survive directly below the genuine one. The first-header rule in
+§3 step 5 is therefore required, and it rejected the forgery in the test.
+(3) Replies land in INBOX. Decision: no in-process DKIM verification.
+
+**Accepted residual risk:** if the server's milter ever passes a message
+without adding its header (milter failure with an accepting default action),
+a forged header becomes the first one. Forging a reply then additionally needs
+the Message-ID of a live, reply-enabled delivery (delivery ids carry 40 random
+bits and only appear in mail to the recipient) and the recipient's exact
+address. In-process DKIM verification (`dkimpy`) remains the fix if this risk
+is no longer acceptable.
+
 ## 1. Configuration
 
 The email provider's settings (Admin → Providers → Email) gain a **Reply
