@@ -598,6 +598,13 @@ async def activity(request: Request, limit: int = 25, client: Client = Depends(a
             "attention": svc.attention(admin_view)}
 
 
+@router.get("/api/replies")
+async def replies_view(request: Request, limit: int = 25, _: Client = Depends(admin)) -> dict[str, Any]:
+    svc = _svc(request)
+    return {"inbound": svc.inbound_status, "replies": svc.replies.recent(limit),
+            "quarantine": svc.replies.quarantined(limit)}
+
+
 @router.post("/api/notifications/{nid}/{action}")
 async def manage(nid: str, action: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
     svc = _svc(request)

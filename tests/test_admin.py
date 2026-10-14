@@ -278,3 +278,25 @@ def test_validation_errors_do_not_echo_large_input(live):
         assert r.status_code == 422 and len(r.content) < 10240, len(r.content)
         d = r.json()["detail"]
         assert d and all({"loc", "msg", "type"} <= set(e) for e in d)
+
+
+def test_admin_replies_view(email_live):
+    from tests.mailfactory import reply_raw
+    import notify.providers.email_inbound as inbound
+    with email_live.client() as c:
+        out = c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "Pick",
+                                                 "kinds": ["email"], "reply": True}).json()
+        wait_for(lambda: c.get(f"/v1/notifications/{out['id']}").json()["deliveries"][0]["state"] == "dispatched")
+    did = out["deliveries"][0]["id"]
+    email_live.mailbox.add(reply_raw(did))
+    email_live.mailbox.add(reply_raw(did, message_id="<m@x>", sender="mallory@example.org"))
+    email_live.call(lambda: inbound.poll_once(email_live.service, email_live.service.providers["mail"],
+                                              email_live.mailbox))
+    with email_live.client("admin") as a:
+        r = a.get("/admin/api/replies")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["replies"][0]["text"] == "Go with B."
+    assert body["quarantine"][0]["reason"] == "sender_mismatch"
+    with email_live.client("agent") as c:
+        assert c.get("/admin/api/replies").status_code in (401, 403)

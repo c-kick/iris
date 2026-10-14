@@ -434,7 +434,13 @@ const VIEWS = {
         if (!r.supported) { b.hidden = true; out.textContent = ""; return; }
         if (!r.ok) throw new Error(r.error || "The connection failed");
         const tls = { starttls: "with STARTTLS", tls: "with TLS" }[r.tls] || "without encryption";
-        out.textContent = `Connection works, ${tls}. ${r.size_limit ? `The server accepts messages up to ${fmtSize(r.size_limit)}.` : "The server announces no size limit."}`;
+        let text = `Connection works, ${tls}. ${r.size_limit ? `The server accepts messages up to ${fmtSize(r.size_limit)}.` : "The server announces no size limit."}`;
+        if (r.imap) {
+          text += r.imap.ok
+            ? ` Reply mailbox works: ${r.imap.messages} waiting, folders ${r.imap.folders.join(", ")}.${r.imap.authserv_ids.length ? ` Its newest message names ${r.imap.authserv_ids.join(", ")} in Authentication-Results.` : ""}`
+            : ` Reply mailbox: ${r.imap.error}`;
+        }
+        out.textContent = text;
       } catch (ex) { out.className = "problem"; out.textContent = ex.message; } finally { b.disabled = false; }
     }));
   },
@@ -544,8 +550,10 @@ const VIEWS = {
     main.innerHTML = `
       <div class="section-head"><h2>Activity</h2><p>The latest notifications from every service, with what each device reported back.</p></div>
       <div class="block" id="attention"></div>
+      <div class="block" id="replies"></div>
       <div class="rows" id="recent"><div class="empty">Loading…</div></div>`;
     loadRecent(main.querySelector("#recent"), 50, main.querySelector("#attention"));
+    loadReplies(main.querySelector("#replies"));
   },
 
   requests(main) {
@@ -917,6 +925,25 @@ async function loadRecent(el, limit, attentionEl) {
     try { await api("POST", `/notifications/${b.dataset.cancel}/cancel`); toast("Cancelled"); loadRecent(el, limit, attentionEl); }
     catch (ex) { toast(ex.message); }
   }));
+}
+
+async function loadReplies(el) {
+  let data;
+  try { data = await api("GET", "/replies?limit=10"); }
+  catch (ex) { el.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  const status = Object.entries(data.inbound).map(([name, s]) => `<div class="sub">${esc(name)}: ${s.last_error
+    ? `<span class="problem">${esc(s.last_error)}</span>` : s.last_success ? `checked ${esc(when(s.last_success))}` : "not checked yet"}</div>`).join("");
+  if (!data.replies.length && !data.quarantine.length && !status) { el.innerHTML = ""; return; }
+  el.innerHTML = `<h3>Replies</h3>${status}<div class="rows">
+    ${data.replies.map((r) => `<div class="row"><span class="lamp ${r.state === "unclaimed" ? "warn" : "ok"}"></span><div class="grow">
+      <div class="title">${esc(r.notification_title || r.subject || "(no title)")}</div>
+      <div class="sub">${esc(when(r.received_at))} from ${esc(r.from)}: ${esc(r.state)}${r.claimed_by ? ` by ${esc(r.claimed_by)}` : ""}${r.autoreply_notification_id ? ", autoreply sent" : ""}</div>
+      <div class="sub">${esc((r.text || "").slice(0, 200))}</div>
+      ${r.attachments.length ? `<div class="sub">${r.attachments.map((a) => esc(a.filename)).join(", ")}</div>` : ""}</div></div>`).join("")}
+    ${data.quarantine.map((q) => `<div class="row"><span class="lamp bad"></span><div class="grow">
+      <div class="title">Rejected: ${esc(q.subject || "(no subject)")}</div>
+      <div class="sub">${esc(when(q.received_at))} from ${esc(q.from_address || "?")}: ${esc(q.reason)}</div></div></div>`).join("")}
+  </div>`;
 }
 
 boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><p class="problem">${esc(ex.message)}</p></div></main>`; });
