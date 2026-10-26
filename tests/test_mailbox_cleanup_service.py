@@ -32,6 +32,13 @@ def poll(srv, box=None):
     return srv.call(lambda: inbound.poll_once(srv.service, p, box or srv.mailbox))
 
 
+def settle(workers, n=2):
+    """Wait until the cleanup worker has finished n full passes after now (no fixed sleeps)."""
+    for _ in range(n):
+        h = workers.heartbeat.get("cleanup")
+        wait_for(lambda: workers.heartbeat.get("cleanup") != h, timeout=15)
+
+
 def in_thread(fn):
     out = {}
     t = threading.Thread(target=lambda: out.update(r=fn()))
@@ -242,7 +249,7 @@ def test_disabled_skips_automatic_but_manual_works(email_live):
     cfg(email_live, enabled=False)
     w = email_live.app.state.workers
     w.cleanup_check_seconds, w.cleanup_start_delay = 0.05, 0.0
-    time.sleep(2.2)
+    settle(w)
     assert len(email_live.cleanup_server.mail["Processed"]) == 3
     with _session_client(email_live) as a:
         assert a.post("/admin/api/mailbox/mail/cleanup", headers=H).status_code == 200
@@ -257,21 +264,21 @@ def test_automatic_run_once_a_day_with_backoff(email_live):
     w.cleanup_check_seconds, w.cleanup_start_delay = 0.05, 100.0
     w.cleanup_interval, w.cleanup_backoff_max = 1000.0, 400.0
     runs = lambda: email_live.service.cleanup_status.get("mail", {}).get("last_run")
-    time.sleep(2.2)
+    settle(w)
     assert runs() is None  # before the start delay
     now[0] = 1101.0
     wait_for(lambda: runs(), timeout=10)
     first = runs()
     assert len(email_live.cleanup_server.mail["Processed"]) == 0
     now[0] = 1500.0
-    time.sleep(2.2)
+    settle(w)
     assert runs() == first  # not again before the interval
     email_live.cleanup_server.login_error = "nope"
     now[0] = 2200.0
     wait_for(lambda: email_live.service.cleanup_status["mail"]["last_error"], timeout=10)
     failed = runs()
     now[0] = 2300.0
-    time.sleep(2.2)
+    settle(w)
     assert runs() == failed  # first back-off is 600 s, capped at 400: not yet due at +100
     now[0] = 2700.0
     wait_for(lambda: runs() != failed, timeout=10)
@@ -282,6 +289,63 @@ def test_failing_cleanup_does_not_stop_polling(email_live):
     w = email_live.app.state.workers
     w.cleanup_check_seconds, w.cleanup_start_delay = 0.05, 0.0
     w.inbound_interval = 0.1
-    time.sleep(2.5)
-    assert email_live.service.cleanup_status["mail"]["last_error"]
-    assert email_live.service.inbound_status["mail"]["last_success"]
+    wait_for(lambda: email_live.service.cleanup_status.get("mail", {}).get("last_error"))
+    wait_for(lambda: email_live.service.inbound_status.get("mail", {}).get("last_success"))
+
+
+def test_settings_event_names_client_and_events_do_not_fan_out(email_live):
+    with email_live.service.db.tx() as c:
+        c.execute("INSERT INTO subscriptions(id, client_id, url, secret, events_json, created_at)"
+                  " VALUES ('sub_x', 'admin', 'https://hooks.example.org/x', 's', '[\"*\"]', '2026-01-01T00:00:00Z')")
+    fill(email_live)
+    body = {"enabled": True, "processed_days": 10, "alert_targets": []}
+    with _session_client(email_live) as a:
+        assert a.put("/admin/api/mailbox/mail", json=body, headers=H).status_code == 200
+        assert a.post("/admin/api/mailbox/mail/cleanup", headers=H).status_code == 200
+    import json
+    row = email_live.service.db.one("SELECT * FROM events WHERE type='mailbox.settings'")
+    data = json.loads(row["data_json"])
+    assert row["client_id"] == "admin-ui" and row["notification_id"] is None
+    assert data["provider"] == "mail" and data["settings"]["processed_days"] == 10
+    assert email_live.service.db.scalar("SELECT COUNT(*) FROM events WHERE type LIKE 'mailbox.%'") == 2
+    assert email_live.service.db.scalar("SELECT COUNT(*) FROM webhook_deliveries") == 0
+
+
+def test_poll_cancel_keeps_lock_until_thread_returns(email_live):
+    box = BlockingBox()
+    svc = email_live.service
+    provider = svc.providers["mail"]
+
+    async def go():
+        task = asyncio.ensure_future(inbound.poll_once(svc, provider, box))
+        lock = svc.mailbox_lock("mail")
+        await asyncio.sleep(0.3)
+        assert box.entered.is_set()
+        task.cancel()
+        await asyncio.sleep(0.3)
+        held = lock.locked()
+        box.gate.set()
+        await asyncio.wait({task})
+        return held, lock.locked()
+    held, after = email_live.call(go)
+    assert held is True and after is False
+
+
+def test_unexpected_worker_exception_backs_off(email_live):
+    svc, w = email_live.service, email_live.app.state.workers
+    calls = []
+
+    async def boom(name, **kw):
+        calls.append(w.clock())
+        raise RuntimeError("bug with imap-secret")
+    svc.run_mailbox_cleanup = boom
+    now = [1000.0]
+    w.clock = lambda: now[0]
+    w.cleanup_check_seconds, w.cleanup_start_delay = 0.05, 0.0
+    wait_for(lambda: calls)
+    settle(w)
+    assert len(calls) == 1  # no retry on every pass
+    st = svc.cleanup_status["mail"]
+    assert "RuntimeError" in st["last_error"] and "imap-secret" not in st["last_error"]
+    now[0] = 1700.0  # past the first 600 s back-off
+    wait_for(lambda: len(calls) == 2)

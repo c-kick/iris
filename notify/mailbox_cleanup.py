@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
 from .db import iso
-from .providers.email_inbound import SESSION_SECONDS, MailboxError, _ok, _q, mask_secret
+from .providers.email_inbound import SESSION_SECONDS, MailboxError, _ok, _q, mask_secret, run_locked
 
 if TYPE_CHECKING:
     from .config import MailboxCleanupConfig
@@ -220,13 +220,7 @@ async def run_pass(open_mailbox: Callable[[], CleanupMailbox], lock: asyncio.Loc
                    deadline: float | None = None) -> dict[str, Any]:
     """One pass over Processed and Quarantine. The lock is held per step, never across a pass."""
     async def locked(fn: Callable[..., Any], *args: Any) -> Any:
-        async with lock:
-            t = asyncio.ensure_future(asyncio.to_thread(fn, *args))
-            try:
-                return await asyncio.shield(t)
-            except asyncio.CancelledError:
-                await asyncio.wait({t})  # the lock goes only after the thread is done with the session
-                raise
+        return await run_locked(lock, asyncio.to_thread(fn, *args))
 
     result: dict[str, Any] = {"refused": None, "folders": {}}
     mb = open_mailbox()

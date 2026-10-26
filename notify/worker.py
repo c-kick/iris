@@ -219,8 +219,15 @@ class Workers:
                 now = self.clock()
                 if now < next_at.setdefault(name, now + self.cleanup_start_delay):
                     continue
-                await svc.run_mailbox_cleanup(name, dry_run=False, by="hnl-notify", deadline_seconds=None)
-                if svc.cleanup_status.get(name, {}).get("last_error"):
+                try:
+                    await svc.run_mailbox_cleanup(name, dry_run=False, by="hnl-notify", deadline_seconds=None)
+                    failed = bool(svc.cleanup_status.get(name, {}).get("last_error"))
+                except Exception as e:  # a bug must not turn into a retry on every pass
+                    failed = True
+                    err = mask_secret(f"{type(e).__name__}: {e}", getattr(p, "imap_password", "") or "")[:300]
+                    svc.cleanup_status.setdefault(name, {}).update(last_error=err, last_run=now_iso())
+                    log.warning("mailbox cleanup crashed", extra={"provider": name, "error": err})
+                if failed:
                     failures[name] = failures.get(name, 0) + 1
                     next_at[name] = self.clock() + min(self.cleanup_backoff_max, 600.0 * 2 ** (failures[name] - 1))
                     log.warning("mailbox cleanup failed", extra={"provider": name, "retry_in": next_at[name] - self.clock()})

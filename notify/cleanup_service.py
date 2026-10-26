@@ -18,6 +18,13 @@ if TYPE_CHECKING:
 log = logging.getLogger("notify.cleanup")
 
 
+def record_event(svc: NotifyService, etype: str, by: str, data: dict[str, Any]) -> None:
+    """An event that belongs to no notification: inserted directly, so it is not fanned out to webhooks."""
+    with svc.db.tx() as c:
+        c.execute("INSERT INTO events(type, notification_id, delivery_id, client_id, source, data_json, created_at)"
+                  " VALUES (?, NULL, NULL, ?, 'hnl-notify', ?, ?)", (etype, by, dumps(data), now_iso()))
+
+
 async def run_mailbox_cleanup(svc: NotifyService, name: str, *, dry_run: bool, by: str,
                               deadline_seconds: float | None) -> dict[str, Any]:
     """One pass over the provider's Processed and Quarantine folders. `error` in the result: the pass could not run."""
@@ -48,10 +55,7 @@ async def run_mailbox_cleanup(svc: NotifyService, name: str, *, dry_run: bool, b
     log.info("mailbox cleanup", extra={"client": by, "provider": name, "dry_run": False})
     removed = {f: {k: v[k] for k in ("removed_age", "removed_cap", "removed_bytes")}
                for f, v in result["folders"].items()}
-    with svc.db.tx() as c:
-        c.execute("INSERT INTO events(type, notification_id, delivery_id, client_id, source, data_json, created_at)"
-                  " VALUES ('mailbox.cleanup', NULL, NULL, ?, 'hnl-notify', ?, ?)",
-                  (by, dumps({"provider": name, "dry_run": False, "removed": removed}), now_iso()))
+    record_event(svc, "mailbox.cleanup", by, {"provider": name, "dry_run": False, "removed": removed})
     for folder, f in result["folders"].items():
         if f["removed_cap"] > 0:
             _alert(svc, name, folder, f, cfg.processed_max_mib if folder == p.reply_processed

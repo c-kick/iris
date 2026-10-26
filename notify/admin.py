@@ -25,6 +25,8 @@ from .core import Client, Conflict, Invalid, NotFound, NotifyService
 from .models import NotificationIn, Scope, Severity
 from .providers import REGISTRY
 from .configops import commit_config
+from .cleanup_service import record_event
+from .providers.email_inbound import run_locked
 from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
@@ -289,8 +291,8 @@ async def test_provider(name: str, request: Request, _: Client = Depends(admin))
     provider = svc.providers.get(name)
     if provider is None:
         raise HTTPException(404, f"provider {name} is not configured")
-    async with svc.mailbox_lock(name):  # the IMAP part must not overlap a poll or a cleanup step
-        return await provider.test_connection()
+    # the IMAP part must not overlap a poll or a cleanup step
+    return await run_locked(svc.mailbox_lock(name), provider.test_connection())
 
 
 @router.delete("/api/providers/{name}")
@@ -659,7 +661,9 @@ async def mailbox_settings(name: str, body: MailboxCleanupConfig, request: Reque
     require_session(client)
     _reply_provider(request, name)
     _svc(request).mailbox_cache.pop(name, None)
-    return _commit(request, lambda data: data["mailbox_cleanup"].__setitem__(name, body.model_dump()))
+    state = _commit(request, lambda data: data["mailbox_cleanup"].__setitem__(name, body.model_dump()))
+    record_event(_svc(request), "mailbox.settings", client.id, {"provider": name, "settings": body.model_dump()})
+    return state
 
 
 @router.post("/api/mailbox/{name}/cleanup")
