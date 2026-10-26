@@ -9,6 +9,7 @@ Origin header when present.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 import time
 from typing import Any, Literal
@@ -19,12 +20,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import __version__
 from .auth import hash_token, new_token
-from .config import ConfigError
+from .config import ConfigError, MailboxCleanupConfig
 from .core import Client, Conflict, Invalid, NotFound, NotifyService
 from .models import NotificationIn, Scope, Severity
 from .providers import REGISTRY
 from .configops import commit_config
-from .registrations import approve, deny, list_registrations
+from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
 router = APIRouter(prefix="/admin", include_in_schema=False)
@@ -284,10 +285,12 @@ async def put_provider(name: str, body: ProviderIn, request: Request, _: Client 
 
 @router.post("/api/providers/{name}/test")
 async def test_provider(name: str, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
-    provider = _svc(request).providers.get(name)
+    svc = _svc(request)
+    provider = svc.providers.get(name)
     if provider is None:
         raise HTTPException(404, f"provider {name} is not configured")
-    return await provider.test_connection()
+    async with svc.mailbox_lock(name):  # the IMAP part must not overlap a poll or a cleanup step
+        return await provider.test_connection()
 
 
 @router.delete("/api/providers/{name}")
@@ -617,6 +620,63 @@ async def replies_view(request: Request, limit: int = 25, client: Client = Depen
         for q in quarantine:
             q.update(from_address=None, subject=None, message_id=None)
     return {"inbound": svc.inbound_status, "replies": replies, "quarantine": quarantine}
+
+
+# ------------------------------------------------------------------ reply mailbox cleanup
+
+MAILBOX_CACHE_SECONDS = 30.0
+
+
+def _reply_provider(request: Request, name: str) -> Any:
+    p = _svc(request).providers.get(name)
+    if p is None or not getattr(p, "replies_ready", False):
+        raise HTTPException(404, f"provider {name} has no reply mailbox")
+    return p
+
+
+@router.get("/api/mailbox")
+async def mailbox_view(request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
+    svc = _svc(request)
+    out = []
+    for name, p in svc.providers.items():
+        if not getattr(p, "replies_ready", False):
+            continue
+        cached = svc.mailbox_cache.get(name)
+        if cached is None or time.monotonic() - cached[0] > MAILBOX_CACHE_SECONDS:
+            cached = (time.monotonic(), await svc.run_mailbox_cleanup(name, dry_run=True, by="admin-ui"))
+            svc.mailbox_cache[name] = cached
+        cfg = svc.config.cleanup_for(name)
+        out.append({"name": name, "folders": [p.reply_processed, p.reply_quarantine], "preview": cached[1],
+                    "settings": cfg.model_dump(), "status": svc.cleanup_status.get(name) or {},
+                    "alert_warning": None if cfg.alert_targets or announce_targets(svc.config) else
+                    "nobody is set to hear about a folder over its size cap: add a person or set alert targets"})
+    return {"providers": out}
+
+
+@router.put("/api/mailbox/{name}")
+async def mailbox_settings(name: str, body: MailboxCleanupConfig, request: Request,
+                           client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _reply_provider(request, name)
+    _svc(request).mailbox_cache.pop(name, None)
+    return _commit(request, lambda data: data["mailbox_cleanup"].__setitem__(name, body.model_dump()))
+
+
+@router.post("/api/mailbox/{name}/cleanup")
+async def mailbox_cleanup(name: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _reply_provider(request, name)
+    svc = _svc(request)
+    lock = svc.mailbox_lock(name)
+    try:
+        await asyncio.wait_for(lock.acquire(), svc.cleanup_busy_wait)
+    except TimeoutError:
+        raise HTTPException(409, "mailbox busy, try again") from None
+    lock.release()  # run_pass takes the lock per step
+    try:
+        return await svc.run_mailbox_cleanup(name, dry_run=False, by=client.id, deadline_seconds=60)
+    finally:
+        svc.mailbox_cache.pop(name, None)
 
 
 @router.post("/api/notifications/{nid}/{action}")

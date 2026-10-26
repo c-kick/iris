@@ -247,6 +247,13 @@ def email_factory(tmp_path, fake, sent_mail):
         srv.mailbox = FakeMailbox()
         srv.service.open_mailbox = lambda provider, box=srv.mailbox: box
         srv.app.state.workers.inbound_interval = 3600.0  # tests poll explicitly unless they shorten this
+        # cleanup runs against an IMAP fake, never a real server; the automatic run is far away unless a test moves it
+        from notify.mailbox_cleanup import CleanupMailbox
+        from tests.test_mailbox_cleanup import FakeServer
+        srv.cleanup_server = FakeServer()
+        srv.service.open_cleanup_mailbox = lambda p, fs=srv.cleanup_server: CleanupMailbox(
+            p.imap_host, p.imap_port, p.imap_user, p.imap_password, imap_factory=fs.factory, inbox=p.reply_inbox)
+        srv.app.state.workers.cleanup_start_delay = 3600.0
         servers.append(srv)
         return srv
 

@@ -71,6 +71,8 @@ class FakeServer:
         self.drop_after_expunges = None  # after this many expunges the current connection dies
         self.expunges = 0
         self.uidvalidity_after_drop = None
+        self.gate = None      # threading.Event: the command named by block_on waits for it
+        self.block_on = None  # "FETCH" or "STORE"
 
     def add(self, folder, uid, days_old, size=10):
         self.mail[folder].append({"uid": uid, "size": size, "date": NOW - timedelta(days=days_old), "deleted": False})
@@ -143,6 +145,8 @@ class FakeIMAP:
 
     def uid(self, cmd, *args):
         self._alive()
+        if self.srv.gate is not None and cmd == self.srv.block_on:
+            self.srv.gate.wait(15)
         folder = self.selected
         if cmd == "FETCH":
             if self.srv.fetch_no:

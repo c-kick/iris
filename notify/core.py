@@ -115,6 +115,20 @@ class NotifyService:
         self.replies = Replies(self)
         self.inbound_status: dict[str, dict[str, Any]] = {}  # per provider: last_success, last_error, last_stats
         self.open_mailbox: Any = None  # seam: tests return a fake mailbox; None = the provider's own
+        self.open_cleanup_mailbox: Any = None  # same seam for mailbox cleanup (a CleanupMailbox)
+        self.cleanup_status: dict[str, dict[str, Any]] = {}  # per provider: last_run/success/error/result/by
+        self.cleanup_busy_wait = 30.0  # a manual cleanup waits this long for the mailbox lock
+        self.mailbox_cache: dict[str, tuple[float, dict[str, Any]]] = {}  # admin panel preview, per provider
+        self._mailbox_locks: dict[str, asyncio.Lock] = {}
+
+    def mailbox_lock(self, name: str) -> asyncio.Lock:
+        """One lock per reply mailbox: the poll, a cleanup step and the connection test never overlap."""
+        return self._mailbox_locks.setdefault(name, asyncio.Lock())
+
+    async def run_mailbox_cleanup(self, name: str, *, dry_run: bool, by: str,
+                                  deadline_seconds: float | None = None) -> dict[str, Any]:
+        from .cleanup_service import run_mailbox_cleanup
+        return await run_mailbox_cleanup(self, name, dry_run=dry_run, by=by, deadline_seconds=deadline_seconds)
 
     def reconfigure(self, config: NotifyConfig, providers: dict[str, Provider]) -> None:
         """Swap in a new configuration (admin UI edits). Queued deliveries keep their device names."""

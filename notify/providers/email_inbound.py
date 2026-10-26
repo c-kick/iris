@@ -182,6 +182,11 @@ class ImapMailbox:
 
 
 async def poll_once(svc: NotifyService, provider: EmailProvider, mailbox: Any) -> dict[str, int]:
+    async with svc.mailbox_lock(provider.name):  # no cleanup step or connection test runs in between
+        return await _poll_locked(svc, provider, mailbox)
+
+
+async def _poll_locked(svc: NotifyService, provider: EmailProvider, mailbox: Any) -> dict[str, int]:
     replies = svc.replies
     stats = {"accepted": 0, "quarantined": 0, "duplicates": 0}
     await asyncio.to_thread(mailbox.open)

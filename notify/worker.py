@@ -54,12 +54,17 @@ class Workers:
         self._stopping = False
         self.receipt_pause = 5.0  # Pushover: poll no faster than once per 5 s
         self.inbound_interval = 30.0
+        self.cleanup_start_delay = 600.0   # first automatic cleanup this long after the provider is first seen
+        self.cleanup_interval = 86400.0
+        self.cleanup_check_seconds = 60.0
+        self.cleanup_backoff_max = 21600.0
+        self.clock = time.monotonic        # seam for the cleanup schedule
 
     # ---------------------------------------------------------------- control
     def start(self) -> None:
         self.service.recover_leases(all_sending=True)
         for coro in (self._dispatch_loop(), self._receipt_loop(), self._webhook_loop(), self._sweep_loop(),
-                     self._inbound_loop()):
+                     self._inbound_loop(), self._cleanup_loop()):
             self._tasks.append(asyncio.create_task(coro))
 
     async def stop(self, grace: float = 10.0) -> None:
@@ -193,6 +198,36 @@ class Workers:
                                 extra={"provider": name, "error": status["last_error"], "retry_in": delay})
             svc.replies.sweep_unclaimed()
         await self._guard("inbound", once, 30.0)
+
+    async def _cleanup_loop(self) -> None:
+        """Automatic mailbox cleanup, in its own task so a long run never delays a poll (they share a lock per step)."""
+        next_at: dict[str, float] = {}
+        failures: dict[str, int] = {}
+
+        async def once() -> None:
+            waited = 0.0
+            while waited < self.cleanup_check_seconds:  # re-read each second: tests shorten it
+                step = min(1.0, self.cleanup_check_seconds)
+                await asyncio.sleep(step)
+                waited += step
+            svc = self.service
+            for n in [n for n in next_at if n not in svc.providers]:
+                next_at.pop(n), failures.pop(n, None)
+            for name, p in list(svc.providers.items()):
+                if not getattr(p, "replies_ready", False) or not svc.config.cleanup_for(name).enabled:
+                    continue
+                now = self.clock()
+                if now < next_at.setdefault(name, now + self.cleanup_start_delay):
+                    continue
+                await svc.run_mailbox_cleanup(name, dry_run=False, by="hnl-notify", deadline_seconds=None)
+                if svc.cleanup_status.get(name, {}).get("last_error"):
+                    failures[name] = failures.get(name, 0) + 1
+                    next_at[name] = self.clock() + min(self.cleanup_backoff_max, 600.0 * 2 ** (failures[name] - 1))
+                    log.warning("mailbox cleanup failed", extra={"provider": name, "retry_in": next_at[name] - self.clock()})
+                else:
+                    failures[name] = 0
+                    next_at[name] = self.clock() + self.cleanup_interval
+        await self._guard("cleanup", once, 30.0)
 
     # ---------------------------------------------------------------- webhooks
     async def _webhook_loop(self) -> None:

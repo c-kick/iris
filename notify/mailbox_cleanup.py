@@ -239,7 +239,7 @@ async def run_pass(open_mailbox: Callable[[], CleanupMailbox], lock: asyncio.Loc
         for folder, days, mib in ((provider.reply_processed, cfg.processed_days, cfg.processed_max_mib),
                                   (provider.reply_quarantine, cfg.quarantine_days, cfg.quarantine_max_mib)):
             st: dict[str, Any] = {"messages": 0, "bytes": 0, "oldest": None, "removed_age": 0, "removed_cap": 0,
-                                  "removed_bytes": 0, "after_messages": 0, "after_bytes": 0, "cap_hit": False,
+                                  "removed_bytes": 0, "removed_cap_bytes": 0, "after_messages": 0, "after_bytes": 0, "cap_hit": False,
                                   "unfinished": False, "error": None}
             result["folders"][folder] = st
             if not dry_run and result["folders"].keys() - {folder} and deadline is not None \
@@ -268,7 +268,8 @@ async def _clean_folder(locked: Callable[..., Any], mb: CleanupMailbox, folder: 
               oldest=iso(min((m.arrived for m in msgs), default=None)))
     todo = by_age + by_cap
     if dry_run:
-        st.update(removed_age=len(by_age), removed_cap=len(by_cap), removed_bytes=sum(sizes[u] for u in todo))
+        st.update(removed_age=len(by_age), removed_cap=len(by_cap), removed_bytes=sum(sizes[u] for u in todo),
+                  removed_cap_bytes=sum(sizes[u] for u in by_cap))
         return
     aged = set(by_age)
     for i in range(0, len(todo), BATCH):
@@ -296,3 +297,4 @@ async def _clean_folder(locked: Callable[..., Any], mb: CleanupMailbox, folder: 
         st["removed_age"] += n_age
         st["removed_cap"] += len(batch) - n_age
         st["removed_bytes"] += sum(sizes[u] for u in batch)
+        st["removed_cap_bytes"] += sum(sizes[u] for u in batch if u not in aged)
