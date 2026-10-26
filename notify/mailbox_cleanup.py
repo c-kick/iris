@@ -220,7 +220,7 @@ async def run_pass(open_mailbox: Callable[[], CleanupMailbox], lock: asyncio.Loc
                    deadline: float | None = None) -> dict[str, Any]:
     """One pass over Processed and Quarantine. The lock is held per step, never across a pass."""
     async def locked(fn: Callable[..., Any], *args: Any) -> Any:
-        return await run_locked(lock, asyncio.to_thread(fn, *args))
+        return await run_locked(lock, lambda: asyncio.to_thread(fn, *args))
 
     result: dict[str, Any] = {"refused": None, "folders": {}}
     mb = open_mailbox()

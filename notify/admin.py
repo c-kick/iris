@@ -292,7 +292,7 @@ async def test_provider(name: str, request: Request, _: Client = Depends(admin))
     if provider is None:
         raise HTTPException(404, f"provider {name} is not configured")
     # the IMAP part must not overlap a poll or a cleanup step
-    return await run_locked(svc.mailbox_lock(name), provider.test_connection())
+    return await run_locked(svc.mailbox_lock(name), provider.test_connection)
 
 
 @router.delete("/api/providers/{name}")

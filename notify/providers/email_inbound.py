@@ -181,21 +181,28 @@ class ImapMailbox:
             self.close()
 
 
-async def run_locked(lock: asyncio.Lock, aw: Any) -> Any:
-    """Run `aw` holding `lock`; on cancellation the lock is kept until `aw` has finished, because it may be
-    driving a thread that still uses the IMAP session."""
+async def run_locked(lock: asyncio.Lock, make: Any) -> Any:
+    """Run `make()` (returns an awaitable) holding `lock`; on cancellation the lock is kept until it has finished,
+    because it may be driving a thread that still uses the IMAP session. The call is created under the lock, so a
+    caller cancelled while queued leaves no un-awaited coroutine."""
     async with lock:
-        task = asyncio.ensure_future(aw)
-        try:
-            return await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await asyncio.wait({task})
-            raise
+        task = asyncio.ensure_future(make())
+        cancelled = False
+        while not task.done():  # asyncio.wait never cancels the task it waits for
+            try:
+                await asyncio.wait({task})
+            except asyncio.CancelledError:
+                cancelled = True
+        if cancelled:
+            if not task.cancelled():
+                task.exception()  # retrieved: nobody else will look at it
+            raise asyncio.CancelledError
+        return task.result()
 
 
 async def poll_once(svc: NotifyService, provider: EmailProvider, mailbox: Any) -> dict[str, int]:
     # no cleanup step or connection test runs in between
-    return await run_locked(svc.mailbox_lock(provider.name), _poll_locked(svc, provider, mailbox))
+    return await run_locked(svc.mailbox_lock(provider.name), lambda: _poll_locked(svc, provider, mailbox))
 
 
 async def _poll_locked(svc: NotifyService, provider: EmailProvider, mailbox: Any) -> dict[str, int]:

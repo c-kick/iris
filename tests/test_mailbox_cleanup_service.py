@@ -349,3 +349,51 @@ def test_unexpected_worker_exception_backs_off(email_live):
     assert "RuntimeError" in st["last_error"] and "imap-secret" not in st["last_error"]
     now[0] = 1700.0  # past the first 600 s back-off
     wait_for(lambda: len(calls) == 2)
+
+
+def test_run_locked_creates_call_under_the_lock():
+    from notify.providers.email_inbound import run_locked
+
+    async def go():
+        lock, calls = asyncio.Lock(), []
+
+        async def work():
+            calls.append(1)
+            return 5
+        await lock.acquire()
+        queued = asyncio.ensure_future(run_locked(lock, work))
+        await asyncio.sleep(0.05)
+        queued.cancel()
+        try:
+            await queued
+        except asyncio.CancelledError:
+            pass
+        lock.release()
+        assert calls == []  # the call was never created for a caller that never got the lock
+        assert await run_locked(lock, work) == 5
+    asyncio.run(go())
+
+
+def test_run_locked_retrieves_exception_after_cancel():
+    import gc
+    from notify.providers.email_inbound import run_locked
+    seen = []
+
+    async def go():
+        asyncio.get_running_loop().set_exception_handler(lambda loop, ctx: seen.append(ctx))
+        lock = asyncio.Lock()
+
+        async def boom():
+            await asyncio.sleep(0.2)
+            raise RuntimeError("late failure")
+        t = asyncio.ensure_future(run_locked(lock, boom))
+        await asyncio.sleep(0.05)
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+        assert not lock.locked()
+    asyncio.run(go())
+    gc.collect()
+    assert seen == []
