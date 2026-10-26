@@ -366,3 +366,11 @@ def test_deleting_user_strips_cleanup_alert_target(fresh):
     r = b.delete("/admin/api/users/alex", headers=H)
     assert r.status_code == 200, r.text
     assert srv.app.state.config.cleanup_for("mail").alert_targets == []
+
+
+def test_ui_bundle_has_reply_mailbox_panel(fresh):
+    b = setup_admin(fresh())
+    js = b.get("/admin/static/app.js").text
+    for needle in ("Reply mailbox", "/api/mailbox", "Clean up now", "Keep handled replies (days)",
+                   "Send size alerts to", "0 switches the rule off"):
+        assert needle in js, needle

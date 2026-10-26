@@ -12,6 +12,7 @@ if (section === "delivery") section = "providers"; // renamed page; old bookmark
 const SECTIONS = [
   ["overview", "Overview"],
   ["providers", "Providers"],
+  ["mailbox", "Reply mailbox"],
   ["devices", "Devices"],
   ["people", "People & groups"],
   ["channels", "Channels"],
@@ -269,7 +270,8 @@ async function refresh() {
 function render() {
   if (!VIEWS[section]) section = "overview";
   const badge = (k) => (k === "requests" && state.pending_registrations ? ` <span class="badge" aria-label="${state.pending_registrations} waiting">${state.pending_registrations}</span>` : "");
-  const nav = SECTIONS.map(([k, l]) => `<button data-nav="${k}" ${k === section ? 'aria-current="page"' : ""}>${esc(l)}${badge(k)}</button>`).join("");
+  const hasReplies = Object.values(cfg().providers).some((p) => p.imap_host); // a provider with a reply mailbox
+  const nav = SECTIONS.filter(([k]) => k !== "mailbox" || hasReplies || section === "mailbox").map(([k, l]) => `<button data-nav="${k}" ${k === section ? 'aria-current="page"' : ""}>${esc(l)}${badge(k)}</button>`).join("");
   root.innerHTML = `
     <div class="shell">
       <aside class="side">
@@ -452,6 +454,14 @@ const VIEWS = {
         out.textContent = text;
       } catch (ex) { out.className = "problem"; out.textContent = ex.message; } finally { b.disabled = false; }
     }));
+  },
+
+  mailbox(main) {
+    main.innerHTML = `
+      <div class="section-head"><h2>Reply mailbox</h2>
+        <p>hnl-notify moves every handled reply to one folder and every rejected mail to another, and keeps them there until it cleans up. Old mail is deleted for good, about once a day, by age first and by folder size as a safety net. Your inbox is never touched.</p></div>
+      <div id="mb"><div class="empty">Reading the mailbox…</div></div>`;
+    loadMailbox(main.querySelector("#mb"));
   },
 
   devices(main) {
@@ -972,6 +982,97 @@ async function loadReplies(el) {
       <div class="title">Rejected: ${esc(q.subject || "(no subject)")}</div>
       <div class="sub">${esc(when(q.received_at))} from ${esc(q.from_address || "?")}: ${esc(q.reason)}</div></div></div>`).join("")}
   </div>`;
+}
+
+// ---------------------------------------------------------------- reply mailbox (GET /admin/api/mailbox)
+
+const MIB = 1048576;
+const mib = (bytes) => `${(bytes / MIB).toFixed(1)} MiB`;
+const mailboxNotes = {}; // provider -> result line of the last manual cleanup, shown after the panel reloads
+
+function mailboxFields(name, st) {
+  const f = (n, label, extra = {}) => ({ name: `${name}__${n}`, label, kind: "int", value: st[n], help: "0 switches the rule off.", ...extra });
+  return [
+    { name: `${name}__enabled`, label: "Clean up automatically", kind: "check", value: st.enabled,
+      help: "Off stops the daily run. “Clean up now” still works." },
+    f("processed_days", "Keep handled replies (days)"),
+    f("quarantine_days", "Keep rejected mail (days)", { help: "0 switches the rule off. Rejected mail is the only copy, so it is kept longer." }),
+    f("processed_max_mib", "Max size handled replies (MiB)", { help: "0 switches the rule off. Over it, the oldest mail goes first and you get a notification." }),
+    f("quarantine_max_mib", "Max size rejected mail (MiB)"),
+    { name: `${name}__alert_targets`, label: "Send size alerts to", kind: "checks", value: st.alert_targets,
+      options: [...targetOptions(), ...Object.keys(cfg().channels).map((n) => [`channel:${n}`, `${n} (channel)`])],
+      help: "Nothing ticked: the people who hear about access requests." },
+  ];
+}
+
+function mailboxResultText(r) {
+  if (r.error) return `The cleanup could not run: ${r.error}`;
+  if (r.refused) return `Nothing was deleted: ${r.refused}.`;
+  const parts = Object.entries(r.folders).map(([n, f]) => `${f.removed_age + f.removed_cap} from ${n} (${mib(f.removed_bytes)})`);
+  const problems = Object.entries(r.folders).filter(([, f]) => f.error).map(([n, f]) => `${n}: ${f.error}`);
+  const unfinished = Object.values(r.folders).some((f) => f.unfinished);
+  return `Removed ${parts.join(", ")}.${unfinished ? " It stopped early; run it again to continue." : ""}${problems.length ? ` Problems: ${problems.join("; ")}` : ""}`;
+}
+
+function mailboxPanel(p) {
+  const pv = p.preview, st = p.status || {};
+  const folders = Object.entries(pv.folders || {});
+  const would = folders.reduce((a, [, f]) => ({ n: a.n + f.removed_age + f.removed_cap, b: a.b + f.removed_bytes }), { n: 0, b: 0 });
+  const lines = [];
+  if (pv.error) lines.push(`<div class="problem">Could not read the mailbox: ${esc(pv.error)}</div>`);
+  if (pv.refused) lines.push(`<div class="problem">Cleanup is switched off for this mailbox: ${esc(pv.refused)}.</div>`);
+  for (const [n, f] of folders) if (f.error) lines.push(`<div class="problem">${esc(n)}: ${esc(f.error)}</div>`);
+  if (p.alert_warning) lines.push(`<div class="problem">${esc(p.alert_warning)}</div>`);
+  const last = st.last_run
+    ? `Last cleanup ${esc(when(st.last_run))}${st.last_by && st.last_by !== "hnl-notify" ? ` (started by ${esc(st.last_by)})` : " (automatic)"}: ${st.last_error ? `<span class="problem">${esc(st.last_error)}</span>` : esc(mailboxResultText(st.last_result))}`
+    : "No cleanup has run since the service started.";
+  return `<div class="block" data-provider="${esc(p.name)}"><h3>${esc(p.name)}</h3>
+    ${lines.join("")}
+    <div class="rows">${folders.length ? folders.map(([n, f]) => `<div class="row"><div class="grow"><div class="title">${esc(n)}</div>
+      <div class="sub">${f.messages} mails, ${esc(mib(f.bytes))}${f.oldest ? `, oldest ${esc(when(f.oldest))}` : ""}</div></div></div>`).join("")
+      : `<div class="empty">The folders could not be read.</div>`}</div>
+    <p class="hint">${pv.error || pv.refused ? "" : would.n ? `With the current settings a cleanup would delete ${would.n} mails (${esc(mib(would.b))}).` : "Nothing is past the current settings."}</p>
+    <p class="hint">${last}</p>
+    ${mailboxNotes[p.name] ? `<p class="hint">${esc(mailboxNotes[p.name])}</p>` : ""}
+    <p><button class="btn" data-clean ${pv.error || pv.refused ? "disabled" : ""}>Clean up now</button></p>
+    <form class="stack" data-settings>${mailboxFields(p.name, p.settings).map(fieldHtml).join("")}
+      <div class="form-error" role="alert"></div>
+      <div class="form-actions"><button class="btn primary" type="submit">Save cleanup settings</button></div></form></div>`;
+}
+
+async function loadMailbox(el) {
+  let data;
+  try { data = await api("GET", "/mailbox"); }
+  catch (ex) { el.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  if (!data.providers.length) { el.innerHTML = `<div class="empty">No provider has a reply mailbox yet. Add the IMAP settings to an email provider first.</div>`; return; }
+  el.innerHTML = data.providers.map(mailboxPanel).join("");
+  data.providers.forEach((p) => {
+    const box = el.querySelector(`[data-provider="${CSS.escape(p.name)}"]`);
+    const fields = mailboxFields(p.name, p.settings);
+    const form = box.querySelector("[data-settings]");
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const err = form.querySelector(".form-error");
+      err.textContent = "";
+      const raw = readForm(form, fields);
+      const v = Object.fromEntries(Object.entries(raw).map(([k, x]) => [k.slice(p.name.length + 2), x]));
+      try { state = await api("PUT", `/mailbox/${encodeURIComponent(p.name)}`, v); toast("Cleanup settings saved"); loadMailbox(el); }
+      catch (ex) { err.textContent = ex.message; }
+    };
+    const pv = p.preview;
+    const would = Object.values(pv.folders || {}).reduce((a, f) => ({ n: a.n + f.removed_age + f.removed_cap, b: a.b + f.removed_bytes }), { n: 0, b: 0 });
+    box.querySelector("[data-clean]").onclick = () => confirmAction(
+      "Clean up the reply mailbox?",
+      would.n ? `This permanently deletes <strong>${would.n} mails (${esc(mib(would.b))})</strong> from ${Object.keys(pv.folders).map(esc).join(" and ")}. It cannot be undone.`
+              : "Nothing is past the current settings, so nothing will be deleted.",
+      "Clean up now",
+      async () => {
+        const r = await api("POST", `/mailbox/${encodeURIComponent(p.name)}/cleanup`);
+        mailboxNotes[p.name] = mailboxResultText(r);
+        toast("Cleanup finished");
+        loadMailbox(el);
+      });
+  });
 }
 
 boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><p class="problem">${esc(ex.message)}</p></div></main>`; });
