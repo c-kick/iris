@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import timezone
 from typing import TYPE_CHECKING, Any
@@ -77,6 +78,9 @@ def _alert(svc: NotifyService, provider: str, folder: str, f: dict[str, Any], ca
                  f"it went over its {cap_mib} MiB cap. It now holds {f['after_bytes'] / MIB:.1f} MiB."),
         tags=["mailbox-cleanup"], idempotency_key=f"mailbox-cleanup:{provider}:{folder}:{day}",
         source="hnl-notify/mailbox-cleanup")
+    base = svc.config.server.external_url or os.environ.get("NOTIFY_EXTERNAL_URL")
+    if base:  # the alert opens the panel directly; it has no menu entry of its own
+        req.url, req.url_title = f"{base.rstrip('/')}/admin#mailbox", "Open the reply mailbox"
     req._internal = True
     try:
         svc.submit(SYSTEM_CLIENT, req)

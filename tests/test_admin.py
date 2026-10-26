@@ -371,6 +371,8 @@ def test_deleting_user_strips_cleanup_alert_target(fresh):
 def test_ui_bundle_has_reply_mailbox_panel(fresh):
     b = setup_admin(fresh())
     js = b.get("/admin/static/app.js").text
+    assert '["mailbox", "Reply mailbox"]' not in js  # reached from Providers, not from the menu
     for needle in ("Reply mailbox", "/api/mailbox", "Clean up now", "Keep handled replies (days)",
-                   "Send size alerts to", "0 switches the rule off"):
+                   "Send size alerts to", "0 switches the rule off",
+                   "Manage reply mailbox", "Back to Providers"):
         assert needle in js, needle

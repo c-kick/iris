@@ -220,6 +220,16 @@ def test_cap_hit_sends_one_alert_per_day(email_live):
     assert rows[0]["idempotency_key"].startswith("mailbox-cleanup:mail:Processed:")
 
 
+def test_alert_links_to_the_mailbox_page(email_live):
+    def ext(d):
+        d["server"]["external_url"] = "http://notify.lan:8930/"
+    email_live.call(lambda: commit_config(email_live.app, ext))
+    over_cap(email_live)
+    run_real(email_live)
+    row = alerts(email_live)[0]
+    assert row["url"] == "http://notify.lan:8930/admin#mailbox" and row["url_title"] == "Open the reply mailbox"
+
+
 def test_alert_targets_override(email_live):
     over_cap(email_live)
     cfg(email_live, processed_days=0, processed_max_mib=1, alert_targets=["device:alex-email"])

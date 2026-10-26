@@ -12,7 +12,6 @@ if (section === "delivery") section = "providers"; // renamed page; old bookmark
 const SECTIONS = [
   ["overview", "Overview"],
   ["providers", "Providers"],
-  ["mailbox", "Reply mailbox"],
   ["devices", "Devices"],
   ["people", "People & groups"],
   ["channels", "Channels"],
@@ -21,6 +20,16 @@ const SECTIONS = [
   ["activity", "Activity"],
   ["settings", "Settings"],
 ];
+
+// Pages without a menu entry of their own, reached from their parent (and by link): page -> parent
+const SUBPAGES = { mailbox: "providers" };
+
+function goTo(target) {
+  section = target;
+  sessionStorage.setItem("notify.section", section);
+  history.replaceState(null, "", `#${section}`);
+  render();
+}
 
 const SEVERITY_HELP = {
   min: "silent, no alert",
@@ -270,8 +279,8 @@ async function refresh() {
 function render() {
   if (!VIEWS[section]) section = "overview";
   const badge = (k) => (k === "requests" && state.pending_registrations ? ` <span class="badge" aria-label="${state.pending_registrations} waiting">${state.pending_registrations}</span>` : "");
-  const hasReplies = Object.values(cfg().providers).some((p) => p.imap_host); // a provider with a reply mailbox
-  const nav = SECTIONS.filter(([k]) => k !== "mailbox" || hasReplies || section === "mailbox").map(([k, l]) => `<button data-nav="${k}" ${k === section ? 'aria-current="page"' : ""}>${esc(l)}${badge(k)}</button>`).join("");
+  const current = SUBPAGES[section] || section; // a sub-page keeps its parent highlighted
+  const nav = SECTIONS.map(([k, l]) => `<button data-nav="${k}" ${k === current ? 'aria-current="page"' : ""}>${esc(l)}${badge(k)}</button>`).join("");
   root.innerHTML = `
     <div class="shell">
       <aside class="side">
@@ -281,12 +290,7 @@ function render() {
       </aside>
       <main class="main" id="main"></main>
     </div>`;
-  root.querySelectorAll("[data-nav]").forEach((b) => (b.onclick = () => {
-    section = b.dataset.nav;
-    sessionStorage.setItem("notify.section", section);
-    history.replaceState(null, "", `#${section}`);
-    render();
-  }));
+  root.querySelectorAll("[data-nav]").forEach((b) => (b.onclick = () => goTo(b.dataset.nav)));
   root.querySelectorAll("[data-signout]").forEach((b) => (b.onclick = async () => { await api("POST", "/logout"); boot(); }));
   root.querySelector('.nav [aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "center" });
   const main = document.getElementById("main");
@@ -426,11 +430,14 @@ const VIEWS = {
             ${p.type === "pushover" && p.app_token?.set ? `<div class="sub">Application token ${esc(p.app_token.hint)}</div>` : ""}
             ${h?.quota ? `<div class="sub">${h.quota.remaining.toLocaleString()} of ${h.quota.limit.toLocaleString()} messages left this month</div>` : ""}
             ${h?.problems?.length ? `<div class="problem">${esc(h.problems.join("; "))}</div>` : ""}
+            ${p.imap_host ? `<div class="sub" data-mbox-sum="${esc(n)}">Reply mailbox: reading…</div>` : ""}
             <div class="sub" data-result></div></div>
-          <div class="actions">${TESTABLE.has(p.type) ? `<button class="btn" data-test="${esc(n)}">Test connection</button>` : ""}<button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
+          <div class="actions">${p.imap_host ? `<button class="btn" data-mbox>Manage reply mailbox</button>` : ""}${TESTABLE.has(p.type) ? `<button class="btn" data-test="${esc(n)}">Test connection</button>` : ""}<button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
       }).join("") : `<div class="empty">No providers yet. Connect Pushover to reach phones, or add your mail server to send email.</div>`}</div>
       <p style="margin-top:1rem"><button class="btn primary" id="add">Add provider</button></p>`;
     main.querySelector("#add").onclick = () => addProviderForm();
+    main.querySelectorAll("[data-mbox]").forEach((b) => (b.onclick = () => goTo("mailbox")));
+    if (main.querySelector("[data-mbox-sum]")) loadMailboxSummaries(main);
     main.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => providerForm(b.dataset.edit)));
     main.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => confirmAction(
       "Remove provider?", `Remove <strong>${esc(b.dataset.del)}</strong>. Devices that use it must be removed first.`,
@@ -458,9 +465,11 @@ const VIEWS = {
 
   mailbox(main) {
     main.innerHTML = `
+      <p class="crumb"><button class="btn quiet" data-back>Back to Providers</button></p>
       <div class="section-head"><h2>Reply mailbox</h2>
         <p>hnl-notify moves every handled reply to one folder and every rejected mail to another, and keeps them there until it cleans up. Old mail is deleted for good, about once a day, by age first and by folder size as a safety net. Your inbox is never touched.</p></div>
       <div id="mb"><div class="empty">Reading the mailbox…</div></div>`;
+    main.querySelector("[data-back]").onclick = () => goTo("providers");
     loadMailbox(main.querySelector("#mb"));
   },
 
@@ -1099,6 +1108,22 @@ function mailboxPanel(p) {
     <div class="form-actions"><span class="hint mbox-dirty" hidden>Unsaved changes. The numbers above use the saved limits.</span>
       <button class="btn primary" type="submit">Save cleanup settings</button></div>
   </form>`;
+}
+
+// One line per reply mailbox on the Providers page; the server caches the folder reading for 30 s.
+async function loadMailboxSummaries(main) {
+  let data;
+  try { data = await api("GET", "/mailbox"); } catch { data = { providers: [] }; }
+  main.querySelectorAll("[data-mbox-sum]").forEach((el) => {
+    const p = data.providers.find((x) => x.name === el.dataset.mboxSum);
+    const pv = p?.preview;
+    if (!pv || pv.error) { el.textContent = "Reply mailbox: could not be read. Open it for details."; return; }
+    if (pv.refused) { el.textContent = "Reply mailbox: cleanup can't run. Open it for details."; return; }
+    const fs = Object.values(pv.folders || {});
+    const n = fs.reduce((a, f) => a + (Number(f.messages) || 0), 0), b = fs.reduce((a, f) => a + f.bytes, 0);
+    const past = fs.reduce((a, f) => a + f.removed_age + f.removed_cap, 0);
+    el.textContent = `Reply mailbox: ${plural(n, "mail", "mails")} (${mib(b)}), ${past ? `${plural(past, "mail", "mails")} past the limits` : "nothing past the limits"}.`;
+  });
 }
 
 async function loadMailbox(el) {
