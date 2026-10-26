@@ -8,6 +8,10 @@ The reply handle (returned once when the conversation's first reply:true notific
 the NOTIFY_REPLY_HANDLE environment variable. A plain notification id still works for conversations from before
 reply handles existed. The handle is never printed.
 
+A reply that arrived while nobody was waiting is kept and collected later with the same handle; it is printed
+with a "Late reply (received ...) to: <title>" line first. Attachments the service no longer holds are listed as
+"<name>: not available any more".
+
 Long-polls POST /v1/notifications/{id}/replies/claim with one waiter id per run, so a retry after a
 lost response gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error, 2 no reply before --timeout.
 Base URL: --url, else NOTIFY_URL, else the url of the hnl-notify entry in ~/.claude.json without /mcp.
@@ -223,6 +227,11 @@ def _clean(s: Any) -> str:
     return "".join(c for c in str(s) if c in "\n\t" or unicodedata.category(c)[0] != "C")
 
 
+def unavailable(reply: dict[str, Any]) -> list[str]:
+    """Names of attachments the service no longer holds (past their retention)."""
+    return [str(a.get("filename") or "attachment") for a in reply.get("attachments") or [] if a.get("purged")]
+
+
 def render(reply: dict[str, Any], paths: list[str]) -> str:
     return _clean(_render(reply, paths))
 
@@ -230,11 +239,15 @@ def render(reply: dict[str, Any], paths: list[str]) -> str:
 def _render(reply: dict[str, Any], paths: list[str]) -> str:
     when = datetime.fromisoformat(reply["received_at"].replace("Z", "+00:00")).astimezone()
     title = reply.get("notification_title") or reply["notification_id"]
-    lines = [f'Reply from {reply["from"]} ({when:%Y-%m-%d %H:%M %Z}) to "{title}" [{reply["id"]}]:', reply["text"]]
+    lines = []
+    if reply.get("late"):  # collected after the grace time; the agent may have asked something else since
+        lines.append(f"Late reply (received {when:%Y-%m-%d %H:%M %Z}) to: {title}")
+    lines += [f'Reply from {reply["from"]} ({when:%Y-%m-%d %H:%M %Z}) to "{title}" [{reply["id"]}]:', reply["text"]]
     if reply.get("truncated"):
         lines.append("(reply cut at 8000 characters)")
     if paths:
         lines.append("Attachments: " + ", ".join(paths))
+    lines += [f"{name}: not available any more" for name in unavailable(reply)]
     if reply.get("dropped_attachments"):
         lines.append("Not kept (over the limit): " + ", ".join(reply["dropped_attachments"]))
     return "\n".join(lines)
@@ -260,7 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         nid, handle = find_handle(args.notification_id, args.handle_file, os.environ)
         reply = claim_loop(base, token, nid, time.monotonic() + args.timeout, handle)
         if reply is None:
-            print(f"No reply within {_fmt(args.timeout)}; listener stopped. Later replies get an autoreply.")
+            print(f"No reply within {_fmt(args.timeout)}; listener stopped. Replies are kept; run notify-wait again later to collect them.")
             return EXIT_TIMEOUT
         paths: list[str] = []
         failed = ""
@@ -268,7 +281,7 @@ def main(argv: list[str] | None = None) -> int:
             paths = save_attachments(base, token, reply, args.save_dir, handle)
         except Fatal as e:  # the reply is already claimed by this run: print it anyway
             failed = str(e)
-        print(json.dumps({**reply, "saved": paths}, indent=2) if args.json else render(reply, paths))
+        print(json.dumps({**reply, "saved": paths, "unavailable": unavailable(reply)}, indent=2) if args.json else render(reply, paths))
         if failed:
             print(f"notify-wait: could not save attachments: {_clean(failed)}", file=sys.stderr)
         return EXIT_REPLY

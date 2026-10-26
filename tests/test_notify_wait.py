@@ -291,3 +291,50 @@ def test_attachment_download_sends_handle(email_live, tmp_path, monkeypatch, cap
     assert nw.main([HANDLES[nid], "--url", email_live.url, "--save-dir", str(tmp_path), "--timeout", "10s"]) == 0
     assert ("POST", HANDLES[nid]) in seen and ("GET", HANDLES[nid]) in seen
     assert (tmp_path / "shot.png").read_bytes() == PNG
+
+
+BASE_REPLY = {"id": "rpl_1", "notification_id": "ntf_1", "notification_title": "Pick", "from": "a@example.org",
+              "received_at": "2026-01-01T00:00:00Z", "text": "B"}
+
+
+def test_late_reply_marked():
+    out = nw.render({**BASE_REPLY, "late": True}, [])
+    first, _, rest = out.partition("\n")
+    assert first.startswith("Late reply (received ") and first.endswith(") to: Pick")
+    assert "Reply from a@example.org" in rest and rest.endswith("B")
+    assert "Late reply" not in nw.render({**BASE_REPLY, "late": False}, [])
+
+
+def test_purged_attachments_listed():
+    atts = [{"idx": 0, "filename": "gone.png", "purged": True, "url": "/x"},
+            {"idx": 1, "filename": "here.png", "purged": False, "url": "/y"}]
+    out = nw.render({**BASE_REPLY, "attachments": atts}, ["/tmp/here.png"])
+    assert "gone.png: not available any more" in out and "here.png: not" not in out
+    assert nw.unavailable({**BASE_REPLY, "attachments": atts}) == ["gone.png"]
+
+
+def test_purged_attachments_in_cli_modes(email_live, monkeypatch, capsys):
+    nid, did = send(email_live)
+    email_live.mailbox.add(reply_raw(did, attachment=PNG))
+    poll(email_live)
+    with email_live.service.db.tx() as c:
+        c.execute("UPDATE reply_attachments SET data=NULL, purged_at='2026-01-01T00:00:00.000000Z'")
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    assert nw.main([HANDLES[nid], "--url", email_live.url, "--timeout", "10s"]) == 0
+    assert "shot.png: not available any more" in capsys.readouterr().out
+    nid2, did2 = send(email_live)
+    email_live.mailbox.add(reply_raw(did2, attachment=PNG, message_id="<p2@x>"))
+    poll(email_live)
+    with email_live.service.db.tx() as c:
+        c.execute("UPDATE reply_attachments SET data=NULL, purged_at='2026-01-01T00:00:00.000000Z'")
+    assert nw.main([HANDLES[nid2], "--url", email_live.url, "--timeout", "10s", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["unavailable"] == ["shot.png"]
+
+
+def test_timeout_text(email_live, monkeypatch, capsys):
+    nid, _ = send(email_live)
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    assert nw.main([HANDLES[nid], "--url", email_live.url, "--timeout", "2s"]) == 2
+    out = capsys.readouterr().out
+    assert "Replies are kept; run notify-wait again later to collect them." in out
+    assert "autoreply" not in out
