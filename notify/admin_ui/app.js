@@ -991,53 +991,114 @@ const mib = (bytes) => `${(bytes / MIB).toFixed(1)} MiB`;
 const mailboxNotes = {}; // provider -> result line of the last manual cleanup, shown after the panel reloads
 
 function mailboxFields(name, st) {
-  const f = (n, label, extra = {}) => ({ name: `${name}__${n}`, label, kind: "int", value: st[n], help: "0 switches the rule off.", ...extra });
+  const f = (n, label) => ({ name: `${name}__${n}`, label, kind: "int", value: st[n] });
   return [
     { name: `${name}__enabled`, label: "Clean up automatically", kind: "check", value: st.enabled,
-      help: "Off stops the daily run. “Clean up now” still works." },
+      help: "Once a day. Off stops the daily run; “Clean up now” still works." },
     f("processed_days", "Keep handled replies (days)"),
-    f("quarantine_days", "Keep rejected mail (days)", { help: "0 switches the rule off. Rejected mail is the only copy, so it is kept longer." }),
-    f("processed_max_mib", "Max size handled replies (MiB)", { help: "0 switches the rule off. Over it, the oldest mail goes first and you get a notification." }),
+    f("quarantine_days", "Keep rejected mail (days)"),
+    f("processed_max_mib", "Max size handled replies (MiB)"),
     f("quarantine_max_mib", "Max size rejected mail (MiB)"),
     { name: `${name}__alert_targets`, label: "Send size alerts to", kind: "checks", value: st.alert_targets,
       options: [...targetOptions(), ...Object.keys(cfg().channels).map((n) => [`channel:${n}`, `${n} (channel)`])],
-      help: "Nothing ticked: the people who hear about access requests." },
+      help: "Sent when a folder outgrows its size limit. Nothing ticked: the people who hear about access requests." },
   ];
 }
 
 function mailboxResultText(r) {
   if (r.error) return `The cleanup could not run: ${r.error}`;
   if (r.refused) return `Nothing was deleted: ${r.refused}.`;
-  const parts = Object.entries(r.folders).map(([n, f]) => `${f.removed_age + f.removed_cap} from ${n} (${mib(f.removed_bytes)})`);
+  const parts = Object.entries(r.folders).filter(([, f]) => f.removed_age + f.removed_cap)
+    .map(([n, f]) => `${f.removed_age + f.removed_cap} from ${n} (${mib(f.removed_bytes)})`);
   const problems = Object.entries(r.folders).filter(([, f]) => f.error).map(([n, f]) => `${n}: ${f.error}`);
   const unfinished = Object.values(r.folders).some((f) => f.unfinished);
-  return `Removed ${parts.join(", ")}.${unfinished ? " It stopped early; run it again to continue." : ""}${problems.length ? ` Problems: ${problems.join("; ")}` : ""}`;
+  return `${parts.length ? `Deleted ${parts.join(", ")}.` : "Nothing was past the limits."}${unfinished ? " It stopped early; run it again to continue." : ""}${problems.length ? ` Problems: ${problems.join("; ")}` : ""}`;
+}
+
+const DAY = 86400000;
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+// One folder: what is in it, a size gauge against its limit, and the two rules that act on it, side by side.
+function mailboxFolder(p, role, folderName, f) {
+  const st = p.settings, days = st[`${role}_days`], capMib = st[`${role}_max_mib`];
+  const label = role === "processed" ? "Handled replies" : "Rejected mail";
+  const why = role === "processed" ? "Copies of replies agents already have." : "The only copy of mail that failed the checks.";
+  const field = (key, aria, unit) => `<label class="rule"><span>${key === "days" ? "Keep" : "At most"}</span>
+      <input type="number" min="0" inputmode="numeric" name="${esc(`${p.name}__${role}_${key === "days" ? "days" : "max_mib"}`)}"
+        value="${esc(key === "days" ? days : capMib)}" aria-label="${esc(aria)}"><span>${unit}</span></label>`;
+  const rules = `<div class="rules">${field("days", role === "processed" ? "Keep handled replies (days)" : "Keep rejected mail (days)", "days")}
+      ${field("cap", role === "processed" ? "Max size handled replies (MiB)" : "Max size rejected mail (MiB)", "MiB")}</div>`;
+  if (!f) {
+    return `<div class="mbox-folder"><div class="mbox-head"><div><div class="title">${esc(label)}</div>
+      <div class="sub">${esc(folderName)} folder, not read</div></div></div>${rules}</div>`;
+  }
+  const cap = capMib * MIB, going = f.removed_bytes, kept = Math.max(0, f.bytes - going);
+  const scale = Math.max(cap, f.bytes, 1);
+  const pct = (b) => `${Math.min(100, (b / scale) * 100).toFixed(2)}%`;
+  const gone = f.removed_age + f.removed_cap;
+  const sizeLine = cap ? `${esc(mib(f.bytes))} of ${esc(capMib)} MiB` : `${esc(mib(f.bytes))}, no size limit`;
+  let ageLine = "Empty.";
+  if (f.oldest) {
+    const age = Math.floor((Date.now() - new Date(f.oldest)) / DAY);
+    if (!days) ageLine = `Oldest mail is ${plural(age, "day", "days")} old; no age limit.`;
+    else if (age >= days) ageLine = `${plural(f.removed_age, "mail is", "mails are")} older than ${days} days.`;
+    else ageLine = `Oldest mail is ${plural(age, "day", "days")} old; the first goes on ${esc(new Date(new Date(f.oldest).getTime() + days * DAY).toLocaleDateString([], { day: "numeric", month: "short" }))}.`;
+  }
+  const meterLabel = `${mib(f.bytes)} used${cap ? ` of a ${mib(cap)} limit` : ""}${gone ? `, ${mib(going)} would be deleted` : ""}`;
+  return `<div class="mbox-folder${f.error ? " has-error" : ""}">
+    <div class="mbox-head">
+      <div><div class="title">${esc(label)}</div><div class="sub">${esc(folderName)} folder. ${esc(why)}</div></div>
+      <div class="mbox-size"><strong>${plural(Number(f.messages) || 0, "mail", "mails")}</strong><span>${sizeLine}</span></div>
+    </div>
+    <div class="gauge" role="img" aria-label="${esc(meterLabel)}">
+      <span class="track"><span class="kept" style="width:${pct(kept)}"></span><span class="going" style="width:${pct(going)}"></span></span>
+      ${cap ? `<span class="cap" style="left:${pct(cap)}"></span>` : ""}
+    </div>
+    <div class="sub mbox-age">${ageLine}${gone ? ` <span class="going-note">${plural(gone, "mail", "mails")} (${esc(mib(going))}) would be deleted now.</span>` : ""}</div>
+    ${f.error ? `<div class="problem">Reading or cleaning this folder failed: ${esc(f.error)}</div>` : ""}
+    ${rules}
+  </div>`;
 }
 
 function mailboxPanel(p) {
   const pv = p.preview, st = p.status || {};
-  const folders = Object.entries(pv.folders || {});
-  const would = folders.reduce((a, [, f]) => ({ n: a.n + f.removed_age + f.removed_cap, b: a.b + f.removed_bytes }), { n: 0, b: 0 });
-  const lines = [];
-  if (pv.error) lines.push(`<div class="problem">Could not read the mailbox: ${esc(pv.error)}</div>`);
-  if (pv.refused) lines.push(`<div class="problem">Cleanup can't run for this mailbox: ${esc(pv.refused)}.</div>`);
-  for (const [n, f] of folders) if (f.error) lines.push(`<div class="problem">${esc(n)}: ${esc(f.error)}</div>`);
-  if (p.alert_warning) lines.push(`<div class="problem">${esc(p.alert_warning)}</div>`);
+  const prov = cfg().providers[p.name] || {};
+  const names = { processed: prov.reply_processed || "Processed", quarantine: prov.reply_quarantine || "Quarantine" };
+  const folders = pv.folders || {};
+  const would = Object.values(folders).reduce((a, f) => ({ n: a.n + f.removed_age + f.removed_cap, b: a.b + f.removed_bytes }), { n: 0, b: 0 });
+  const blocked = pv.error || pv.refused;
+  const lamp = blocked ? "bad" : would.n ? "warn" : "ok";
+  const headline = pv.error ? "The mailbox could not be read."
+    : pv.refused ? "Cleanup can't run for this mailbox."
+    : would.n ? `${plural(would.n, "mail", "mails")} (${esc(mib(would.b))}) ${would.n === 1 ? "is" : "are"} past the limits below.`
+    : "Nothing is past the limits below.";
+  const detail = pv.error ? esc(pv.error) : pv.refused ? `${esc(pv.refused)}.`
+    : would.n ? (st.last_run && p.settings.enabled ? "The daily cleanup deletes them, or clean up now." : "Clean up now to delete them.")
+    : "Mail is deleted once it passes them.";
   const last = st.last_run
-    ? `Last cleanup ${esc(when(st.last_run))}${st.last_by && st.last_by !== "hnl-notify" ? ` (started by ${esc(st.last_by)})` : " (automatic)"}: ${st.last_error ? `<span class="problem">${esc(st.last_error)}</span>` : esc(mailboxResultText(st.last_result))}`
+    ? `Last cleanup ${esc(when(st.last_run))}${st.last_by && st.last_by !== "hnl-notify" ? `, started from ${esc(st.last_by)}` : ", automatic"}: ${st.last_error ? `<span class="problem">${esc(st.last_error)}</span>` : esc(mailboxResultText(st.last_result))}`
     : "No cleanup has run since the service started.";
-  return `<div class="block" data-provider="${esc(p.name)}"><h3>${esc(p.name)}</h3>
-    ${lines.join("")}
-    <div class="rows">${folders.length ? folders.map(([n, f]) => `<div class="row"><div class="grow"><div class="title">${esc(n)}</div>
-      <div class="sub">${esc(f.messages)} mails, ${esc(mib(f.bytes))}${f.oldest ? `, oldest ${esc(when(f.oldest))}` : ""}</div></div></div>`).join("")
-      : `<div class="empty">The folders could not be read.</div>`}</div>
-    <p class="hint">${pv.error || pv.refused ? "" : would.n ? `With the current settings a cleanup would delete ${esc(would.n)} mails (${esc(mib(would.b))}).` : "Nothing is past the current settings."}</p>
+  const fields = mailboxFields(p.name, p.settings);
+  const [enabled, , , , , targets] = fields;
+  return `<form class="block mbox" data-provider="${esc(p.name)}" data-settings novalidate>
+    <h3>${esc(p.name)}</h3>
+    <div class="mbox-status"><span class="lamp ${lamp}"></span>
+      <div class="grow"><div class="title">${headline}</div><div class="sub">${detail}</div></div>
+      <button class="btn${would.n && !blocked ? " primary" : ""}" type="button" data-clean ${blocked ? "disabled" : ""}>Clean up now</button>
+    </div>
+    ${mailboxNotes[p.name] ? `<p class="hint mbox-note" role="status">${esc(mailboxNotes[p.name])}</p>` : ""}
+    <div class="rows mbox-folders">
+      ${mailboxFolder(p, "processed", names.processed, folders[names.processed])}
+      ${mailboxFolder(p, "quarantine", names.quarantine, folders[names.quarantine])}
+    </div>
+    <p class="hint">Deleting is permanent. 0 switches the rule off. Over a size limit, the oldest mail goes first.</p>
+    ${p.alert_warning ? `<p class="problem">${esc(p.alert_warning)}</p>` : ""}
+    <div class="mbox-settings">${fieldHtml(enabled)}${fieldHtml(targets)}</div>
     <p class="hint">${last}</p>
-    ${mailboxNotes[p.name] ? `<p class="hint">${esc(mailboxNotes[p.name])}</p>` : ""}
-    <p><button class="btn" data-clean ${pv.error || pv.refused ? "disabled" : ""}>Clean up now</button></p>
-    <form class="stack" data-settings>${mailboxFields(p.name, p.settings).map(fieldHtml).join("")}
-      <div class="form-error" role="alert"></div>
-      <div class="form-actions"><button class="btn primary" type="submit">Save cleanup settings</button></div></form></div>`;
+    <div class="form-error" role="alert"></div>
+    <div class="form-actions"><span class="hint mbox-dirty" hidden>Unsaved changes. The numbers above use the saved limits.</span>
+      <button class="btn primary" type="submit">Save cleanup settings</button></div>
+  </form>`;
 }
 
 async function loadMailbox(el) {
@@ -1048,9 +1109,10 @@ async function loadMailbox(el) {
   if (!data.providers.length) { el.innerHTML = `<div class="empty">No provider has a reply mailbox yet. Add the IMAP settings to an email provider first.</div>`; return; }
   el.innerHTML = data.providers.map(mailboxPanel).join("");
   data.providers.forEach((p) => {
-    const box = el.querySelector(`[data-provider="${CSS.escape(p.name)}"]`);
+    const form = el.querySelector(`[data-provider="${CSS.escape(p.name)}"]`);
     const fields = mailboxFields(p.name, p.settings);
-    const form = box.querySelector("[data-settings]");
+    const dirty = form.querySelector(".mbox-dirty");
+    form.addEventListener("input", () => { dirty.hidden = false; });
     form.onsubmit = async (e) => {
       e.preventDefault();
       const err = form.querySelector(".form-error");
@@ -1060,12 +1122,11 @@ async function loadMailbox(el) {
       try { state = await api("PUT", `/mailbox/${encodeURIComponent(p.name)}`, v); toast("Cleanup settings saved"); loadMailbox(el); }
       catch (ex) { err.textContent = ex.message; }
     };
-    const pv = p.preview;
-    const would = Object.values(pv.folders || {}).reduce((a, f) => ({ n: a.n + f.removed_age + f.removed_cap, b: a.b + f.removed_bytes }), { n: 0, b: 0 });
-    box.querySelector("[data-clean]").onclick = () => confirmAction(
+    const would = Object.values(p.preview.folders || {}).reduce((a, f) => ({ n: a.n + f.removed_age + f.removed_cap, b: a.b + f.removed_bytes }), { n: 0, b: 0 });
+    form.querySelector("[data-clean]").onclick = () => confirmAction(
       "Clean up the reply mailbox?",
-      would.n ? `This permanently deletes about <strong>${esc(would.n)} mails (${esc(mib(would.b))})</strong> from ${Object.keys(pv.folders).map(esc).join(" and ")}. It cannot be undone.`
-              : "Nothing is past the current settings, so nothing will be deleted.",
+      would.n ? `This permanently deletes about <strong>${esc(would.n)} mails (${esc(mib(would.b))})</strong> that are past the saved limits. It cannot be undone.`
+              : "Nothing is past the saved limits, so nothing will be deleted.",
       "Clean up now",
       async () => {
         const r = await api("POST", `/mailbox/${encodeURIComponent(p.name)}/cleanup`);

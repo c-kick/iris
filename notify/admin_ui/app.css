@@ -242,3 +242,55 @@ details.delivery summary { cursor: pointer; color: var(--muted); }
   .lamp.warn, .lamp.bad { animation: pulse 2.4s ease-in-out infinite; }
   @keyframes pulse { 50% { box-shadow: 0 0 0 6px transparent; } }
 }
+
+/* ---------- reply mailbox ---------- */
+.mbox { display: flex; flex-direction: column; gap: .9rem; }
+.mbox > h3 { margin-bottom: 0; }
+.mbox p { margin: 0; }
+.mbox-status {
+  display: flex; align-items: center; gap: .9rem; flex-wrap: wrap;
+  background: var(--surface); border-radius: var(--radius-m); padding: .9rem 1rem;
+}
+.mbox-status .grow { flex: 1 1 260px; min-width: 0; }
+.mbox-status .title { font-weight: 700; }
+.mbox-status .sub { color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.mbox-folder { padding: 1rem; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: .55rem; }
+.mbox-folder:first-child { border-top: 0; }
+.mbox-folder .title { font-weight: 700; }
+.mbox-folder .sub { color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.mbox-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; flex-wrap: wrap; }
+.mbox-size { display: flex; flex-direction: column; align-items: flex-end; font-variant-numeric: tabular-nums; }
+.mbox-size span { color: var(--muted); font-size: .9rem; }
+
+/* the size gauge: kept mail, the part a cleanup would delete (hatched), and the limit as a tick */
+.gauge { position: relative; height: 12px; }
+.gauge .track {
+  display: flex; height: 100%; border-radius: 6px; overflow: hidden;
+  background: color-mix(in srgb, var(--line) 60%, transparent);
+}
+.gauge .kept { background: var(--action); }
+.gauge .going {
+  background: repeating-linear-gradient(135deg, var(--warn) 0 4px, color-mix(in srgb, var(--warn) 35%, transparent) 4px 8px);
+}
+.gauge .cap {
+  position: absolute; top: -4px; bottom: -4px; width: 2px; margin-left: -1px;
+  background: var(--ink); border-radius: 1px;
+}
+.mbox-age .going-note { color: var(--warn); font-weight: 700; }
+.mbox-folder.has-error .gauge { opacity: .5; }
+
+.rules { display: flex; flex-wrap: wrap; gap: .5rem 1.5rem; margin-top: .15rem; }
+.rule { display: inline-flex; align-items: center; gap: .45rem; font-size: .95rem; }
+.rule input {
+  font: inherit; color: var(--ink); background: var(--paper); text-align: right;
+  border: 1px solid var(--line); border-radius: var(--radius-s);
+  width: 8.5ch; min-height: 38px; padding: .3rem .5rem; font-variant-numeric: tabular-nums;
+}
+.rule input:focus-visible { outline: 3px solid var(--focus); outline-offset: 1px; }
+.mbox-settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 1rem 2rem; align-items: start; }
+.mbox .form-actions { align-items: center; }
+.mbox .form-error:empty { display: none; }
+@media (max-width: 640px) {
+  .mbox-settings { grid-template-columns: 1fr; }
+  .mbox-size { align-items: flex-start; }
+}
