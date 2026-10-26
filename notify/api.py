@@ -55,9 +55,12 @@ def _errors(fn):
 @_errors
 async def submit(body: NotificationIn, response: Response, request: Request,
                  idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+                 reply_handle: str | None = Header(default=None, alias="X-Reply-Handle", max_length=200),
                  client: Client = Depends(require(Scope.send))) -> dict[str, Any]:
     if idempotency_key and not body.idempotency_key:
         body.idempotency_key = idempotency_key
+    if reply_handle and not body.reply_handle:  # the body field wins over the header
+        body.reply_handle = reply_handle
     out, created = await service(request).submit_async(client, body)
     if body.dry_run:
         response.status_code = 200
@@ -112,22 +115,26 @@ async def claim_reply(nid: str, request: Request,
                       waiter: str = Query(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$",
                                           description="Opaque id of this wait; a retry with the same id gets the same reply"),
                       wait: float = Query(default=50, ge=0, le=55, description="Seconds to wait for a reply"),
+                      reply_handle: str | None = Header(default=None, alias="X-Reply-Handle", max_length=200),
                       client: Client = Depends(require(Scope.read))) -> Response:
-    out = await service(request).replies.claim(client, nid, waiter, wait)
+    out = await service(request).replies.claim(client, nid, waiter, wait, reply_handle)
     return Response(status_code=204) if out is None else JSONResponse(out)
 
 
 @router.get("/v1/notifications/{nid}/replies", tags=["replies"])
 @_errors
-async def list_replies(nid: str, request: Request, client: Client = Depends(require(Scope.read))) -> dict[str, Any]:
-    return {"items": service(request).replies.list(client, nid)}
+async def list_replies(nid: str, request: Request,
+                       reply_handle: str | None = Header(default=None, alias="X-Reply-Handle", max_length=200),
+                       client: Client = Depends(require(Scope.read))) -> dict[str, Any]:
+    return {"items": service(request).replies.list(client, nid, reply_handle)}
 
 
 @router.get("/v1/replies/{rid}/attachments/{idx}", tags=["replies"])
 @_errors
 async def reply_attachment(rid: str, idx: int, request: Request,
+                           reply_handle: str | None = Header(default=None, alias="X-Reply-Handle", max_length=200),
                            client: Client = Depends(require(Scope.read))) -> Response:
-    filename, ctype, data = service(request).replies.attachment(client, rid, idx)
+    filename, ctype, data = service(request).replies.attachment(client, rid, idx, reply_handle)
     if (len(ctype) > 100 or not re.fullmatch(r"[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+", ctype)
             or ctype.lower() in ("text/html", "image/svg+xml")):
         ctype = "application/octet-stream"

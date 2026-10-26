@@ -11,6 +11,7 @@ import pytest
 import notify.providers.email_inbound as inbound
 from tests.conftest import PNG, TOKENS, wait_for
 from tests.mailfactory import reply_raw
+from tests.test_replies_core import HANDLES, send
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "notify-wait"
 
@@ -80,16 +81,8 @@ def test_cli_token_file(email_live, tmp_path, monkeypatch, capsys):
     monkeypatch.delenv("NOTIFY_TOKEN", raising=False)
     tf = tmp_path / "tok"
     tf.write_text(TOKENS["agent"])
-    assert nw.main([nid, "--url", email_live.url, "--token-file", str(tf), "--timeout", "1s"]) == 2
+    assert nw.main([HANDLES[nid], "--url", email_live.url, "--token-file", str(tf), "--timeout", "1s"]) == 2
     assert TOKENS["agent"] not in capsys.readouterr().out
-
-
-def send(srv) -> tuple[str, str]:
-    with srv.client() as c:
-        out = c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "Pick", "title": "Pick",
-                                                 "kinds": ["email"], "reply": True}).json()
-        wait_for(lambda: c.get(f"/v1/notifications/{out['id']}").json()["deliveries"][0]["state"] == "dispatched")
-    return out["id"], out["deliveries"][0]["id"]
 
 
 def test_cli_saves_attachment(email_live, tmp_path, monkeypatch, capsys):
@@ -98,7 +91,7 @@ def test_cli_saves_attachment(email_live, tmp_path, monkeypatch, capsys):
     email_live.call(lambda: inbound.poll_once(email_live.service, email_live.service.providers["mail"], email_live.mailbox))
     monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
     (tmp_path / "shot.png").write_bytes(b"old")  # existing file is never overwritten
-    code = nw.main([nid, "--url", email_live.url, "--save-dir", str(tmp_path), "--timeout", "30s"])
+    code = nw.main([HANDLES[nid], "--url", email_live.url, "--save-dir", str(tmp_path), "--timeout", "30s"])
     out = capsys.readouterr().out
     assert code == 0, out
     assert out.startswith("Reply from alex@example.org (") and 'to "Pick"' in out and "Go with B." in out
@@ -110,18 +103,18 @@ def test_cli_saves_attachment(email_live, tmp_path, monkeypatch, capsys):
 def test_cli_json_and_timeout(email_live, monkeypatch, capsys):
     nid, did = send(email_live)
     monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
-    assert nw.main([nid, "--url", email_live.url, "--timeout", "2s"]) == 2
+    assert nw.main([HANDLES[nid], "--url", email_live.url, "--timeout", "2s"]) == 2
     assert "No reply within 2 s" in capsys.readouterr().out
     email_live.mailbox.add(reply_raw(did))
     email_live.call(lambda: inbound.poll_once(email_live.service, email_live.service.providers["mail"], email_live.mailbox))
-    assert nw.main([nid, "--url", email_live.url, "--timeout", "10s", "--json"]) == 0
+    assert nw.main([HANDLES[nid], "--url", email_live.url, "--timeout", "10s", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["text"] == "Go with B."
 
 
 def test_cli_errors(email_live, monkeypatch, capsys):
     nid, _ = send(email_live)
     monkeypatch.setenv("NOTIFY_TOKEN", "wrong")
-    assert nw.main([nid, "--url", email_live.url, "--timeout", "5s"]) == 1
+    assert nw.main([HANDLES[nid], "--url", email_live.url, "--timeout", "5s"]) == 1
     err = capsys.readouterr().err
     assert "HTTP 401" in err and "wrong" not in err
     monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
@@ -210,12 +203,12 @@ def test_attachment_failure_still_prints_reply(email_live, tmp_path, monkeypatch
     monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
     real = nw._request
 
-    def flaky(method, url, token, timeout):
+    def flaky(method, url, token, timeout, handle=None):
         if method == "GET":
             raise nw.urllib.error.URLError("boom")
-        return real(method, url, token, timeout)
+        return real(method, url, token, timeout, handle)
     monkeypatch.setattr(nw, "_request", flaky)
-    argv = [nid, "--url", email_live.url, "--save-dir", str(tmp_path), "--timeout", "30s"] + (["--json"] if as_json else [])
+    argv = [HANDLES[nid], "--url", email_live.url, "--save-dir", str(tmp_path), "--timeout", "30s"] + (["--json"] if as_json else [])
     assert nw.main(argv) == 0
     cap = capsys.readouterr()
     assert "Go with B." in cap.out
@@ -223,3 +216,78 @@ def test_attachment_failure_still_prints_reply(email_live, tmp_path, monkeypatch
         assert json.loads(cap.out)["saved"] == []
     assert "notify-wait: could not save attachments:" in cap.err and "boom" in cap.err
     assert TOKENS["agent"] not in cap.out + cap.err
+
+
+def poll(srv):
+    srv.call(lambda: inbound.poll_once(srv.service, srv.service.providers["mail"], srv.mailbox))
+
+
+def test_wait_with_handle_env(email_live, monkeypatch, capsys):
+    nid, did = send(email_live)
+    email_live.mailbox.add(reply_raw(did))
+    poll(email_live)
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    monkeypatch.setenv("NOTIFY_REPLY_HANDLE", HANDLES[nid] + "\n")
+    assert nw.main([nid, "--url", email_live.url, "--timeout", "10s"]) == 0
+    assert "Go with B." in capsys.readouterr().out
+
+
+def test_wait_with_handle_file(email_live, tmp_path, monkeypatch, capsys):
+    nid, did = send(email_live)
+    email_live.mailbox.add(reply_raw(did))
+    poll(email_live)
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    monkeypatch.delenv("NOTIFY_REPLY_HANDLE", raising=False)
+    f = tmp_path / "h"
+    f.write_text(HANDLES[nid] + "\n")
+    assert nw.main(["--handle-file", str(f), "--url", email_live.url, "--timeout", "10s"]) == 0
+    assert "Go with B." in capsys.readouterr().out
+
+
+def test_positional_handle_beats_env(email_live, monkeypatch, capsys):
+    nid, did = send(email_live)
+    email_live.mailbox.add(reply_raw(did))
+    poll(email_live)
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    monkeypatch.setenv("NOTIFY_REPLY_HANDLE", "ntf_x:" + "z" * 32)
+    assert nw.main([HANDLES[nid], "--url", email_live.url, "--timeout", "10s"]) == 0
+    assert "Go with B." in capsys.readouterr().out
+
+
+def test_conflicting_id_and_env_handle_exit_1(email_live, monkeypatch, capsys):
+    nid, _ = send(email_live)
+    other, _ = send(email_live)
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    monkeypatch.setenv("NOTIFY_REPLY_HANDLE", HANDLES[other])
+    assert nw.main([nid, "--url", email_live.url, "--timeout", "5s"]) == 1
+    err = capsys.readouterr().err
+    assert "the reply handle belongs to another conversation" in err
+    assert HANDLES[other].split(":", 1)[1] not in err
+
+
+def test_handle_never_printed(email_live, monkeypatch, capsys):
+    nid, _ = send(email_live)
+    wrong = nid + ":" + "Q" * 32
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    assert nw.main([wrong, "--url", email_live.url, "--timeout", "5s"]) == 1
+    cap = capsys.readouterr()
+    assert "Q" * 32 not in cap.out + cap.err
+    assert nw.main([nid, "--url", email_live.url, "--timeout", "5s"]) == 1  # no handle at all
+    assert HANDLES[nid].split(":", 1)[1] not in capsys.readouterr().out
+
+
+def test_attachment_download_sends_handle(email_live, tmp_path, monkeypatch, capsys):
+    nid, did = send(email_live)
+    email_live.mailbox.add(reply_raw(did, attachment=PNG))
+    poll(email_live)
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    seen = []
+    real = nw._request
+
+    def spy(method, url, token, timeout, handle=None):
+        seen.append((method, handle))
+        return real(method, url, token, timeout, handle)
+    monkeypatch.setattr(nw, "_request", spy)
+    assert nw.main([HANDLES[nid], "--url", email_live.url, "--save-dir", str(tmp_path), "--timeout", "10s"]) == 0
+    assert ("POST", HANDLES[nid]) in seen and ("GET", HANDLES[nid]) in seen
+    assert (tmp_path / "shot.png").read_bytes() == PNG

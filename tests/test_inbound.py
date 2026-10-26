@@ -11,16 +11,9 @@ from notify.core import Client
 from notify.models import Scope
 from tests.conftest import PNG, wait_for
 from tests.mailfactory import reply_raw, split_headers
+from tests.test_replies_core import hdl, send
 
 AGENT = Client("agent", frozenset({Scope.send, Scope.read, Scope.manage}))
-
-
-def send(srv) -> tuple[str, str]:
-    with srv.client() as c:
-        out = c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "Pick", "kinds": ["email"],
-                                                 "reply": True}).json()
-        wait_for(lambda: c.get(f"/v1/notifications/{out['id']}").json()["deliveries"][0]["state"] == "dispatched")
-    return out["id"], out["deliveries"][0]["id"]
 
 
 def poll(srv) -> dict:
@@ -43,7 +36,7 @@ def test_poll_sorts_mail(email_live):
     assert mb.fetched == [good]  # bodies of rejected mail are never downloaded
     reasons = {r[0] for r in email_live.service.db.query("SELECT reason FROM reply_quarantine")}
     assert reasons == {"dkim_fail", "automatic", "too_large", "no_thread"}
-    got = email_live.call(lambda: email_live.service.replies.claim(AGENT, nid, "w" * 12, 0))
+    got = email_live.call(lambda: email_live.service.replies.claim(AGENT, nid, "w" * 12, 0, hdl(email_live, nid)))
     assert got["text"] == "Go with B." and got["attachments"][0]["size"] == len(PNG)
     assert mb.opened == mb.closed == 1
 

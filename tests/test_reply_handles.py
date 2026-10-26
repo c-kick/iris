@@ -9,9 +9,12 @@ from datetime import timedelta
 from notify.db import utcnow
 from notify.handles import handle_matches, new_handle, parse_handle
 from notify.replies import GRACE_SECONDS
-from tests.conftest import wait_for
 from tests.mailfactory import reply_raw
-from tests.test_replies_core import deliver, send
+import pytest
+
+from notify.core import Client, NotFound
+from notify.models import Scope
+from tests.test_replies_core import AGENT, HANDLES, OTHER, claim, deliver, hdl, send
 
 BASE = {"targets": ["device:alex-email"], "message": "Pick", "kinds": ["email"]}
 
@@ -150,3 +153,110 @@ def test_autoreply_passes_in_handle_conversation(email_live):
     assert email_live.call(replies.sweep_unclaimed) == 1
     assert email_live.service.db.scalar(
         "SELECT COUNT(*) FROM notifications WHERE tags_json LIKE '%reply-autoreply%'") == 1
+
+
+ADMIN = Client("admin", frozenset({Scope.admin}))
+
+
+def test_other_agent_same_token_cannot_claim(email_live):
+    nid, did = send(email_live)
+    rid = deliver(email_live, reply_raw(did))
+    with pytest.raises(NotFound):
+        claim(email_live, nid, handle=None)
+    with pytest.raises(NotFound):
+        claim(email_live, nid, handle=nid + ":" + "x" * 32)
+    assert claim(email_live, nid, handle=" " + HANDLES[nid] + "\n")["id"] == rid
+
+
+def test_admin_token_no_bypass(email_live):
+    from tests.mailfactory import reply_raw as rr
+    nid, did = send(email_live)
+    rid = deliver(email_live, rr(did, attachment=b"\x89PNG\r\n\x1a\n" + b"0" * 20))
+    replies = email_live.service.replies
+    with pytest.raises(NotFound):
+        claim(email_live, nid, client=ADMIN, handle=None)
+    with pytest.raises(NotFound):
+        replies.list(ADMIN, nid)
+    claim(email_live, nid)
+    with pytest.raises(NotFound):
+        replies.attachment(ADMIN, rid, 0)
+
+
+def test_wrong_handle_does_not_refresh_listener(email_live, sent_mail):
+    nid, did = send(email_live)
+    rid = deliver(email_live, reply_raw(did))
+    for i in range(3):
+        with pytest.raises(NotFound):
+            claim(email_live, nid, waiter=f"wrong-wait-{i}", handle=nid + ":" + "y" * 32)
+    db = email_live.service.db
+    assert db.scalar("SELECT listener_seen_at FROM notifications WHERE id=?", (nid,)) is None
+    replies = email_live.service.replies
+    replies.now = lambda: utcnow() + timedelta(seconds=GRACE_SECONDS + 60)
+    assert email_live.call(replies.sweep_unclaimed) == 1
+    assert db.scalar("SELECT autoreply_notification_id FROM replies WHERE id=?", (rid,))
+    got = claim(email_live, nid)
+    assert got["id"] == rid and got["late"] is True
+
+
+def test_claim_order_waiting_before_late(email_live):
+    nid, did = send(email_live)
+    old = deliver(email_live, reply_raw(did, message_id="<old@x>"))
+    replies = email_live.service.replies
+    replies.now = lambda: utcnow() + timedelta(seconds=GRACE_SECONDS + 60)
+    email_live.call(replies.sweep_unclaimed)
+    replies.now = utcnow
+    new = deliver(email_live, reply_raw(did, message_id="<new@x>"))
+    first = claim(email_live, nid, waiter="first-wait-1")
+    second = claim(email_live, nid, waiter="second-wait2")
+    assert (first["id"], first["late"]) == (new, False)
+    assert (second["id"], second["late"]) == (old, True)
+
+
+def test_list_shows_claimed_text_with_handle_only(email_live):
+    nid, did = send(email_live)
+    deliver(email_live, reply_raw(did))
+    claim(email_live, nid)
+    replies = email_live.service.replies
+    assert replies.list(AGENT, nid, hdl(email_live, nid))[0]["text"] == "Go with B."
+    for bad in (None, nid + ":" + "x" * 32):
+        with pytest.raises(NotFound):
+            replies.list(AGENT, nid, bad)
+
+
+def test_root_retained_away_still_needs_handle(email_live):
+    nid, _ = send(email_live)
+    n2, d2 = send(email_live, in_reply_to=nid)
+    rid = deliver(email_live, reply_raw(d2))
+    with email_live.service.db.tx() as c:
+        c.execute("DELETE FROM notifications WHERE id=?", (nid,))
+    h = HANDLES[nid]
+    assert claim(email_live, n2, handle=h)["id"] == rid
+    with pytest.raises(NotFound):
+        claim(email_live, n2, handle=None)
+    with email_live.service.db.tx() as c:
+        c.execute("DELETE FROM conversations WHERE id=?", (nid,))
+    with pytest.raises(NotFound):
+        claim(email_live, n2, handle=h)
+
+
+def test_handle_works_after_root_retained(email_live):
+    nid, _ = send(email_live)
+    n2, d2 = send(email_live, in_reply_to=nid)
+    rid = deliver(email_live, reply_raw(d2))
+    with email_live.service.db.tx() as c:
+        c.execute("DELETE FROM notifications WHERE id=?", (nid,))
+    got = claim(email_live, nid, handle=HANDLES[nid])  # the conversation id from the handle
+    assert got["id"] == rid
+
+
+def test_legacy_admin_bearer_refused(email_live):
+    nid, did = send(email_live)
+    with email_live.service.db.tx() as c:
+        c.execute("UPDATE conversations SET legacy=1, handle_sha256=NULL WHERE id=?", (nid,))
+    rid = deliver(email_live, reply_raw(did))
+    replies = email_live.service.replies
+    with pytest.raises(NotFound):
+        claim(email_live, nid, client=ADMIN, handle=None)
+    with pytest.raises(NotFound):
+        replies.list(ADMIN, nid)
+    assert claim(email_live, nid, handle=None)["id"] == rid  # the sender's token still works

@@ -48,8 +48,17 @@ def deliver(srv, raw: bytes) -> str | None:
     return srv.call(lambda: replies.store(v, rp.message_key(head, split_headers(raw)), rp.parse_reply(raw)))
 
 
-def claim(srv, nid, waiter="w" * 12, wait=0.0, client=AGENT):
-    return srv.call(lambda: srv.service.replies.claim(client, nid, waiter, wait))
+def hdl(srv, nid) -> str | None:
+    """The handle the sender of nid's conversation holds."""
+    return HANDLES.get(srv.service.db.scalar("SELECT conversation_id FROM notifications WHERE id=?", (nid,)))
+
+
+_OWN = object()
+
+
+def claim(srv, nid, waiter="w" * 12, wait=0.0, client=AGENT, handle=_OWN):
+    handle = hdl(srv, nid) if handle is _OWN else handle
+    return srv.call(lambda: srv.service.replies.claim(client, nid, waiter, wait, handle))
 
 
 def test_accept_claim_and_interacted(email_live):
@@ -116,7 +125,7 @@ def test_two_replies_in_order(email_live):
     r2 = deliver(email_live, reply_raw(did, message_id="<b@x>", text="and blue"))
     assert claim(email_live, nid, waiter="first-run-1")["id"] == r1
     assert claim(email_live, nid, waiter="second-run2")["id"] == r2
-    assert [r["state"] for r in email_live.service.replies.list(AGENT, nid)] == ["claimed", "claimed"]
+    assert [r["state"] for r in email_live.service.replies.list(AGENT, nid, hdl(email_live, nid))] == ["claimed", "claimed"]
 
 
 def test_other_client_cannot_claim_or_list(email_live):
@@ -125,7 +134,7 @@ def test_other_client_cannot_claim_or_list(email_live):
     with pytest.raises(NotFound):
         claim(email_live, nid, client=OTHER)
     with pytest.raises(NotFound):
-        email_live.service.replies.list(OTHER, nid)
+        email_live.service.replies.list(OTHER, nid, hdl(email_live, nid))
 
 
 def test_long_poll_wakes_on_store(email_live):
@@ -153,9 +162,10 @@ def test_unclaimed_after_grace_without_listener_gets_one_autoreply(email_live, s
     wait_for(lambda: len(sent_mail.raws) == 2)
     em = sent_mail.last()
     assert em["Auto-Submitted"] == "auto-replied" and em["In-Reply-To"] == f"<{did}@example.org>"
-    assert "no longer listening" in em.get_body(("plain",)).get_content()
+    assert "The agent isn't listening right now." in em.get_body(("plain",)).get_content()
     assert em["Reply-To"] is None
-    assert claim(email_live, nid) is None  # unclaimed replies are never handed out
+    late = claim(email_live, nid)  # a late reply is kept and collectable with the handle
+    assert late["id"] == r1 and late["late"] is True
     deliver(email_live, reply_raw(did, message_id="<b@x>"))
     replies.now = lambda: later + timedelta(seconds=GRACE_SECONDS + 60)
     assert email_live.call(replies.sweep_unclaimed) == 1
@@ -178,14 +188,14 @@ def test_attachment_download_and_purge(email_live):
     nid, did = send(email_live)
     rid = deliver(email_live, reply_raw(did, attachment=PNG))
     claim(email_live, nid)
-    assert email_live.service.replies.attachment(AGENT, rid, 0) == ("shot.png", "image/png", PNG)
+    assert email_live.service.replies.attachment(AGENT, rid, 0, hdl(email_live, nid)) == ("shot.png", "image/png", PNG)
     with pytest.raises(NotFound):
-        email_live.service.replies.attachment(OTHER, rid, 0)
+        email_live.service.replies.attachment(OTHER, rid, 0, hdl(email_live, nid))
     with email_live.service.db.tx() as c:
         c.execute("UPDATE replies SET received_at='2000-01-01T00:00:00.000000Z'")
     email_live.call(email_live.service.retention_sweep)
     with pytest.raises(NotFound):
-        email_live.service.replies.attachment(AGENT, rid, 0)
+        email_live.service.replies.attachment(AGENT, rid, 0, hdl(email_live, nid))
 
 
 ADMIN = Client("admin", frozenset({Scope.admin}))
@@ -194,23 +204,24 @@ ADMIN = Client("admin", frozenset({Scope.admin}))
 def test_unclaimed_content_not_listed_or_downloadable(email_live):
     nid, did = send(email_live)
     rid = deliver(email_live, reply_raw(did, attachment=PNG))
-    replies = email_live.service.replies
-    r = replies.list(AGENT, nid)[0]
+    replies, h = email_live.service.replies, hdl(email_live, nid)
+    r = replies.list(AGENT, nid, h)[0]
     assert r["state"] == "waiting" and r["text"] is None and r["attachments"] == [] and r["from"]
     assert r["subject"] is None
-    assert replies.list(ADMIN, nid)[0]["text"] == "Go with B."
-    assert replies.list(ADMIN, nid)[0]["subject"]
+    with pytest.raises(NotFound):  # an admin token gets no bypass of the handle
+        replies.list(ADMIN, nid)
     with pytest.raises(NotFound):
-        replies.attachment(AGENT, rid, 0)
-    assert replies.attachment(ADMIN, rid, 0)[0] == "shot.png"
+        replies.attachment(AGENT, rid, 0, h)
+    with pytest.raises(NotFound):
+        replies.attachment(ADMIN, rid, 0)
     claim(email_live, nid)
-    assert replies.list(AGENT, nid)[0]["text"] == "Go with B."
-    assert replies.attachment(AGENT, rid, 0)[0] == "shot.png"
+    assert replies.list(AGENT, nid, h)[0]["text"] == "Go with B."
+    assert replies.attachment(AGENT, rid, 0, h)[0] == "shot.png"
     with email_live.service.db.tx() as c:
         c.execute("UPDATE replies SET state='unclaimed' WHERE id=?", (rid,))
     with pytest.raises(NotFound):
-        replies.attachment(AGENT, rid, 0)
-    assert replies.list(AGENT, nid)[0]["text"] is None
+        replies.attachment(AGENT, rid, 0, h)
+    assert replies.list(AGENT, nid, h)[0]["text"] is None
 
 
 def test_sweep_survives_autoreply_failure(email_live, sent_mail):
@@ -265,3 +276,17 @@ def test_listener_seen_survives_deleted_root(email_live):
     with email_live.service.db.tx() as c:
         c.execute("UPDATE notifications SET listener_seen_at=NULL WHERE id=?", (n2,))
     assert email_live.call(replies.sweep_unclaimed) == 1
+
+
+def test_legacy_autoreply_keeps_old_behaviour(email_live, sent_mail):
+    nid, did = send(email_live)
+    with email_live.service.db.tx() as c:
+        c.execute("UPDATE conversations SET legacy=1, handle_sha256=NULL WHERE id=?", (nid,))
+    r1 = deliver(email_live, reply_raw(did, message_id="<a@x>"))
+    replies = email_live.service.replies
+    replies.now = lambda: utcnow() + timedelta(seconds=GRACE_SECONDS + 60)
+    assert email_live.call(replies.sweep_unclaimed) == 1
+    assert email_live.service.db.scalar("SELECT late_ok FROM replies WHERE id=?", (r1,)) == 0
+    wait_for(lambda: len(sent_mail.raws) == 2)
+    assert "no longer listening" in sent_mail.last().get_body(("plain",)).get_content()
+    assert claim(email_live, nid, handle=None) is None  # unclaimed replies of legacy conversations are never handed out

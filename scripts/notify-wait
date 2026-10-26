@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Wait for a reply to an hnl-notify notification and print it.
 
-  notify-wait NOTIFICATION_ID [--timeout 60m] [--save-dir DIR] [--url URL] [--json]
+  notify-wait REPLY_HANDLE|NOTIFICATION_ID [--handle-file FILE] [--timeout 60m] [--save-dir DIR] [--url URL] [--json]
+
+The reply handle (returned once when the conversation's first reply:true notification was sent, form
+<conversation id>:<secret>) comes from, in this order: a positional argument containing ":", --handle-file,
+the NOTIFY_REPLY_HANDLE environment variable. A plain notification id still works for conversations from before
+reply handles existed. The handle is never printed.
 
 Long-polls POST /v1/notifications/{id}/replies/claim with one waiter id per run, so a retry after a
 lost response gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error, 2 no reply before --timeout.
@@ -104,14 +109,46 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirect)
 
 
-def _request(method: str, url: str, token: str, timeout: float) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, method=method, headers={"Authorization": f"Bearer {token}",
-                                                              "User-Agent": "notify-wait"})
+def _request(method: str, url: str, token: str, timeout: float, handle: str | None = None) -> tuple[int, bytes]:
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": "notify-wait"}
+    if handle:
+        headers["X-Reply-Handle"] = handle
+    req = urllib.request.Request(url, method=method, headers=headers)
     with _OPENER.open(req, timeout=timeout) as r:
         return r.status, r.read()
 
 
-def claim_loop(base: str, token: str, nid: str, deadline: float) -> dict[str, Any] | None:
+def _scrub(text: str, handle: str | None) -> str:
+    """Never let the handle's secret through into output."""
+    secret = (handle or "").partition(":")[2]
+    return text.replace(secret, "***") if secret else text
+
+
+def find_handle(positional: str | None, handle_file: str | None, env: dict[str, str]) -> tuple[str, str | None]:
+    """(notification id to claim on, handle). A positional with ':' is the handle; else --handle-file; else
+    NOTIFY_REPLY_HANDLE. With a handle and no plain id, the id is the handle's conversation id."""
+    pos = (positional or "").strip()
+    handle: str | None = None
+    if ":" in pos:
+        handle, pos = pos, ""
+    elif handle_file is not None:
+        try:
+            handle = Path(handle_file).read_text().strip()
+        except (OSError, UnicodeError) as e:
+            raise Fatal(f"cannot read handle file: {type(e).__name__}") from None
+    else:
+        handle = (env.get("NOTIFY_REPLY_HANDLE") or "").strip() or None
+    if handle is not None:
+        conv, sep, secret = handle.partition(":")
+        if not (conv and sep and secret):
+            raise Fatal("the reply handle is not valid (expected <conversation id>:<secret>)")
+    nid = pos or (handle or "").partition(":")[0]
+    if not nid:
+        raise Fatal("give the reply handle (argument, --handle-file or NOTIFY_REPLY_HANDLE) or a notification id")
+    return nid, handle
+
+
+def claim_loop(base: str, token: str, nid: str, deadline: float, handle: str | None = None) -> dict[str, Any] | None:
     waiter = secrets.token_hex(12)
     failures = 0
     while True:
@@ -122,10 +159,13 @@ def claim_loop(base: str, token: str, nid: str, deadline: float) -> dict[str, An
         url = (f"{base}/v1/notifications/{urllib.parse.quote(nid, safe='')}/replies/claim"
                f"?wait={wait}&waiter={waiter}")
         try:
-            status, body = _request("POST", url, token, timeout=wait + 15)
+            status, body = _request("POST", url, token, timeout=wait + 15, handle=handle)
         except urllib.error.HTTPError as e:
             if e.code in (401, 403, 404, 422):
-                raise Fatal(f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}") from None
+                note = ""
+                if e.code == 404 and handle and nid != handle.partition(":")[0]:
+                    note = " (if the id and the reply handle name different conversations: the reply handle belongs to another conversation)"
+                raise Fatal(f"HTTP {e.code}: {_scrub(e.read().decode(errors='replace')[:300], handle)}{note}") from None
             status, body = 0, b""
         except (urllib.error.URLError, OSError, http.client.HTTPException):
             status, body = 0, b""
@@ -145,7 +185,8 @@ def claim_loop(base: str, token: str, nid: str, deadline: float) -> dict[str, An
             return None
 
 
-def save_attachments(base: str, token: str, reply: dict[str, Any], save_dir: str | None) -> list[str]:
+def save_attachments(base: str, token: str, reply: dict[str, Any], save_dir: str | None,
+                     handle: str | None = None) -> list[str]:
     wanted = [a for a in reply.get("attachments") or [] if not a.get("purged")]
     if not wanted:
         return []
@@ -164,7 +205,7 @@ def save_attachments(base: str, token: str, reply: dict[str, Any], save_dir: str
         if urllib.parse.urlsplit(url)[:2] != urllib.parse.urlsplit(base)[:2]:
             raise Fatal("unexpected attachment url from the service")
         try:
-            _, data = _request("GET", url, token, timeout=60)
+            _, data = _request("GET", url, token, timeout=60, handle=handle)
         except (urllib.error.URLError, OSError, http.client.HTTPException) as e:
             raise Fatal(f"could not download {a['filename']!r}: {e}") from None
         try:
@@ -205,7 +246,8 @@ def _fmt(seconds: int) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="notify-wait", description="Wait for a reply to an hnl-notify notification.")
-    ap.add_argument("notification_id")
+    ap.add_argument("notification_id", nargs="?", help="the reply handle, or (older conversations) a notification id")
+    ap.add_argument("--handle-file", help="read the reply handle from this file")
     ap.add_argument("--timeout", type=parse_duration, default=3600, help="how long to wait (90s, 30m, 2h; default 60m)")
     ap.add_argument("--save-dir", help="where to save attachments (default: a new temporary folder)")
     ap.add_argument("--url", help="service base URL (default: NOTIFY_URL or ~/.claude.json)")
@@ -215,14 +257,15 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         base, token = settings(args.url, mcp_entry(), args.token_file)
-        reply = claim_loop(base, token, args.notification_id, time.monotonic() + args.timeout)
+        nid, handle = find_handle(args.notification_id, args.handle_file, os.environ)
+        reply = claim_loop(base, token, nid, time.monotonic() + args.timeout, handle)
         if reply is None:
             print(f"No reply within {_fmt(args.timeout)}; listener stopped. Later replies get an autoreply.")
             return EXIT_TIMEOUT
         paths: list[str] = []
         failed = ""
         try:
-            paths = save_attachments(base, token, reply, args.save_dir)
+            paths = save_attachments(base, token, reply, args.save_dir, handle)
         except Fatal as e:  # the reply is already claimed by this run: print it anyway
             failed = str(e)
         print(json.dumps({**reply, "saved": paths}, indent=2) if args.json else render(reply, paths))

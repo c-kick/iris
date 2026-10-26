@@ -117,9 +117,32 @@ class Replies:
         return rid
 
     # ------------------------------------------------------------ agents
-    async def claim(self, client: Client, nid: str, waiter: str, wait: float) -> dict[str, Any] | None:
-        """Long-poll: the oldest waiting reply of the conversation, or the one this waiter already holds."""
-        n = self.svc._notification_row(client, nid)
+    def _access(self, client: Client, nid: str, handle: str | None) -> sqlite3.Row:
+        """The one gate for claim, list and attachment download. Runs before anything else, so a wrong handle
+        can't refresh `listener_seen_at`. Returns the notification row; every refusal is the same NotFound."""
+        from .core import NotFound
+        svc = self.svc
+        if ":" in nid:  # a handle pasted where an id goes; never echoed
+            raise NotFound("notification not found")
+        try:
+            n = svc._notification_row(client, nid)
+        except NotFound:
+            # the root may be gone (retention) while the conversation lives on: fall back to its newest notification
+            n = svc.db.one("SELECT n.* FROM notifications n JOIN conversations c ON c.id=n.conversation_id"
+                           " WHERE c.id=? ORDER BY n.created_at DESC, n.id DESC LIMIT 1", (nid,))
+            if n is None or not svc._visible(client, n["client_id"]):
+                raise NotFound("notification not found") from None
+        with svc.db._lock:
+            row = conversation_gate(svc.db.conn, n["conversation_id"] or n["id"], handle)
+        if row is None or (row["legacy"] and client.id != n["client_id"]):  # legacy: the sending token only
+            raise NotFound("notification not found")
+        return n
+
+    async def claim(self, client: Client, nid: str, waiter: str, wait: float,
+                    handle: str | None = None) -> dict[str, Any] | None:
+        """Long-poll: the reply this waiter already holds, else the oldest waiting reply of the conversation,
+        else the oldest late-collectable unclaimed one."""
+        n = self._access(client, nid, handle)
         conv = n["conversation_id"] or n["id"]
         deadline = time.monotonic() + max(0.0, min(wait, 55.0))
         while True:
@@ -141,6 +164,9 @@ class Replies:
                 return r
             r = c.execute("SELECT * FROM replies WHERE conversation_id=? AND state='waiting'"
                           " ORDER BY received_at, id LIMIT 1", (conv,)).fetchone()
+            if r is None:  # a late reply (swept while nobody listened) of a non-legacy conversation
+                r = c.execute("SELECT * FROM replies WHERE conversation_id=? AND state='unclaimed' AND late_ok=1"
+                              " ORDER BY received_at, id LIMIT 1", (conv,)).fetchone()
             if r is None:
                 return None
             c.execute("UPDATE replies SET state='claimed', claimed_at=?, claimed_by=?, waiter_id=? WHERE id=?",
@@ -156,23 +182,22 @@ class Replies:
         self.svc._after_commit()
         return r
 
-    def list(self, client: Client, nid: str) -> list[dict[str, Any]]:
-        n = self.svc._notification_row(client, nid)
+    def list(self, client: Client, nid: str, handle: str | None = None) -> list[dict[str, Any]]:
+        n = self._access(client, nid, handle)
         rows = self.svc.db.query("SELECT * FROM replies WHERE conversation_id=? ORDER BY received_at, id",
                                  (n["conversation_id"] or n["id"],))
         out = [self._out(r) for r in rows]
-        if not client.admin:  # content of a reply nobody claimed is never handed to an agent
-            for o in out:
-                if o["state"] != "claimed":
-                    o.update(subject=None, text=None, attachments=[], dropped_attachments=[])
+        for o in out:  # content of a reply nobody claimed is never handed out, handle or not
+            if o["state"] != "claimed":
+                o.update(subject=None, text=None, attachments=[], dropped_attachments=[])
         return out
 
-    def attachment(self, client: Client, rid: str, idx: int) -> tuple[str, str, bytes]:
+    def attachment(self, client: Client, rid: str, idx: int, handle: str | None = None) -> tuple[str, str, bytes]:
         from .core import NotFound
         r = self.svc.db.one("SELECT notification_id, state FROM replies WHERE id=?", (rid,))
-        if r is None or (not client.admin and r["state"] != "claimed"):
+        if r is None or r["state"] != "claimed":
             raise NotFound(f"reply {rid} not found")
-        self.svc._notification_row(client, r["notification_id"])
+        self._access(client, r["notification_id"], handle)
         a = self.svc.db.one("SELECT filename, content_type, data FROM reply_attachments WHERE reply_id=? AND idx=?",
                             (rid, idx))
         if a is None or a["data"] is None:
@@ -190,6 +215,7 @@ class Replies:
             "stripped": bool(r["stripped"]), "truncated": bool(r["truncated"]),
             "dropped_attachments": loads(r["dropped_attachments_json"], []), "claimed_at": r["claimed_at"],
             "claimed_by": r["claimed_by"], "autoreply_notification_id": r["autoreply_notification_id"],
+            "late": bool(r["late_ok"]),
             "attachments": [{"idx": a["idx"], "filename": a["filename"], "content_type": a["content_type"],
                              "size": a["size"], "purged": a["purged_at"] is not None,
                              "url": f"/v1/replies/{r['id']}/attachments/{a['idx']}"} for a in atts],
@@ -213,7 +239,9 @@ class Replies:
                                  {"c": r["conversation_id"]}).fetchone()
                 if seen is not None and seen[0] and seen[0] >= iso(now - timedelta(seconds=LISTEN_SECONDS)):
                     continue  # someone started listening since the query
-                c.execute("UPDATE replies SET state='unclaimed' WHERE id=?", (r["id"],))
+                conv = c.execute("SELECT legacy FROM conversations WHERE id=?", (r["conversation_id"],)).fetchone()
+                late_ok = int(conv is not None and not conv["legacy"])  # legacy replies are never handed out late
+                c.execute("UPDATE replies SET state='unclaimed', late_ok=? WHERE id=?", (late_ok, r["id"]))
                 n = c.execute("SELECT * FROM notifications WHERE id=?", (r["notification_id"],)).fetchone()
                 self.svc._emit(c, "reply.unclaimed", n, r["delivery_id"], {"reply_id": r["id"]})
             swept += 1
@@ -237,10 +265,15 @@ class Replies:
         if d is None or n is None:
             return
         received = parse_iso(r["received_at"]).strftime("%Y-%m-%d %H:%M UTC")  # type: ignore[union-attr]
+        legacy = db.scalar("SELECT legacy FROM conversations WHERE id=?", (r["conversation_id"],))
+        text = (f"This agent is no longer listening, so your reply was not delivered. Received {received}."
+                if legacy != 0 else
+                f"The agent isn't listening right now. Your reply has been kept and the agent can still pick it up"
+                f" later. Received {received}.")
         req = NotificationIn(
             targets=[f"device:{d['device']}"], kinds=["email"], in_reply_to=r["notification_id"],
             title=f"Re: {n['title'][:990]}" if n["title"] else None, source="hnl-notify/replies",
-            message=f"This agent is no longer listening, so your reply was not delivered. Received {received}.",
+            message=text,
             tags=["reply-autoreply"], data={"reply_id": r["id"]})
         req._auto_submitted = True
         req._internal = True

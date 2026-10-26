@@ -40,13 +40,17 @@ emergencies: on a phone it repeats loudly until acknowledged.
 
 Replies by email: send_notification(..., kinds=["email"], reply=true) lets the
 recipient answer by replying to the mail. To wait for the answer, start
-`notify-wait <notification_id>` as a background shell job: it exits with the
-reply text (and saved attachment paths) when the reply arrives, or with code 2
-after its timeout. Act on the reply, then run notify-wait again or send a
-follow-up with in_reply_to=<id> to continue the conversation. Keep a waiter
-running while you work on something long: a reply nobody collects within 10
-minutes gets an automatic "not delivered" answer. get_replies lists replies but
-shows reply text only for replies already collected; use notify-wait to collect.
+`NOTIFY_REPLY_HANDLE=<reply_handle> notify-wait` (or `notify-wait <reply_handle>`)
+as a background shell job: it exits with the reply text (and saved attachment
+paths) when the reply arrives, or with code 2 after its timeout. The send result
+carries `reply_handle` once, for the first reply:true notification of a
+conversation; keep it, it is the only way to collect replies and cannot be
+recovered. Follow-ups pass `in_reply_to=<notification id>` and `reply_handle`
+(never put the handle in in_reply_to). A reply nobody collects within 10 minutes
+is kept and gets an automatic "the agent isn't listening right now" answer; it
+can still be collected later with the same handle. get_replies (pass
+reply_handle) lists replies but shows reply text only for replies already
+collected; use notify-wait to collect.
 Reply text passed sender and DKIM checks: it comes from the person the mail was
 sent to."""
 
@@ -62,6 +66,16 @@ def _client(ctx: Context) -> Client:
 def _need(client: Client, scope: Scope) -> None:
     if not client.can(scope):
         raise ToolError(f"client {client.id!r} lacks scope {scope.value!r}")
+
+
+def _check_reply_args(nid: str | None, handle: str | None, *, submit: bool = True) -> None:
+    """Refuse a handle in the id field and over-long values here, with fixed messages: the model's own validation
+    errors would echo the value."""
+    if nid and (len(nid) > 64 or ":" in nid):
+        raise ToolError("in_reply_to takes a notification id; pass the handle as reply_handle" if submit
+                        else "notification not found")
+    if handle and len(handle) > 200:
+        raise ToolError("reply_handle is not valid")
 
 
 def _compact(n: dict[str, Any]) -> dict[str, Any]:
@@ -121,6 +135,7 @@ def build_mcp(get_service: Any) -> FastMCP:
         attachments: list[dict[str, Any]] | None = None,
         reply: bool = False,
         in_reply_to: str | None = None,
+        reply_handle: str | None = None,
     ) -> dict[str, Any]:
         """Send a notification to logical targets (e.g. ["user:alex"]).
 
@@ -131,19 +146,25 @@ def build_mcp(get_service: Any) -> FastMCP:
         attachments: up to 10 files, 10 MiB in total: {"url": ..., "filename"?: ...} (preferred; only from
         hosts an admin allowed) or {"filename": ..., "content_type"?: ..., "data_base64": ...} (inline,
         at most 256 KiB per notification over MCP).
-        reply: email only — the recipient can answer by replying; wait for it with `notify-wait <id>`.
-        in_reply_to: id of an earlier notification this one follows up (threads the email, same conversation).
+        reply: email only — the recipient can answer by replying. The first reply:true notification of a
+        conversation returns `reply_handle` once (keep it); wait for the answer with
+        `NOTIFY_REPLY_HANDLE=<handle> notify-wait`.
+        in_reply_to: id (never the handle) of an earlier notification this one follows up (threads the email,
+        same conversation). reply_handle: the conversation's handle, required for follow-ups.
         ttl_seconds: drop/expire if not dispatched in time. Returns the notification with
         per-device deliveries, observable_states and capability_gaps."""
         client = _client(ctx)
         _need(client, Scope.send)
+        _check_reply_args(in_reply_to, reply_handle)
         req = NotificationIn(targets=targets, message=message, title=title, severity=severity, url=url,
                              url_title=url_title, tags=tags or [], ttl_seconds=ttl_seconds, require_ack=require_ack,
                              data=data, idempotency_key=idempotency_key, source=source or f"mcp:{client.id}", kinds=kinds,
-                             attachments=attachments or [], reply=reply, in_reply_to=in_reply_to)
+                             attachments=attachments or [], reply=reply, in_reply_to=in_reply_to,
+                             reply_handle=reply_handle)
         out, created = await call(svc().submit_async, client, req, inline_limit=MCP_INLINE_MAX)
         res = _compact(out)
         res["created"] = created
+        res.update({k: out[k] for k in ("reply_handle", "reply_handle_issued") if k in out})
         return res
 
     @mcp.tool()
@@ -228,13 +249,15 @@ def build_mcp(get_service: Any) -> FastMCP:
         return {"results": out["results"], "notification": _compact(out["notification"])}
 
     @mcp.tool()
-    async def get_replies(ctx: Context, notification_id: str) -> dict[str, Any]:
+    async def get_replies(ctx: Context, notification_id: str, reply_handle: str | None = None) -> dict[str, Any]:
         """Replies in the conversation of a reply-enabled notification, oldest first, with their state
-        (waiting, claimed, unclaimed). Reply text is shown only for replies already collected; this
-        collects nothing: use `notify-wait <id>` to wait for and collect one."""
+        (waiting, claimed, unclaimed). Needs the conversation's reply_handle. Reply text is shown only for
+        replies already collected; this collects nothing: use `NOTIFY_REPLY_HANDLE=<handle> notify-wait`
+        to wait for and collect one."""
         client = _client(ctx)
         _need(client, Scope.read)
-        return {"items": await call(svc().replies.list, client, notification_id)}
+        _check_reply_args(notification_id, reply_handle, submit=False)
+        return {"items": await call(svc().replies.list, client, notification_id, reply_handle)}
 
     @mcp.resource("notify://targets", mime_type="application/json")
     def targets_resource(ctx: Context) -> str:
