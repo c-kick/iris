@@ -1020,7 +1020,7 @@ function mailboxPanel(p) {
   const would = folders.reduce((a, [, f]) => ({ n: a.n + f.removed_age + f.removed_cap, b: a.b + f.removed_bytes }), { n: 0, b: 0 });
   const lines = [];
   if (pv.error) lines.push(`<div class="problem">Could not read the mailbox: ${esc(pv.error)}</div>`);
-  if (pv.refused) lines.push(`<div class="problem">Cleanup is switched off for this mailbox: ${esc(pv.refused)}.</div>`);
+  if (pv.refused) lines.push(`<div class="problem">Cleanup can't run for this mailbox: ${esc(pv.refused)}.</div>`);
   for (const [n, f] of folders) if (f.error) lines.push(`<div class="problem">${esc(n)}: ${esc(f.error)}</div>`);
   if (p.alert_warning) lines.push(`<div class="problem">${esc(p.alert_warning)}</div>`);
   const last = st.last_run
@@ -1029,9 +1029,9 @@ function mailboxPanel(p) {
   return `<div class="block" data-provider="${esc(p.name)}"><h3>${esc(p.name)}</h3>
     ${lines.join("")}
     <div class="rows">${folders.length ? folders.map(([n, f]) => `<div class="row"><div class="grow"><div class="title">${esc(n)}</div>
-      <div class="sub">${f.messages} mails, ${esc(mib(f.bytes))}${f.oldest ? `, oldest ${esc(when(f.oldest))}` : ""}</div></div></div>`).join("")
+      <div class="sub">${esc(f.messages)} mails, ${esc(mib(f.bytes))}${f.oldest ? `, oldest ${esc(when(f.oldest))}` : ""}</div></div></div>`).join("")
       : `<div class="empty">The folders could not be read.</div>`}</div>
-    <p class="hint">${pv.error || pv.refused ? "" : would.n ? `With the current settings a cleanup would delete ${would.n} mails (${esc(mib(would.b))}).` : "Nothing is past the current settings."}</p>
+    <p class="hint">${pv.error || pv.refused ? "" : would.n ? `With the current settings a cleanup would delete ${esc(would.n)} mails (${esc(mib(would.b))}).` : "Nothing is past the current settings."}</p>
     <p class="hint">${last}</p>
     ${mailboxNotes[p.name] ? `<p class="hint">${esc(mailboxNotes[p.name])}</p>` : ""}
     <p><button class="btn" data-clean ${pv.error || pv.refused ? "disabled" : ""}>Clean up now</button></p>
@@ -1042,6 +1042,7 @@ function mailboxPanel(p) {
 
 async function loadMailbox(el) {
   let data;
+  el.innerHTML = `<div class="empty">Reading the mailbox…</div>`;
   try { data = await api("GET", "/mailbox"); }
   catch (ex) { el.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
   if (!data.providers.length) { el.innerHTML = `<div class="empty">No provider has a reply mailbox yet. Add the IMAP settings to an email provider first.</div>`; return; }
@@ -1063,7 +1064,7 @@ async function loadMailbox(el) {
     const would = Object.values(pv.folders || {}).reduce((a, f) => ({ n: a.n + f.removed_age + f.removed_cap, b: a.b + f.removed_bytes }), { n: 0, b: 0 });
     box.querySelector("[data-clean]").onclick = () => confirmAction(
       "Clean up the reply mailbox?",
-      would.n ? `This permanently deletes <strong>${would.n} mails (${esc(mib(would.b))})</strong> from ${Object.keys(pv.folders).map(esc).join(" and ")}. It cannot be undone.`
+      would.n ? `This permanently deletes about <strong>${esc(would.n)} mails (${esc(mib(would.b))})</strong> from ${Object.keys(pv.folders).map(esc).join(" and ")}. It cannot be undone.`
               : "Nothing is past the current settings, so nothing will be deleted.",
       "Clean up now",
       async () => {
