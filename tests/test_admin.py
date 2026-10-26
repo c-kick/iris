@@ -336,3 +336,33 @@ def test_require_session():
     with pytest.raises(HTTPException) as e:
         require_session(SYSTEM_CLIENT)
     assert e.value.status_code == 403
+
+
+def _set_cleanup(srv, **section):
+    from notify.configops import commit_config
+    srv.call(lambda: commit_config(srv.app, lambda d: d["mailbox_cleanup"].__setitem__("mail", section)))
+
+
+def test_cleanup_section_survives_provider_save_and_goes_with_delete(fresh):
+    srv = fresh()
+    b = setup_admin(srv)
+    _email_provider(b)
+    _set_cleanup(srv, processed_days=7, alert_targets=[])
+    assert _email_provider(b, port="2526").status_code == 200  # saving the provider keeps its cleanup section
+    assert srv.app.state.config.cleanup_for("mail").processed_days == 7
+    # and it round-trips through the persisted config
+    assert srv.app.state.store.load().cleanup_for("mail").processed_days == 7
+    assert b.get("/admin/api/state").json()["config"]["mailbox_cleanup"]["mail"]["processed_days"] == 7
+    assert b.delete("/admin/api/providers/mail", headers=H).status_code == 200
+    assert srv.app.state.config.mailbox_cleanup == {}
+
+
+def test_deleting_user_strips_cleanup_alert_target(fresh):
+    srv = fresh()
+    b = setup_admin(srv)
+    _email_provider(b)
+    assert b.put("/admin/api/users/alex", json={"devices": []}, headers=H).status_code == 200
+    _set_cleanup(srv, alert_targets=["user:alex"])
+    r = b.delete("/admin/api/users/alex", headers=H)
+    assert r.status_code == 200, r.text
+    assert srv.app.state.config.cleanup_for("mail").alert_targets == []

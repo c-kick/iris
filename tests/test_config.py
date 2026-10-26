@@ -77,3 +77,36 @@ def test_status_rollup(states, expected):
 def test_attachment_hosts_trailing_dot_stripped():
     from notify.config import ServerConfig
     assert ServerConfig(attachment_url_hosts=["HA.lan.", "ha.lan.:8123"]).attachment_url_hosts == ["ha.lan", "ha.lan:8123"]
+
+
+def _cfg(**extra):
+    from notify.config import NotifyConfig
+    base = {"providers": {"mail": {"type": "email"}}, "users": {"alex": {"display_name": "Alex"}},
+            "channels": {"infra": {"targets": ["user:alex"]}}}
+    return NotifyConfig.model_validate({**base, **extra})
+
+
+def test_cleanup_defaults():
+    c = _cfg().cleanup_for("x")
+    assert (c.enabled, c.processed_days, c.quarantine_days) == (True, 30, 90)
+    assert (c.processed_max_mib, c.quarantine_max_mib, c.alert_targets) == (1024, 500, [])
+    assert _cfg(mailbox_cleanup={"mail": {}}).cleanup_for("mail").processed_days == 30
+    assert _cfg(mailbox_cleanup={"mail": {"processed_days": 0}}).cleanup_for("mail").processed_days == 0
+
+
+@pytest.mark.parametrize("section", [
+    {"nope": {}},
+    {"mail": {"processed_days": -1}}, {"mail": {"quarantine_days": 3651}},
+    {"mail": {"processed_max_mib": 1048577}}, {"mail": {"quarantine_max_mib": -5}},
+    {"mail": {"surprise": 1}},
+    {"mail": {"alert_targets": ["user:ghost"]}}, {"mail": {"alert_targets": ["channel:ghost"]}},
+    {"mail": {"alert_targets": ["nonsense"]}},
+])
+def test_cleanup_section_rejected(section):
+    with pytest.raises(ValueError):
+        _cfg(mailbox_cleanup=section)
+
+
+def test_cleanup_alert_targets_accept_channels():
+    c = _cfg(mailbox_cleanup={"mail": {"alert_targets": ["channel:infra", "user:alex"]}})
+    assert c.cleanup_for("mail").alert_targets == ["channel:infra", "user:alex"]

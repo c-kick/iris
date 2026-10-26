@@ -122,3 +122,12 @@ def test_admin_state_counts_pending(live):
     assert st["pending_registrations"] == 1
     assert st["config"]["registration"]["enabled"] is True
     assert TOKENS  # fixture tokens unchanged
+
+
+def test_announce_targets():
+    from notify.registrations import announce_targets
+    from tests.conftest import make_config
+    cfg = make_config()
+    assert announce_targets(cfg) == [f"user:{u}" for u in cfg.users]
+    cfg.registration.notify_targets = ["user:alex"]
+    assert announce_targets(cfg) == ["user:alex"]

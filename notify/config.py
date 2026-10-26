@@ -162,6 +162,16 @@ class ClientConfig(_Strict):
         return v
 
 
+class MailboxCleanupConfig(_Strict):
+    """Housekeeping of one reply mailbox's Processed / Quarantine folders. 0 = that rule off."""
+    enabled: bool = True
+    processed_days: int = Field(30, ge=0, le=3650)
+    quarantine_days: int = Field(90, ge=0, le=3650)
+    processed_max_mib: int = Field(1024, ge=0, le=1048576)
+    quarantine_max_mib: int = Field(500, ge=0, le=1048576)
+    alert_targets: list[str] = Field(default_factory=list, description="Who hears about a folder over its size cap")
+
+
 class NotifyConfig(_Strict):
     server: ServerConfig = Field(default_factory=ServerConfig)
     registration: RegistrationConfig = Field(default_factory=RegistrationConfig)
@@ -171,6 +181,7 @@ class NotifyConfig(_Strict):
     groups: dict[str, GroupConfig] = Field(default_factory=dict)
     channels: dict[str, ChannelConfig] = Field(default_factory=dict)
     clients: dict[str, ClientConfig] = Field(default_factory=dict)
+    mailbox_cleanup: dict[str, MailboxCleanupConfig] = Field(default_factory=dict)  # keyed by provider name
 
     # populated by load_config, not part of the file
     missing_env: list[str] = Field(default_factory=list, exclude=True)
@@ -198,13 +209,23 @@ class NotifyConfig(_Strict):
         for name, c in self.channels.items():
             for t in c.targets:
                 self._check_ref(f"channel {name}", t)
-        for t in self.registration.notify_targets:
+        self._check_announce("registration.notify_targets", self.registration.notify_targets)
+        for name, mc in self.mailbox_cleanup.items():
+            if name not in self.providers:
+                raise ValueError(f"mailbox_cleanup.{name}: unknown provider")
+            self._check_announce(f"mailbox_cleanup.{name}.alert_targets", mc.alert_targets)
+        return self
+
+    def _check_announce(self, where: str, targets: list[str]) -> None:
+        for t in targets:
             if t.startswith("channel:"):
                 if t.split(":", 1)[1] not in self.channels:
-                    raise ValueError(f"registration.notify_targets: unknown channel {t[8:]!r}")
+                    raise ValueError(f"{where}: unknown channel {t[8:]!r}")
             else:
-                self._check_ref("registration.notify_targets", t)
-        return self
+                self._check_ref(where, t)
+
+    def cleanup_for(self, provider: str) -> MailboxCleanupConfig:
+        return self.mailbox_cleanup.get(provider) or MailboxCleanupConfig()
 
     def _check_ref(self, where: str, ref: str) -> None:
         kind, _, name = ref.partition(":")

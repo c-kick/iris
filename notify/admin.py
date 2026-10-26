@@ -234,6 +234,8 @@ def _drop_refs(data: dict[str, Any], ref: str) -> None:
         g["members"] = [m for m in g["members"] if m != ref]
     for ch in data["channels"].values():
         ch["targets"] = [t for t in ch["targets"] if t != ref]
+    for mc in data["mailbox_cleanup"].values():
+        mc["alert_targets"] = [t for t in mc["alert_targets"] if t != ref]
 
 
 # ------------------------------------------------------------------ providers
@@ -295,6 +297,7 @@ async def delete_provider(name: str, request: Request, _: Client = Depends(admin
         if used:
             raise ConfigError(f"remove the devices using it first: {', '.join(used)}")
         data["providers"].pop(name, None)
+        data["mailbox_cleanup"].pop(name, None)
     return _commit(request, mutate)
 
 

@@ -156,10 +156,15 @@ def _external_url(app: Any, request: Request) -> str:
     return base.rstrip("/")
 
 
+def announce_targets(cfg: Any) -> list[str]:
+    """Who hears about access requests: the configured targets, else every person."""
+    return cfg.registration.notify_targets or [f"user:{u}" for u in cfg.users]
+
+
 def notify_admin(app: Any, request: Request, reg: dict[str, Any], auto: bool,
                  decision_code: str | None = None) -> None:
     cfg = app.state.config
-    targets = cfg.registration.notify_targets or [f"user:{u}" for u in cfg.users]
+    targets = announce_targets(cfg)
     if not targets:
         log.warning("access request not announced: no people configured", extra={"client": reg["name"]})
         return
