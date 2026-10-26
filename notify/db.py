@@ -197,7 +197,8 @@ CREATE TABLE IF NOT EXISTS replies (
     claimed_at TEXT,
     claimed_by TEXT,
     waiter_id TEXT,
-    autoreply_notification_id TEXT
+    autoreply_notification_id TEXT,
+    late_ok INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_replies_conversation ON replies(conversation_id, state, received_at);
 
@@ -290,11 +291,25 @@ class Database:
                               "conversation_id": "TEXT", "listener_seen_at": "TEXT",
                               "auto_submitted": "INTEGER NOT NULL DEFAULT 0"},
             "deliveries": {"recipient_address": "TEXT", "dismissed_at": "TEXT"},
+            "replies": {"late_ok": "INTEGER NOT NULL DEFAULT 0"},
         })
+        self._add_conversations()
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")
         with self.tx() as c:
             c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+
+    def _add_conversations(self) -> None:
+        """0.7.0: the conversations table and its one-time backfill. Not in SCHEMA: executescript autocommits, so a
+        crash between CREATE and the backfill would skip the backfill. DDL is transactional here, so both or neither."""
+        with self.tx() as c:
+            if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'").fetchone():
+                return
+            c.execute("CREATE TABLE conversations (id TEXT PRIMARY KEY, handle_sha256 TEXT, handle_notification_id TEXT,"
+                      " legacy INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL)")
+            # every existing reply conversation keeps the old token rule; its unclaimed replies (late_ok 0) stay put
+            c.execute("INSERT INTO conversations(id, legacy, created_at) SELECT DISTINCT conversation_id, 1, ?"
+                      " FROM notifications WHERE reply_wanted=1 AND conversation_id IS NOT NULL", (iso(utcnow()),))
 
     def _add_missing_columns(self, columns: dict[str, dict[str, str]]) -> None:
         """Additive migrations for databases created by older versions."""

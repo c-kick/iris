@@ -981,6 +981,8 @@ class NotifyService:
                 " WHERE d.notification_id=notifications.id AND d.finalized_at IS NULL)", (cutoff,))]
             for nid in ids:
                 c.execute("DELETE FROM notifications WHERE id=?", (nid,))
+            c.execute("DELETE FROM conversations WHERE NOT EXISTS"
+                      " (SELECT 1 FROM notifications n WHERE n.conversation_id=conversations.id)")
             c.execute("DELETE FROM subscriptions WHERE notification_id IS NOT NULL AND NOT EXISTS"
                       " (SELECT 1 FROM notifications n WHERE n.id=subscriptions.notification_id)")
             att_cutoff = iso(utcnow() - timedelta(days=self.config.server.attachment_retention_days))
