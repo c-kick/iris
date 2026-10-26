@@ -280,19 +280,23 @@ def test_validation_errors_do_not_echo_large_input(live):
         assert d and all({"loc", "msg", "type"} <= set(e) for e in d)
 
 
-def test_admin_replies_view(email_live):
+def _session_client(srv) -> httpx.Client:
+    """A browser with a valid signed-in admin cookie."""
+    sid = srv.app.state.store.new_session()
+    return httpx.Client(base_url=srv.url, cookies={"notify_admin": sid}, timeout=10)
+
+
+def _fill_replies(srv) -> None:
     from tests.mailfactory import reply_raw
-    import notify.providers.email_inbound as inbound
-    with email_live.client() as c:
-        out = c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "Pick",
-                                                 "kinds": ["email"], "reply": True}).json()
-        wait_for(lambda: c.get(f"/v1/notifications/{out['id']}").json()["deliveries"][0]["state"] == "dispatched")
-    did = out["deliveries"][0]["id"]
-    email_live.mailbox.add(reply_raw(did))
-    email_live.mailbox.add(reply_raw(did, message_id="<m@x>", sender="mallory@example.org"))
-    email_live.call(lambda: inbound.poll_once(email_live.service, email_live.service.providers["mail"],
-                                              email_live.mailbox))
-    with email_live.client("admin") as a:
+    from tests.test_replies_core import deliver, send
+    _, did = send(srv)
+    deliver(srv, reply_raw(did, attachment=b"\x89PNG\r\n\x1a\n" + b"0" * 32))
+    deliver(srv, reply_raw(did, message_id="<m@x>", sender="mallory@example.org"))
+
+
+def test_admin_replies_view(email_live):
+    _fill_replies(email_live)
+    with _session_client(email_live) as a:
         r = a.get("/admin/api/replies")
     assert r.status_code == 200, r.text
     body = r.json()
@@ -300,3 +304,34 @@ def test_admin_replies_view(email_live):
     assert body["quarantine"][0]["reason"] == "sender_mismatch"
     with email_live.client("agent") as c:
         assert c.get("/admin/api/replies").status_code in (401, 403)
+
+
+def test_bearer_admin_sees_no_reply_content(email_live):
+    _fill_replies(email_live)
+    with email_live.client("admin") as a:
+        r = a.get("/admin/api/replies")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["replies"] and body["quarantine"]
+    for item in body["replies"]:
+        assert item["text"] is None and item["subject"] is None
+        assert item["attachments"] == [] and item["dropped_attachments"] == []
+        assert item["state"] and item["received_at"]
+    for q in body["quarantine"]:
+        assert q["from_address"] is None and q["subject"] is None and q["message_id"] is None
+        assert q["reason"] and q["received_at"]
+    with _session_client(email_live) as a:
+        full = a.get("/admin/api/replies").json()
+    assert full["replies"][0]["text"] == "Go with B." and full["replies"][0]["attachments"]
+    assert full["quarantine"][0]["from_address"]
+
+
+def test_require_session():
+    from fastapi import HTTPException
+    from notify.admin import UI_CLIENT, require_session
+    from notify.core import SYSTEM_CLIENT
+    assert UI_CLIENT.via_session is True and SYSTEM_CLIENT.via_session is False
+    require_session(UI_CLIENT)
+    with pytest.raises(HTTPException) as e:
+        require_session(SYSTEM_CLIENT)
+    assert e.value.status_code == 403

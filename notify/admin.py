@@ -30,7 +30,7 @@ from .store import ConfigStore
 router = APIRouter(prefix="/admin", include_in_schema=False)
 
 COOKIE = "notify_admin"
-UI_CLIENT = Client("admin-ui", frozenset({Scope.admin}))
+UI_CLIENT = Client("admin-ui", frozenset({Scope.admin}), via_session=True)
 MIN_PASSWORD = 10
 
 
@@ -87,6 +87,12 @@ def admin(request: Request) -> Client:
     if request.method not in ("GET", "HEAD"):
         _check_browser_mutation(request)
     return UI_CLIENT
+
+
+def require_session(client: Client) -> None:
+    """Reply content is for the signed-in admin page only; an admin bearer token never sees it."""
+    if not client.via_session:
+        raise HTTPException(403, "this needs the signed-in admin page")
 
 
 def _check_browser_mutation(request: Request) -> None:
@@ -599,10 +605,15 @@ async def activity(request: Request, limit: int = 25, client: Client = Depends(a
 
 
 @router.get("/api/replies")
-async def replies_view(request: Request, limit: int = 25, _: Client = Depends(admin)) -> dict[str, Any]:
+async def replies_view(request: Request, limit: int = 25, client: Client = Depends(admin)) -> dict[str, Any]:
     svc = _svc(request)
-    return {"inbound": svc.inbound_status, "replies": svc.replies.recent(limit),
-            "quarantine": svc.replies.quarantined(limit)}
+    replies, quarantine = svc.replies.recent(limit), svc.replies.quarantined(limit)
+    if not client.via_session:  # a bearer admin sees states and counts, never what people wrote
+        for r in replies:
+            r.update(subject=None, text=None, attachments=[], dropped_attachments=[])
+        for q in quarantine:
+            q.update(from_address=None, subject=None, message_id=None)
+    return {"inbound": svc.inbound_status, "replies": replies, "quarantine": quarantine}
 
 
 @router.post("/api/notifications/{nid}/{action}")

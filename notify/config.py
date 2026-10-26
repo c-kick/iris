@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from .models import KIND_OPT_IN_DEFAULT, Scope, Severity
 
 _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+# client names the service uses for itself; a configured client must not impersonate them
+RESERVED_CLIENT_NAMES = frozenset({"admin-ui", "hnl-notify"})
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 TARGET_KINDS = ("user", "device", "group", "channel")
 
@@ -179,6 +181,8 @@ class NotifyConfig(_Strict):
             for name in getattr(self, kind):
                 if not _NAME_RE.match(name):
                     raise ValueError(f"{kind}.{name}: names must match {_NAME_RE.pattern}")
+                if kind == "clients" and name in RESERVED_CLIENT_NAMES:
+                    raise ValueError(f"clients.{name}: name is reserved")
         for name, d in self.devices.items():
             if d.provider not in self.providers:
                 raise ValueError(f"device {name}: unknown provider {d.provider!r}")

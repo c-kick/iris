@@ -28,6 +28,14 @@ def test_unquoted_numeric_hash_is_explained(tmp_path):
         load_config(p, env={})
 
 
+@pytest.mark.parametrize("name", ["admin-ui", "hnl-notify"])
+def test_reserved_client_names(tmp_path, name):
+    p = tmp_path / "n.yaml"
+    p.write_text(f"clients:\n  {name}:\n    token_sha256: \"{'a' * 64}\"\n    scopes: [send]\n")
+    with pytest.raises(ConfigError, match="reserved"):
+        load_config(p, env={})
+
+
 def test_bad_reference_rejected(tmp_path):
     p = tmp_path / "n.yaml"
     p.write_text("groups:\n  g:\n    members: [user:ghost]\n")

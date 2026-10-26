@@ -50,6 +50,7 @@ class Invalid(Exception):
 class Client:
     id: str
     scopes: frozenset[Scope]
+    via_session: bool = False  # the signed-in admin page, not a bearer token
 
     @property
     def admin(self) -> bool:
