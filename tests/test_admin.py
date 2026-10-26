@@ -314,7 +314,7 @@ def test_bearer_admin_sees_no_reply_content(email_live):
     body = r.json()
     assert body["replies"] and body["quarantine"]
     for item in body["replies"]:
-        assert item["text"] is None and item["subject"] is None
+        assert item["text"] is None and item["subject"] is None and item["from"] is None
         assert item["attachments"] == [] and item["dropped_attachments"] == []
         assert item["state"] and item["received_at"]
     for q in body["quarantine"]:
@@ -323,6 +323,7 @@ def test_bearer_admin_sees_no_reply_content(email_live):
     with _session_client(email_live) as a:
         full = a.get("/admin/api/replies").json()
     assert full["replies"][0]["text"] == "Go with B." and full["replies"][0]["attachments"]
+    assert full["replies"][0]["from"]
     assert full["quarantine"][0]["from_address"]
 
 

@@ -610,7 +610,7 @@ async def replies_view(request: Request, limit: int = 25, client: Client = Depen
     replies, quarantine = svc.replies.recent(limit), svc.replies.quarantined(limit)
     if not client.via_session:  # a bearer admin sees states and counts, never what people wrote
         for r in replies:
-            r.update(subject=None, text=None, attachments=[], dropped_attachments=[])
+            r.update({"from": None, "subject": None, "text": None, "attachments": [], "dropped_attachments": []})
         for q in quarantine:
             q.update(from_address=None, subject=None, message_id=None)
     return {"inbound": svc.inbound_status, "replies": replies, "quarantine": quarantine}
