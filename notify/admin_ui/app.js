@@ -432,7 +432,7 @@ const VIEWS = {
             ${h?.problems?.length ? `<div class="problem">${esc(h.problems.join("; "))}</div>` : ""}
             ${p.imap_host ? `<div class="sub" data-mbox-sum="${esc(n)}">Reply mailbox: reading…</div>` : ""}
             <div class="sub" data-result></div></div>
-          <div class="actions">${p.imap_host ? `<button class="btn" data-mbox>Manage reply mailbox</button>` : ""}${TESTABLE.has(p.type) ? `<button class="btn" data-test="${esc(n)}">Test connection</button>` : ""}<button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
+          <div class="actions">${p.imap_host ? `<button class="btn" data-mbox aria-label="Manage reply mailbox">Manage…</button>` : ""}${TESTABLE.has(p.type) ? `<button class="btn" data-test="${esc(n)}" aria-label="Test connection">Test</button>` : ""}<button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
       }).join("") : `<div class="empty">No providers yet. Connect Pushover to reach phones, or add your mail server to send email.</div>`}</div>
       <p style="margin-top:1rem"><button class="btn primary" id="add">Add provider</button></p>`;
     main.querySelector("#add").onclick = () => addProviderForm();

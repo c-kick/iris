@@ -49,7 +49,7 @@ admin password. Then, in the admin UI:
    [pushover.net/apps/build](https://pushover.net/apps/build). For email, add
    an *Email (SMTP)* provider: host (e.g. `smtp.example.org`), port, security
    (`starttls`, `tls` or `none`), username and password if the server wants
-   a login, and the sender address; then press *Test connection*. Give the
+   a login, and the sender address; then press *Test*. Give the
    session as much time as a slow relay needs (`timeout_seconds`, default 60).
 2. **People & groups → Add person**: add yourself (e.g. `alex`).
 3. **Devices → Add device**: name it (e.g. `alex-phone`), let it belong to
@@ -167,7 +167,7 @@ agent that is waiting for it. Email only; the agent must still be running.
 mail server you run, with IMAP over TLS. In *Providers → Email*, fill the reply
 fields: *Reply mailbox address* (the `Reply-To`), IMAP server, port (993),
 username and password, and optionally the folder names (`INBOX`, `Processed`,
-`Quarantine`; the last two are created if missing). Press *Test connection*: it
+`Quarantine`; the last two are created if missing). Press *Test*: it
 logs in, checks the folders and lists the `Authentication-Results` server names
 found in the newest message. Enter the one your mail server writes as
 *Mail server name in Authentication-Results* (`authserv_id`, e.g.
@@ -280,7 +280,7 @@ hnl-notify moves handled replies to `Processed` and rejected mail to `Quarantine
 | `enabled` | true | the automatic daily run; *Clean up now* always works |
 | `alert_targets` | none | who hears about a folder over its cap (default: whoever hears about access requests) |
 
-`0` switches a rule off. The settings live in the admin UI (*Providers* → *Manage reply mailbox* on the email provider, with a preview of what the
+`0` switches a rule off. The settings live in the admin UI (*Providers* → *Manage…* on the email provider, with a preview of what the
 rules would remove and a *Clean up now* button) or in the `mailbox_cleanup:` section of the config, keyed by
 provider name. The automatic run happens about once a day, the first one roughly 10 minutes after start.
 When a size cap forces deletions you get a notification (tag `mailbox-cleanup`, at most once per folder per day).
@@ -296,7 +296,7 @@ the only copy of rejected mail, which is why it is kept longer.
 
 - **The first cleanup run deletes old mail.** A provider with a reply mailbox gets the defaults on upgrade: Processed
   older than 30 days and Quarantine older than 90 days. The first automatic run is about 10 minutes after the service
-  starts. Right after starting 0.7.0, open *Providers* → *Manage reply mailbox*, check the preview ("would delete ..."), and adjust the values
+  starts. Right after starting 0.7.0, open *Providers* → *Manage…*, check the preview ("would delete ..."), and adjust the values
   or untick *Clean up automatically* before then.
 - **Reply handles.** Agents must keep the `reply_handle` of each conversation. Agent instructions outside this
   repository that run `notify-wait <notification_id>` must switch to the handle: `NOTIFY_REPLY_HANDLE=<handle>
@@ -503,7 +503,7 @@ generated). Without that, nothing changes except latency.
 - Admin UI: `/admin` (session login, CSRF header, strict CSP). Admin API calls also accept a bearer token with the `admin` scope.
 - Backup: `sqlite3 data/notify.sqlite3 ".backup data/notify-$(date +%F).sqlite3"` **plus** `secrets/master.key` (without it the stored Pushover and SMTP secrets cannot be decrypted). Backups include attachment bytes that have not yet been purged. History is kept 90 days (Settings).
 - Signed-in admin page only: changing cleanup settings, *Clean up now* and reading reply contents need the browser session; an admin bearer token gets 403 on the first two and states, times and counts only for replies.
-- Reply mailbox: *Providers* → *Manage reply mailbox* in the admin UI (also linked from the size alert) shows the Processed and Quarantine folders, the cleanup
+- Reply mailbox: *Providers* → *Manage…* in the admin UI (also linked from the size alert) shows the Processed and Quarantine folders, the cleanup
   settings and the last run; the poll, the connection test and cleanup share one lock per mailbox, so only one IMAP
   session of hnl-notify acts on it at a time.
 - Stopping: a stop during a mailbox poll or cleanup step waits for that step to finish (bounded by the 120 s IMAP session limit), so `compose.yaml` sets `stop_grace_period: 130s`.
