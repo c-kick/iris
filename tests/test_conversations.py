@@ -72,3 +72,17 @@ def test_retention_keeps_conversation_while_followups_live(tmp_path):
     svc.retention_sweep()
     assert db.one("SELECT 1 FROM conversations WHERE id='ntf_a'") is None
     db.close()
+
+
+def test_retention_prunes_old_mailbox_events_only(tmp_path):
+    db = Database(tmp_path / "n.sqlite3")
+    svc = NotifyService(make_config(retention_days=90), db, {})
+    with db.tx() as c:
+        for typ, created in (("mailbox.cleanup", OLD), ("mailbox.settings", OLD), ("mailbox.cleanup", NEW),
+                             ("other.event", OLD)):
+            c.execute("INSERT INTO events(type, notification_id, client_id, source, data_json, created_at)"
+                      " VALUES (?, NULL, 'x', 'hnl-notify', '{}', ?)", (typ, created))
+    svc.retention_sweep()
+    rows = [(r["type"], r["created_at"]) for r in db.query("SELECT type, created_at FROM events ORDER BY id")]
+    assert rows == [("mailbox.cleanup", NEW), ("other.event", OLD)]
+    db.close()

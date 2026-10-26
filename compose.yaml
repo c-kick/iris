@@ -1,9 +1,10 @@
 services:
   notify:
     build: .
-    image: hnl-notify:0.6.2
+    image: hnl-notify:0.7.0
     container_name: hnl-notify
     restart: unless-stopped
+    stop_grace_period: 130s  # a stop waits for a running mailbox poll/cleanup step (IMAP session limit 120 s)
     user: "1026:1026"
     environment:
       NOTIFY_DB: /data/notify.sqlite3

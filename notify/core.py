@@ -1049,6 +1049,8 @@ class NotifyService:
             c.execute("UPDATE reply_attachments SET data=NULL, purged_at=? WHERE data IS NOT NULL AND reply_id IN"
                       " (SELECT id FROM replies WHERE received_at < ?)", (now_iso(), att_cutoff))
             c.execute("DELETE FROM reply_quarantine WHERE received_at < ?", (cutoff,))
+            c.execute("DELETE FROM events WHERE notification_id IS NULL AND type LIKE 'mailbox.%' AND created_at < ?",
+                      (cutoff,))
         return len(ids)
 
     def stats(self) -> dict[str, Any]:

@@ -249,7 +249,9 @@ is marked `unclaimed` and the sender gets an automatic mail in the same thread
 saying the agent isn't listening right now and the reply has been kept (at most one per
 conversation per hour). **The reply can still be collected later**: `notify-wait` with the
 same handle hands out waiting replies first, then these late ones. Text of a reply that was
-not collected is never shown in listings, only by collecting it. Conversations that existed
+not collected is never shown in listings, only by collecting it. A late reply is kept as long as the
+notification it answers (`retention_days`, default 90), its attachments for `attachment_retention_days`.
+Conversations that existed
 before 0.7.0 keep the old behaviour: their unclaimed replies are never handed out.
 
 **Admin tokens.** Reply text, attachments and quarantine details are shown only in the
@@ -504,6 +506,7 @@ generated). Without that, nothing changes except latency.
 - Reply mailbox: *Reply mailbox* in the admin UI shows the Processed and Quarantine folders, the cleanup
   settings and the last run; the poll, the connection test and cleanup share one lock per mailbox, so only one IMAP
   session of hnl-notify acts on it at a time.
+- Stopping: a stop during a mailbox poll or cleanup step waits for that step to finish (bounded by the 120 s IMAP session limit), so `compose.yaml` sets `stop_grace_period: 130s`.
 - Delivery guarantee: at-least-once. If the container dies in the few ms after
   Pushover accepts a message but before the result is committed, that message
   is sent again after restart (logged as "send interrupted").

@@ -124,7 +124,8 @@ everyone out and prints a new setup code.
   (own id unless a follow-up), `listener_seen_at`; `deliveries.recipient_address`
   (the address at the moment the delivery was claimed for sending).
 - `events` — append-only log; its integer id is the global cursor for history,
-  SSE resume (`Last-Event-ID`) and webhook payloads.
+  SSE resume (`Last-Event-ID`) and webhook payloads. `mailbox.cleanup` and `mailbox.settings` events belong to no
+  notification (no webhook fan-out) and are pruned by the retention sweep after `retention_days`.
 - `subscriptions` + `webhook_deliveries` — webhook subscriptions and their
   durable outbox with its own retry state.
 
