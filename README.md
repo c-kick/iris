@@ -282,9 +282,9 @@ hnl-notify moves handled replies to `Processed` and rejected mail to `Quarantine
 rules would remove and a *Clean up now* button) or in the `mailbox_cleanup:` section of the config, keyed by
 provider name. The automatic run happens about once a day, the first one roughly 10 minutes after start.
 When a size cap forces deletions you get a notification (tag `mailbox-cleanup`, at most once per folder per day).
-Deletion is permanent (`\Deleted` + expunge, no Trash). Cleanup refuses to run when a folder is the folder
+*Clean up now* runs for at most about 60 seconds; if it did not finish, the result says so and you run it again to continue. While a poll or another cleanup holds the mailbox it answers 409 "mailbox busy, try again". Deletion is permanent (`\Deleted` + expunge, no Trash). Cleanup refuses to run when a folder is the folder
 the poller reads, when Processed and Quarantine are the same, or when the server marks a folder as
-Sent, Trash, Junk, All, Archive, Drafts or Flagged. Never message bodies are downloaded, only sizes and dates.
+Sent, Trash, Junk, All, Archive, Drafts or Flagged, or when a folder does not exist on the server. Message bodies are never downloaded, only sizes and dates.
 
 Notes: mail that waited long in INBOX keeps its original arrival date, so it can be deleted soon after it reaches
 Processed. On servers where expunge only removes a label (Gmail style) cleanup frees no space. `Quarantine` holds
@@ -293,8 +293,9 @@ the only copy of rejected mail, which is why it is kept longer.
 ### Upgrading to 0.7.0
 
 - **The first cleanup run deletes old mail.** A provider with a reply mailbox gets the defaults on upgrade: Processed
-  older than 30 days and Quarantine older than 90 days are removed shortly after the first start. Set the values (or
-  `0`) in *Reply mailbox* before upgrading if you want to keep more.
+  older than 30 days and Quarantine older than 90 days. The first automatic run is about 10 minutes after the service
+  starts. Right after starting 0.7.0, open *Reply mailbox*, check the preview ("would delete ..."), and adjust the values
+  or untick *Clean up automatically* before then.
 - **Reply handles.** Agents must keep the `reply_handle` of each conversation. Agent instructions outside this
   repository that run `notify-wait <notification_id>` must switch to the handle: `NOTIFY_REPLY_HANDLE=<handle>
   notify-wait` or `notify-wait --handle-file FILE`. Follow-ups pass `reply_handle`.
@@ -499,6 +500,7 @@ generated). Without that, nothing changes except latency.
 - Health: `/health/live`, `/health/ready`. Metrics (Prometheus text): `/metrics`.
 - Admin UI: `/admin` (session login, CSRF header, strict CSP). Admin API calls also accept a bearer token with the `admin` scope.
 - Backup: `sqlite3 data/notify.sqlite3 ".backup data/notify-$(date +%F).sqlite3"` **plus** `secrets/master.key` (without it the stored Pushover and SMTP secrets cannot be decrypted). Backups include attachment bytes that have not yet been purged. History is kept 90 days (Settings).
+- Signed-in admin page only: changing cleanup settings, *Clean up now* and reading reply contents need the browser session; an admin bearer token gets 403 on the first two and states, times and counts only for replies.
 - Reply mailbox: *Reply mailbox* in the admin UI shows the Processed and Quarantine folders, the cleanup
   settings and the last run; the poll, the connection test and cleanup share one lock per mailbox, so only one IMAP
   session of hnl-notify acts on it at a time.

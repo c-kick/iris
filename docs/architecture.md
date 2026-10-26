@@ -242,7 +242,7 @@ conversation has `late_ok=1` and is claimed after the waiting ones.
 **Mailbox cleanup.** `notify/mailbox_cleanup.py` is its own IMAP entry point (never creates folders, EXAMINE for
 previews, SELECT only the target folder, UIDPLUS decided from the post-login CAPABILITY) and `notify/cleanup_service.py`
 runs it: per-step locking on `NotifyService.mailbox_lock(provider)`, a daily worker, `mailbox.cleanup` /
-`mailbox.settings` events without a notification, and an internal size alert.
+`mailbox.settings` events without a notification, and an internal size alert. A manual run (`POST /admin/api/mailbox/{provider}/cleanup`, signed-in session only) is bounded to about 60 s and reports `unfinished` folders; it answers 409 "mailbox busy, try again" when the lock is held too long.
 
 **Inbound.** The reply mailbox is an IMAP account over implicit TLS, polled every
 30 s by the worker (no IDLE, no inbound SMTP, no MX change). Connection errors
