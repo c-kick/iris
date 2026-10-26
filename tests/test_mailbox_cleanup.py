@@ -68,6 +68,9 @@ class FakeServer:
         self.sessions: list[FakeIMAP] = []
         self.login_error = None
         self.fetch_no = False
+        self.drop_after_expunges = None  # after this many expunges the current connection dies
+        self.expunges = 0
+        self.uidvalidity_after_drop = None
 
     def add(self, folder, uid, days_old, size=10):
         self.mail[folder].append({"uid": uid, "size": size, "date": NOW - timedelta(days=days_old), "deleted": False})
@@ -86,6 +89,18 @@ class FakeIMAP:
         self.selected = None
         self.readonly = False
         self.untagged = {}
+        self.dead = False
+
+    def _alive(self):
+        if self.dead:
+            raise OSError("connection reset by peer")
+
+    def _expunged(self):
+        self.srv.expunges += 1
+        if self.srv.expunges == self.srv.drop_after_expunges:
+            self.dead = True
+            if self.srv.uidvalidity_after_drop:
+                self.srv.uidvalidity = self.srv.uidvalidity_after_drop
 
     def login(self, user, password):
         if self.srv.login_error:
@@ -119,6 +134,7 @@ class FakeIMAP:
         return (code, self.untagged.pop(code, [None]))
 
     def select(self, mailbox="INBOX", readonly=False):
+        self._alive()
         name = mailbox.strip('"')
         assert name in self.srv.mail, f"select of unknown folder {name}"
         self.selected, self.readonly = name, readonly
@@ -126,6 +142,7 @@ class FakeIMAP:
         return ("OK", [b"1"])
 
     def uid(self, cmd, *args):
+        self._alive()
         folder = self.selected
         if cmd == "FETCH":
             if self.srv.fetch_no:
@@ -143,12 +160,14 @@ class FakeIMAP:
         elif cmd == "EXPUNGE":
             assert self.srv.uidplus
             self.srv.mail[folder] = [m for m in self.srv.mail[folder] if not (m["deleted"] and m["uid"] in ids)]
+            self._expunged()
         return ("OK", [b""])
 
     def expunge(self):
         self.srv.log.append((self.selected, self.readonly, "EXPUNGE"))
         assert self.selected != "INBOX" and not self.readonly, f"EXPUNGE outside a read-write target: {self.selected}"
         self.srv.mail[self.selected] = [m for m in self.srv.mail[self.selected] if not m["deleted"]]
+        self._expunged()
         return ("OK", [b""])
 
     def create(self, name):
@@ -354,26 +373,78 @@ def test_deadline_stops_between_batches():
     assert p["unfinished"] is True and p["removed_age"] == 200 and len(srv.mail["Processed"]) == 300
 
 
-def test_uidvalidity_change_aborts_folder_on_reopen():
+def test_dropped_session_reconnects_and_continues():
     srv = FakeServer()
     for i in range(1, 401):
         srv.add("Processed", i, 40)
-
-    async def go():
-        lock = asyncio.Lock()
-        mb = mailbox(srv)
-        orig = mb.delete_batch
-
-        def flaky(folder, uids):
-            n = orig(folder, uids)
-            mb._selected = None          # the session dropped after batch 1 ...
-            srv.uidvalidity = 8          # ... and the server renumbered the folder
-            return n
-        mb.delete_batch = flaky
-        return await run_pass(lambda: mb, lock, PROV, CFG, now=NOW, dry_run=False)
-    out = asyncio.run(go())
+    srv.drop_after_expunges = 1  # the connection dies between batch 1 and 2
+    out = run(srv)
     p = out["folders"]["Processed"]
-    assert p["unfinished"] is True and p["removed_age"] == 200
+    assert p["removed_age"] == 400 and p["error"] is None and not p["unfinished"] and srv.mail["Processed"] == []
+    assert len(srv.sessions) == 2
+
+
+def test_uidvalidity_change_after_reconnect_aborts_folder():
+    srv = FakeServer()
+    for i in range(1, 401):
+        srv.add("Processed", i, 40)
+    srv.add("Quarantine", 1, 200)
+    srv.drop_after_expunges = 1
+    srv.uidvalidity_after_drop = 8
+    out = run(srv)
+    p = out["folders"]["Processed"]
+    assert p["unfinished"] is True and p["removed_age"] == 200 and len(srv.mail["Processed"]) == 200
+
+
+def test_unknown_uidvalidity_fails_closed_on_reselect():
+    srv = FakeServer()
+    mb = mailbox(srv)
+    mb.open()
+    assert mb.reselect("Processed", None) is False
+    mb.close()
+
+
+def test_folder_error_is_recorded_and_other_folder_still_runs():
+    srv = FakeServer()
+    srv.add("Processed", 1, 40)
+    srv.add("Quarantine", 1, 200)
+    real = FakeIMAP.uid
+
+    def boom(self, cmd, *args):
+        if cmd == "FETCH" and self.selected == "Processed":
+            raise OSError("boom s3cret-pw")
+        return real(self, cmd, *args)
+    FakeIMAP.uid = boom
+    try:
+        out = run(srv)
+    finally:
+        FakeIMAP.uid = real
+    p, q = out["folders"]["Processed"], out["folders"]["Quarantine"]
+    assert "boom" in p["error"] and "s3cret-pw" not in p["error"] and p["unfinished"]
+    assert q["error"] is None and q["removed_age"] == 1
+
+
+def test_deadline_checked_before_second_folder():
+    srv = FakeServer()
+    srv.add("Processed", 1, 40)
+    srv.add("Quarantine", 1, 200)
+    out = run(srv, deadline=time.monotonic() - 1)
+    assert out["folders"]["Processed"]["removed_age"] == 1
+    q = out["folders"]["Quarantine"]
+    assert q["unfinished"] is True and q["removed_age"] == 0 and len(srv.mail["Quarantine"]) == 1
+
+
+def test_delete_batch_refuses_configured_inbox_name():
+    srv = FakeServer()
+    srv.attrs["Mail"] = []
+    srv.mail["Mail"] = []
+    srv.add("Mail", 1, 40)
+    mb = CleanupMailbox("imap.test", 993, "u", "pw", imap_factory=srv.factory, inbox="mail")
+    mb.open()
+    mb.scan("Mail", readonly=False)
+    with pytest.raises(MailboxError):
+        mb.delete_batch("Mail", u(1))
+    mb.close()
 
 
 def test_poll_gets_lock_between_batches():

@@ -70,8 +70,9 @@ def select(msgs: list[Msg], now: datetime, days: int, cap_bytes: int) -> tuple[l
 
 class CleanupMailbox:
     def __init__(self, host: str, port: int, user: str, password: str, *, verify_tls: bool = True,
-                 timeout: float = SESSION_SECONDS, imap_factory: Any = imaplib.IMAP4_SSL):
+                 timeout: float = SESSION_SECONDS, imap_factory: Any = imaplib.IMAP4_SSL, inbox: str = "INBOX"):
         self.host, self.port, self.user, self.password = host, port, user, password
+        self.inbox = inbox  # the poller's folder: never deleted from
         self.verify_tls, self.timeout, self._factory = verify_tls, timeout, imap_factory
         self._imap: Any = None
         self._timer: threading.Timer | None = None
@@ -82,7 +83,8 @@ class CleanupMailbox:
 
     @classmethod
     def for_provider(cls, p: EmailProvider, **kw: Any) -> CleanupMailbox:
-        return cls(p.imap_host, p.imap_port, p.imap_user, p.imap_password, verify_tls=p.verify_tls, **kw)
+        return cls(p.imap_host, p.imap_port, p.imap_user, p.imap_password, verify_tls=p.verify_tls,
+                   inbox=p.reply_inbox, **kw)
 
     def _arm(self) -> None:
         """(Re)start the hard session deadline: closing the socket stops a stalled server from holding a thread."""
@@ -183,10 +185,10 @@ class CleanupMailbox:
         self.close()
         self.open()
         self.scan(folder, readonly=False)
-        return self.uidvalidity == uidvalidity
+        return uidvalidity is not None and self.uidvalidity == uidvalidity  # unknown numbering: fail closed
 
     def delete_batch(self, folder: str, uids: list[bytes]) -> int:
-        if self._selected != folder or folder.upper() == "INBOX":
+        if self._selected != folder or folder.lower() in ("inbox", self.inbox.lower()):
             raise MailboxError("refusing to delete: the target folder is not the selected read-write folder")
         self._arm()
         try:
@@ -228,6 +230,7 @@ async def run_pass(open_mailbox: Callable[[], CleanupMailbox], lock: asyncio.Loc
 
     result: dict[str, Any] = {"refused": None, "folders": {}}
     mb = open_mailbox()
+    mb.inbox = provider.reply_inbox
     try:
         await locked(mb.open)
         result["refused"] = mb.refusal(provider.reply_inbox, provider.reply_processed, provider.reply_quarantine)
@@ -235,40 +238,61 @@ async def run_pass(open_mailbox: Callable[[], CleanupMailbox], lock: asyncio.Loc
             return result
         for folder, days, mib in ((provider.reply_processed, cfg.processed_days, cfg.processed_max_mib),
                                   (provider.reply_quarantine, cfg.quarantine_days, cfg.quarantine_max_mib)):
-            msgs = await locked(lambda f=folder: mb.scan(f, readonly=dry_run))
-            uidv = mb.uidvalidity
-            by_age, by_cap = select(msgs, now, days, mib * MIB)
-            sizes = {m.uid: m.size for m in msgs}
-            st = {"messages": len(msgs), "bytes": sum(sizes.values()),
-                  "oldest": iso(min((m.arrived for m in msgs), default=None)), "removed_age": 0, "removed_cap": 0,
-                  "removed_bytes": 0, "cap_hit": bool(by_cap), "unfinished": False}
-            todo = by_age + by_cap
-            if dry_run:
-                st.update(removed_age=len(by_age), removed_cap=len(by_cap), removed_bytes=sum(sizes[u] for u in todo))
-            else:
-                aged = set(by_age)
-                for i in range(0, len(todo), BATCH):
-                    if i and deadline is not None and time.monotonic() >= deadline:
-                        st["unfinished"] = True
-                        break
-                    batch = todo[i:i + BATCH]
-
-                    def step(b: list[bytes] = batch, f: str = folder) -> bool:
-                        if mb._selected != f and not mb.reselect(f, uidv):
-                            return False
-                        mb.delete_batch(f, b)
-                        return True
-                    if not await locked(step):
-                        st["unfinished"] = True  # UIDVALIDITY changed: the scan no longer describes the folder
-                        break
-                    n_age = sum(1 for u in batch if u in aged)
-                    st["removed_age"] += n_age
-                    st["removed_cap"] += len(batch) - n_age
-                    st["removed_bytes"] += sum(sizes[u] for u in batch)
-            gone = st["removed_age"] + st["removed_cap"]
-            st["after_messages"] = st["messages"] - gone
-            st["after_bytes"] = st["bytes"] - st["removed_bytes"]
+            st: dict[str, Any] = {"messages": 0, "bytes": 0, "oldest": None, "removed_age": 0, "removed_cap": 0,
+                                  "removed_bytes": 0, "after_messages": 0, "after_bytes": 0, "cap_hit": False,
+                                  "unfinished": False, "error": None}
             result["folders"][folder] = st
+            if not dry_run and result["folders"].keys() - {folder} and deadline is not None \
+                    and time.monotonic() >= deadline:
+                st["unfinished"] = True  # out of time before this folder
+                continue
+            try:
+                await _clean_folder(locked, mb, folder, days, mib * MIB, st, now, dry_run, deadline)
+            except Exception as e:  # one folder failing keeps what the other already did
+                st["error"] = mask_secret(f"{type(e).__name__}: {e}", mb.password)[:300]
+                st["unfinished"] = True
+            st["after_messages"] = st["messages"] - st["removed_age"] - st["removed_cap"]
+            st["after_bytes"] = st["bytes"] - st["removed_bytes"]
         return result
     finally:
         await asyncio.to_thread(mb.close)
+
+
+async def _clean_folder(locked: Callable[..., Any], mb: CleanupMailbox, folder: str, days: int, cap_bytes: int,
+                        st: dict[str, Any], now: datetime, dry_run: bool, deadline: float | None) -> None:
+    msgs = await locked(lambda: mb.scan(folder, readonly=dry_run))
+    uidv = mb.uidvalidity
+    by_age, by_cap = select(msgs, now, days, cap_bytes)
+    sizes = {m.uid: m.size for m in msgs}
+    st.update(messages=len(msgs), bytes=sum(sizes.values()), cap_hit=bool(by_cap),
+              oldest=iso(min((m.arrived for m in msgs), default=None)))
+    todo = by_age + by_cap
+    if dry_run:
+        st.update(removed_age=len(by_age), removed_cap=len(by_cap), removed_bytes=sum(sizes[u] for u in todo))
+        return
+    aged = set(by_age)
+    for i in range(0, len(todo), BATCH):
+        if i and deadline is not None and time.monotonic() >= deadline:
+            st["unfinished"] = True
+            return
+        batch = todo[i:i + BATCH]
+
+        def step() -> bool:
+            for attempt in (0, 1):
+                try:
+                    if mb._selected != folder and not mb.reselect(folder, uidv):
+                        return False
+                    mb.delete_batch(folder, batch)
+                    return True
+                except (OSError, imaplib.IMAP4.error, MailboxError):
+                    if attempt:
+                        raise
+                    mb._selected = None  # the session may have dropped (kill timer): reopen once, then retry
+            return False
+        if not await locked(step):
+            st["unfinished"] = True  # UIDVALIDITY changed: the scan no longer describes the folder
+            return
+        n_age = sum(1 for u in batch if u in aged)
+        st["removed_age"] += n_age
+        st["removed_cap"] += len(batch) - n_age
+        st["removed_bytes"] += sum(sizes[u] for u in batch)
