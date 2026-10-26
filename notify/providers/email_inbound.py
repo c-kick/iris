@@ -39,6 +39,11 @@ def _q(name: str) -> str:
     return '"' + name.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def mask_secret(text: str, secret: str) -> str:
+    """Keep a password out of error text (short secrets are left: they would mangle the message)."""
+    return text.replace(secret, "***") if len(secret) >= 4 else text
+
+
 def _ok(resp: tuple[str, Any], what: str) -> Any:
     typ, data = resp
     if typ != "OK":
@@ -171,10 +176,7 @@ class ImapMailbox:
                             ids.append(ident)
             return {"ok": True, "messages": len(items), "folders": sorted(self.folders()), "authserv_ids": ids}
         except Exception as e:
-            err = f"{type(e).__name__}: {e}"
-            if len(self.password) >= 4:
-                err = err.replace(self.password, "***")
-            return {"ok": False, "error": err[:300]}
+            return {"ok": False, "error": mask_secret(f"{type(e).__name__}: {e}", self.password)[:300]}
         finally:
             self.close()
 

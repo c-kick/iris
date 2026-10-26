@@ -14,7 +14,7 @@ import httpx
 from .core import Client, Conflict, NotifyService
 from .db import dumps, now_iso
 from .providers.base import ProviderError, SendResult
-from .providers.email_inbound import poll_once
+from .providers.email_inbound import mask_secret, poll_once
 
 log = logging.getLogger("notify.worker")
 
@@ -187,10 +187,7 @@ class Workers:
                     failures[name] = failures.get(name, 0) + 1
                     delay = min(900.0, 10.0 * 3 ** (failures[name] - 1))
                     next_at[name] = time.monotonic() + delay
-                    err = f"{type(e).__name__}: {e}"
-                    pw = getattr(p, "imap_password", "") or ""
-                    if len(pw) >= 4:
-                        err = err.replace(pw, "***")
+                    err = mask_secret(f"{type(e).__name__}: {e}", getattr(p, "imap_password", "") or "")
                     status["last_error"] = err[:300]
                     log.warning("reply mailbox check failed",
                                 extra={"provider": name, "error": status["last_error"], "retry_in": delay})
