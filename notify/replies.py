@@ -127,10 +127,12 @@ class Replies:
         try:
             n = svc._notification_row(client, nid)
         except NotFound:
-            # the root may be gone (retention) while the conversation lives on: fall back to its newest notification
-            n = svc.db.one("SELECT n.* FROM notifications n JOIN conversations c ON c.id=n.conversation_id"
-                           " WHERE c.id=? ORDER BY n.created_at DESC, n.id DESC LIMIT 1", (nid,))
-            if n is None or not svc._visible(client, n["client_id"]):
+            # the root may be gone (retention) while the conversation lives on: fall back to the newest notification
+            # of it this client may see (never the service's own autoreplies)
+            n = svc.db.one("SELECT * FROM notifications WHERE conversation_id=? AND auto_submitted=0"
+                           " AND (?=1 OR client_id=?) ORDER BY created_at DESC, id DESC LIMIT 1",
+                           (nid, int(client.admin), client.id))
+            if n is None:
                 raise NotFound("notification not found") from None
         with svc.db._lock:
             row = conversation_gate(svc.db.conn, n["conversation_id"] or n["id"], handle)
@@ -194,10 +196,10 @@ class Replies:
 
     def attachment(self, client: Client, rid: str, idx: int, handle: str | None = None) -> tuple[str, str, bytes]:
         from .core import NotFound
-        r = self.svc.db.one("SELECT notification_id, state FROM replies WHERE id=?", (rid,))
+        r = self.svc.db.one("SELECT conversation_id, state FROM replies WHERE id=?", (rid,))
         if r is None or r["state"] != "claimed":
             raise NotFound(f"reply {rid} not found")
-        self._access(client, r["notification_id"], handle)
+        self._access(client, r["conversation_id"], handle)
         a = self.svc.db.one("SELECT filename, content_type, data FROM reply_attachments WHERE reply_id=? AND idx=?",
                             (rid, idx))
         if a is None or a["data"] is None:

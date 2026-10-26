@@ -260,3 +260,29 @@ def test_legacy_admin_bearer_refused(email_live):
     with pytest.raises(NotFound):
         replies.list(ADMIN, nid)
     assert claim(email_live, nid, handle=None)["id"] == rid  # the sender's token still works
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_retained_root_with_autoreply_still_claimable(email_live, legacy):
+    nid, _ = send(email_live)
+    n2, d2 = send(email_live, in_reply_to=nid)
+    if legacy:
+        with email_live.service.db.tx() as c:
+            c.execute("UPDATE conversations SET legacy=1, handle_sha256=NULL WHERE id=?", (nid,))
+    rid = deliver(email_live, reply_raw(d2))
+    replies, db = email_live.service.replies, email_live.service.db
+    replies.now = lambda: utcnow() + timedelta(seconds=GRACE_SECONDS + 60)
+    assert email_live.call(replies.sweep_unclaimed) == 1
+    replies.now = utcnow
+    # the newest notification of the conversation is now the service's own autoreply
+    assert db.scalar("SELECT auto_submitted FROM notifications WHERE conversation_id=? ORDER BY created_at DESC, id DESC",
+                     (nid,)) == 1
+    with db.tx() as c:
+        c.execute("DELETE FROM notifications WHERE id=?", (nid,))
+    h = None if legacy else HANDLES[nid]
+    if legacy:  # legacy replies are never handed out late, but the access itself must work
+        assert claim(email_live, nid, handle=h) is None
+    else:
+        got = claim(email_live, nid, handle=h)
+        assert got["id"] == rid and got["late"] is True
+    assert email_live.service.replies.list(AGENT, nid, h)[0]["id"] == rid
