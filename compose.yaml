@@ -32,7 +32,6 @@ services:
     memswap_limit: 320m
     cpus: 0.5
     pids_limit: 64
-    stop_grace_period: 20s
     logging:
       driver: json-file
       options:
