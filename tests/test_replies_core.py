@@ -16,12 +16,22 @@ AGENT = Client("agent", frozenset({Scope.send, Scope.read, Scope.manage}))
 OTHER = Client("other", frozenset({Scope.send, Scope.read, Scope.manage}))
 
 
+HANDLES: dict[str, str] = {}  # conversation id -> reply handle, as the sender of that conversation would keep it
+
+
 def send(srv, **body) -> tuple[str, str]:
-    """Reply-enabled email notification; returns (notification id, delivery id) once dispatched."""
+    """Reply-enabled email notification; returns (notification id, delivery id) once dispatched.
+    A follow-up passes the conversation's handle unless the test gives one."""
+    if body.get("in_reply_to") and "reply_handle" not in body:
+        conv = srv.service.db.scalar("SELECT conversation_id FROM notifications WHERE id=?", (body["in_reply_to"],))
+        if conv in HANDLES:
+            body["reply_handle"] = HANDLES[conv]
     with srv.client() as c:
         out = c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "Pick", "title": "Pick",
                                                  "kinds": ["email"], "reply": True, **body}).json()
         wait_for(lambda: c.get(f"/v1/notifications/{out['id']}").json()["deliveries"][0]["state"] == "dispatched")
+    if out.get("reply_handle"):
+        HANDLES[out["reply_handle"].split(":", 1)[0]] = out["reply_handle"]
     return out["id"], out["deliveries"][0]["id"]
 
 

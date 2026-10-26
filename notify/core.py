@@ -20,6 +20,7 @@ from urllib.parse import urlsplit
 from . import attachments
 from .attachments import PreparedAttachment
 from .config import NotifyConfig
+from .handles import new_handle
 from .db import Database, dumps, in_seconds, iso, loads, new_id, now_iso, parse_iso, utcnow
 from .models import (ACKNOWLEDGED, ACTIVE_STATES, CANCELLED, DELIVERED, DISPATCHED, EXPIRED,
                      FAILED, INTERACTED, QUEUED, SENDING, TRANSITIONS, NotificationIn, Scope,
@@ -257,7 +258,10 @@ class NotifyService:
             row = self.db.one("SELECT id FROM notifications WHERE client_id=? AND idempotency_key=?",
                               (client.id, req.idempotency_key))
             if row:
-                return self.get(client, row["id"], detail=False), False
+                out = self.get(client, row["id"], detail=False)
+                if self.db.one("SELECT 1 FROM conversations WHERE handle_notification_id=?", (row["id"],)):
+                    out.update(reply_handle=None, reply_handle_issued=True)  # shown once; a replay cannot repeat it
+                return out, False
         return None
 
     def _plan_deliveries(self, nrow: dict[str, Any], route: RoutePlan,
@@ -306,10 +310,17 @@ class NotifyService:
             raise Invalid(str(e)) from e
         conversation_id = None
         if req.in_reply_to:
+            if ":" in req.in_reply_to:  # a handle in the wrong field; never echoed
+                raise Invalid("in_reply_to takes a notification id; pass the handle as reply_handle")
             prev = self.db.one("SELECT id, client_id, conversation_id FROM notifications WHERE id=?", (req.in_reply_to,))
             if prev is None or not self._visible(client, prev["client_id"]):
                 raise Invalid(f"in_reply_to: notification {req.in_reply_to} not found")
             conversation_id = prev["conversation_id"] or prev["id"]
+            try:
+                with self.db._lock:
+                    self._gate(self.db.conn, conversation_id, req)
+            except NotFound as e:
+                raise Invalid(f"in_reply_to: notification {req.in_reply_to} not found") from e
 
         nrow = {
             "id": new_id("ntf"), "client_id": client.id, "source": req.source or client.id, "title": req.title,
@@ -352,8 +363,14 @@ class NotifyService:
                              "application/octet-stream", m["size"] or 0, "", m["source"],
                              urlsplit(it.url or "").hostname, None))
         webhook_secret = None
+        reply_handle = None
         try:
             with self.db.tx() as c:
+                if req.in_reply_to:  # again under the write lock: a handle may have appeared since plan_submit
+                    try:
+                        self._gate(c, nrow["conversation_id"], req)
+                    except NotFound as e:
+                        raise Invalid(f"in_reply_to: notification {req.in_reply_to} not found") from e
                 c.execute(
                     "INSERT INTO notifications(id, client_id, idempotency_key, source, title, message, severity, url,"
                     " url_title, actions_json, data_json, tags_json, targets_json, require_ack, expires_at, status,"
@@ -364,6 +381,16 @@ class NotifyService:
                      nrow["targets_json"], nrow["require_ack"], nrow["expires_at"], status, dumps(routing),
                      nrow["created_at"], nrow["updated_at"], nrow["reply_wanted"], nrow["in_reply_to"],
                      nrow["conversation_id"], nrow["auto_submitted"]))
+                if req.reply or req.in_reply_to:
+                    conv = nrow["conversation_id"]
+                    c.execute("INSERT OR IGNORE INTO conversations(id, legacy, created_at) VALUES (?,0,?)",
+                              (conv, nrow["created_at"]))
+                    if req.reply:
+                        handle, digest = new_handle(conv)
+                        if c.execute("UPDATE conversations SET handle_sha256=?, handle_notification_id=?"
+                                     " WHERE id=? AND handle_sha256 IS NULL AND legacy=0",
+                                     (digest, nid, conv)).rowcount:
+                            reply_handle = handle
                 c.executemany(
                     "INSERT INTO attachments(notification_id, idx, filename, content_type, size, sha256, source,"
                     " source_host, data) VALUES (?,?,?,?,?,?,?,?,?)", rows)
@@ -399,6 +426,8 @@ class NotifyService:
         out = self.get(client, nid, detail=False)
         if webhook_secret:
             out["webhook_secret"] = webhook_secret
+        if reply_handle:
+            out["reply_handle"] = reply_handle
         return out, True
 
     def submit(self, client: Client, req: NotificationIn) -> tuple[dict[str, Any], bool]:
@@ -747,7 +776,8 @@ class NotifyService:
             "message": n["message"], "targets": loads(n["targets_json"], []), "source": n["source"],
             "client": n["client_id"], "tags": loads(n["tags_json"], []), "data": loads(n["data_json"]),
             "url": n["url"], "url_title": n["url_title"], "actions": loads(n["actions_json"], []),
-            "require_ack": bool(n["require_ack"]), "idempotency_key": n["idempotency_key"],
+            "require_ack": bool(n["require_ack"]),
+            "idempotency_key": None if self._has_handle(n) else n["idempotency_key"],
             "created_at": n["created_at"], "updated_at": n["updated_at"], "expires_at": n["expires_at"],
             "suppressed": routing.get("suppressed", []), "delivery_counts": counts, "deliveries": deliveries,
             **self._attachments_out(n["id"]),
@@ -755,6 +785,18 @@ class NotifyService:
                 "conversation_id": n["conversation_id"] or n["id"]}
                if n["reply_wanted"] or n["in_reply_to"] else {}),
         }
+
+    @staticmethod
+    def _gate(c: sqlite3.Connection, conv: str, req: NotificationIn) -> None:
+        from .replies import conversation_gate  # replies imports core; import here to avoid a cycle
+        conversation_gate(c, conv, req.reply_handle, internal=req._internal)
+
+    def _has_handle(self, n: sqlite3.Row) -> bool:
+        """Idempotency keys stay out of read outputs in a conversation with a handle (defence in depth)."""
+        if not (n["reply_wanted"] or n["in_reply_to"]):
+            return False
+        return self.db.one("SELECT 1 FROM conversations WHERE id=? AND handle_sha256 IS NOT NULL",
+                           (n["conversation_id"] or n["id"],)) is not None
 
     def _attachments_out(self, nid: str) -> dict[str, Any]:
         rows = self.db.query("SELECT filename, content_type, size, sha256, source, purged_at FROM attachments"

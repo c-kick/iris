@@ -88,7 +88,8 @@ def test_follow_up_threads_under_first_mail(email_live, sent_mail):
                                                    "kinds": ["email"], "reply": True}).json()
         wait_for(lambda: len(sent_mail.raws) == 1)
         c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "two", "kinds": ["email"],
-                                          "in_reply_to": first["id"]})
+                                          "in_reply_to": first["id"],
+                                          "reply_handle": first["reply_handle"]})
         wait_for(lambda: len(sent_mail.raws) == 2)
     first_dlv = first["deliveries"][0]["id"]
     em = sent_mail.last()

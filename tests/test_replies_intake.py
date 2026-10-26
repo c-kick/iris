@@ -9,11 +9,13 @@ def test_reply_fields_and_conversation(live):
         assert r.status_code == 202, r.text
         first = r.json()
         assert first["reply"] is True and first["conversation_id"] == first["id"] and first["in_reply_to"] is None
-        r = c.post("/v1/notifications", json={"targets": ["user:alex"], "message": "next", "in_reply_to": first["id"]})
+        r = c.post("/v1/notifications", json={"targets": ["user:alex"], "message": "next", "in_reply_to": first["id"],
+                                                 "reply_handle": first["reply_handle"]})
         assert r.status_code == 202, r.text
         nxt = r.json()
         assert nxt["conversation_id"] == first["id"] and nxt["in_reply_to"] == first["id"] and nxt["reply"] is False
-        r = c.post("/v1/notifications", json={"targets": ["user:alex"], "message": "third", "in_reply_to": nxt["id"]})
+        r = c.post("/v1/notifications", json={"targets": ["user:alex"], "message": "third", "in_reply_to": nxt["id"],
+                                                 "reply_handle": first["reply_handle"]})
         assert r.json()["conversation_id"] == first["id"]
 
 

@@ -205,7 +205,11 @@ class NotificationIn(BaseModel):
                                                    " with POST /v1/notifications/{id}/replies/claim")
     in_reply_to: str | None = Field(default=None, max_length=64,
                                     description="Notification id this one follows up: threads the email and joins its conversation")
+    reply_handle: str | None = Field(default=None, max_length=200,
+                                     description="Handle returned when the conversation's first reply:true notification was"
+                                                 " sent; required for follow-ups (in_reply_to) into that conversation")
     _auto_submitted: bool = PrivateAttr(default=False)  # internal: the service's own automatic replies
+    _internal: bool = PrivateAttr(default=False)  # internal: hnl-notify's own submissions, exempt from the handle
 
     @field_validator("kinds")
     @classmethod

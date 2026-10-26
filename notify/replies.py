@@ -14,6 +14,7 @@ from email.message import EmailMessage
 from typing import TYPE_CHECKING, Any, Literal
 
 from . import replyparse
+from .handles import handle_matches
 from .db import dumps, iso, loads, new_id, parse_iso, utcnow
 from .models import DELIVERED, DISPATCHED, INTERACTED, NotificationIn
 
@@ -25,6 +26,23 @@ log = logging.getLogger("notify.replies")
 LISTEN_SECONDS = 120
 GRACE_SECONDS = 600
 AUTOREPLY_EVERY_SECONDS = 3600
+
+
+def conversation_gate(c: sqlite3.Connection, conv: str, handle: str | None, *,
+                      internal: bool = False) -> sqlite3.Row | None:
+    """The conversation row, or None for a conversation that never had replies. Raises NotFound (fail closed) for a
+    reply conversation without a row, and for a handle that is missing or wrong once the conversation has one.
+    Legacy rows pass; callers apply the old token rule to them."""
+    from .core import NotFound
+    row = c.execute("SELECT * FROM conversations WHERE id=?", (conv,)).fetchone()
+    if row is None:
+        if c.execute("SELECT 1 FROM notifications WHERE conversation_id=? AND reply_wanted=1 LIMIT 1",
+                     (conv,)).fetchone():
+            raise NotFound("notification not found")
+        return None
+    if row["handle_sha256"] and not internal and not handle_matches(handle, conv, row["handle_sha256"]):
+        raise NotFound("notification not found")
+    return row
 
 
 @dataclass
@@ -225,6 +243,7 @@ class Replies:
             message=f"This agent is no longer listening, so your reply was not delivered. Received {received}.",
             tags=["reply-autoreply"], data={"reply_id": r["id"]})
         req._auto_submitted = True
+        req._internal = True
         try:
             out, _ = self.svc.submit(SYSTEM_CLIENT, req)
         except Invalid as e:
