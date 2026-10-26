@@ -116,6 +116,10 @@ everyone out and prints a new setup code.
   sha256, `purged_at`), removed by the attachment retention sweep.
 - `reply_quarantine` — rejected inbound mail: received_at, from, subject,
   Message-ID, reason, notification id when the thread matched. No content.
+- `conversations` — one per reply conversation (`id` = root notification id): `handle_sha256`
+  (SHA-256 of the reply handle's secret; the handle itself is never stored), `handle_notification_id`,
+  `legacy` (conversations from before 0.7.0 keep the token rule), `created_at`. A row is deleted when no notification
+  of the conversation is left. `replies.late_ok` marks unclaimed replies that may still be collected.
 - New columns: `notifications.reply_wanted`, `in_reply_to`, `conversation_id`
   (own id unless a follow-up), `listener_seen_at`; `deliveries.recipient_address`
   (the address at the moment the delivery was claimed for sending).
@@ -227,6 +231,18 @@ capability gap `replies` and still send. Notifications without `reply` /
 `in_reply_to` keep the 0.5.1 response shape and headers. The capability key is
 `replies` (`{"supported", "note"}`); email declares it when the reply mailbox
 and `authserv_id` are configured.
+
+**Access.** One gate (`Replies._access`) serves claim, listing, attachment download and follow-up submission:
+the sending token's visibility, then the conversation row (a reply conversation without a row is refused), then the
+reply handle (`hmac.compare_digest` against the stored hash; legacy rows need the sending token instead). hnl-notify's
+own notifications (autoreply, size alert) skip the handle through a private flag on the request. Bearer admin tokens
+get no bypass and see no reply content in `/admin/api`. Late replies: a swept (`unclaimed`) reply of a non-legacy
+conversation has `late_ok=1` and is claimed after the waiting ones.
+
+**Mailbox cleanup.** `notify/mailbox_cleanup.py` is its own IMAP entry point (never creates folders, EXAMINE for
+previews, SELECT only the target folder, UIDPLUS decided from the post-login CAPABILITY) and `notify/cleanup_service.py`
+runs it: per-step locking on `NotifyService.mailbox_lock(provider)`, a daily worker, `mailbox.cleanup` /
+`mailbox.settings` events without a notification, and an internal size alert.
 
 **Inbound.** The reply mailbox is an IMAP account over implicit TLS, polled every
 30 s by the worker (no IDLE, no inbound SMTP, no MX change). Connection errors

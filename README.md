@@ -183,9 +183,27 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $N
   "targets": ["user:alex"], "kinds": ["email"], "reply": true,
   "title": "Pick a header design", "message": "A or B? Reply with your choice."
 }'
-# a follow-up in the same thread: "in_reply_to": "<id of the first notification>"
-# (your own notifications only; admin clients may reference any client's)
+# -> 202 {"id": "ntf_...", ..., "reply_handle": "ntf_...:<secret>"}
+# a follow-up in the same thread: "in_reply_to": "<id of the first notification>",
+# "reply_handle": "<the handle>" (or the header X-Reply-Handle). Your own notifications only.
 ```
+
+**The reply handle.** The first `reply: true` notification of a conversation returns
+`reply_handle` (`<conversation id>:<secret>`) **once**; keep it, it is not stored in
+readable form and cannot be recovered (a replay of the same `idempotency_key` returns
+`reply_handle: null` and `reply_handle_issued: true`; start a new conversation if you
+lost it). The handle is what lets an agent collect replies and send follow-ups: claim,
+listing, attachment download and follow-ups all need it, together with the token that sent
+the conversation. A wrong or missing handle answers like an unknown notification (404 on
+the reply endpoints, 422 on a follow-up). Send it in the `reply_handle` field or the
+`X-Reply-Handle` header, never in `in_reply_to` and never in a URL. A follow-up with
+`reply: true` into a conversation that has no handle yet creates one.
+
+*Threat model.* hnl-notify is meant for a trusted LAN. The reply handle protects against
+**accidental or confused** cross-agent access: a wrong id, a new session reusing an old
+one, a second agent on the same token. It does not protect against a hostile agent running
+as the same user: the handle appears in the sending agent's tool output, which its
+transcript keeps on disk. That is accepted.
 
 The mail gets `Reply-To` and a footer ("Reply to this email to answer the
 agent."). A push device or an email provider without a reply mailbox shows the
@@ -196,7 +214,9 @@ agent collects the first reply, the email delivery becomes `interacted`.
 exits:
 
 ```
-notify-wait NOTIFICATION_ID [--timeout 60m] [--save-dir DIR] [--url URL] [--json]
+NOTIFY_REPLY_HANDLE=<handle> notify-wait [--timeout 60m] [--save-dir DIR] [--url URL] [--json]
+notify-wait --handle-file FILE      # the handle read from a file
+notify-wait <handle>                # works, but the handle shows in `ps`
 
 Reply from alex@example.org (2026-10-14 15:02 CEST) to "Pick a header design" [rpl_...]:
 Go with B, but use the darker blue.
@@ -206,12 +226,19 @@ Attachments: /tmp/notify-reply-x1y2/screenshot.png
 It reads the service address and token from `NOTIFY_URL` / `NOTIFY_TOKEN`, or from
 the `hnl-notify` MCP entry in `~/.claude.json`; `--token-file PATH` reads it from a file instead
 (for agents without that entry, e.g. Codex). The token is never printed.
+The handle comes from a positional argument containing `:`, else `--handle-file`, else
+`NOTIFY_REPLY_HANDLE`, and is never printed. Prefer the environment variable or the file: the
+positional form is visible to every local user in the process list. A plain notification id
+still works for conversations from before 0.7.0. A reply that arrived while nobody was
+waiting is printed with a `Late reply (received ...) to: <title>` line first, and
+attachments that were already purged are listed as `<name>: not available any more`.
 Attachments are saved under sanitised names without overwriting anything.
 `--timeout` defaults to 60 minutes; a bare number means minutes (`90s`, `30m`, `2h` also work).
 If saving an attachment fails the reply is still printed, a note goes to stderr and the exit code is 0.
 Exit codes: **0** reply printed, **1** error (credentials, unknown notification,
-bad response), **2** no reply before `--timeout`. Run it again, or send a
-follow-up with `in_reply_to`, to continue. `GET /v1/notifications/{id}/replies`
+bad response), **2** no reply before `--timeout` (replies are kept; run it again later to
+collect them). Run it again, or send a follow-up with `in_reply_to` and `reply_handle`,
+to continue. `GET /v1/notifications/{id}/replies`
 and the MCP tool `get_replies` list the replies of a thread; agents see a
 reply's subject, text and attachments only once it has been collected. A reply to an older mail of a thread reaches the
 current waiter.
@@ -219,8 +246,16 @@ current waiter.
 **When nobody is waiting.** A conversation counts as listened to while a waiter
 polled in the last 2 minutes. A reply that no waiter collects within 10 minutes
 is marked `unclaimed` and the sender gets an automatic mail in the same thread
-saying the agent is no longer listening and the reply was not delivered (at
-most one per conversation per hour). The reply is not handed to an agent later.
+saying the agent isn't listening right now and the reply has been kept (at most one per
+conversation per hour). **The reply can still be collected later**: `notify-wait` with the
+same handle hands out waiting replies first, then these late ones. Text of a reply that was
+not collected is never shown in listings, only by collecting it. Conversations that existed
+before 0.7.0 keep the old behaviour: their unclaimed replies are never handed out.
+
+**Admin tokens.** Reply text, attachments and quarantine details are shown only in the
+signed-in admin page. A bearer token with the `admin` scope gets states, times and counts
+(`GET /admin/api/replies`), and no bypass of the reply handle. Scripts that read reply text
+with an admin token stop getting it.
 
 **Quarantine.** Mail that fails a check is moved to the `Quarantine` folder and
 listed (reason, sender, subject) under *Activity → Replies*; its content is not
@@ -230,6 +265,44 @@ bounces), `no_thread` (not a reply to our mail), `not_reply_enabled`,
 `too_large` (over 15 MiB, or an oversized or unsized header), `header_mismatch`,
 `unreadable`. Reply text is capped at 8000 characters; at most 10 attachments
 and 10 MiB are kept.
+
+### Reply mailbox cleanup
+
+hnl-notify moves handled replies to `Processed` and rejected mail to `Quarantine` and, from
+0.7.0, deletes old mail from those two folders by itself (never from the folder it reads).
+
+| Setting (per email provider) | Default | Meaning |
+|---|---|---|
+| `processed_days` / `quarantine_days` | 30 / 90 | delete mail older than this (arrival time, IMAP `INTERNALDATE`) |
+| `processed_max_mib` / `quarantine_max_mib` | 1024 / 500 | size cap per folder; over it the oldest mail goes first |
+| `enabled` | true | the automatic daily run; *Clean up now* always works |
+| `alert_targets` | none | who hears about a folder over its cap (default: whoever hears about access requests) |
+
+`0` switches a rule off. The settings live in the admin UI (*Reply mailbox*, with a preview of what the
+rules would remove and a *Clean up now* button) or in the `mailbox_cleanup:` section of the config, keyed by
+provider name. The automatic run happens about once a day, the first one roughly 10 minutes after start.
+When a size cap forces deletions you get a notification (tag `mailbox-cleanup`, at most once per folder per day).
+Deletion is permanent (`\Deleted` + expunge, no Trash). Cleanup refuses to run when a folder is the folder
+the poller reads, when Processed and Quarantine are the same, or when the server marks a folder as
+Sent, Trash, Junk, All, Archive, Drafts or Flagged. Never message bodies are downloaded, only sizes and dates.
+
+Notes: mail that waited long in INBOX keeps its original arrival date, so it can be deleted soon after it reaches
+Processed. On servers where expunge only removes a label (Gmail style) cleanup frees no space. `Quarantine` holds
+the only copy of rejected mail, which is why it is kept longer.
+
+### Upgrading to 0.7.0
+
+- **The first cleanup run deletes old mail.** A provider with a reply mailbox gets the defaults on upgrade: Processed
+  older than 30 days and Quarantine older than 90 days are removed shortly after the first start. Set the values (or
+  `0`) in *Reply mailbox* before upgrading if you want to keep more.
+- **Reply handles.** Agents must keep the `reply_handle` of each conversation. Agent instructions outside this
+  repository that run `notify-wait <notification_id>` must switch to the handle: `NOTIFY_REPLY_HANDLE=<handle>
+  notify-wait` or `notify-wait --handle-file FILE`. Follow-ups pass `reply_handle`.
+- **Admin tokens no longer read reply text.** Scripts that did so with an `admin` bearer token must read it as the
+  agent that sent the conversation (with the handle), or in the admin page.
+- **Existing conversations keep the old token rule**, without a handle, and their unclaimed replies stay
+  uncollectable. Start a new conversation to get a handle.
+- Client names `admin-ui` and `hnl-notify` are reserved in the config.
 
 ## REST examples
 
@@ -406,10 +479,10 @@ claude mcp add --transport http hnl-notify http://notify.lan:8930/mcp \
 
 `send_notification` and `preview_routing` take `kinds`; `send_notification`
 also takes `attachments` (URLs recommended, inline data up to 256 KiB),
-`reply` and `in_reply_to`. Tools:
+`reply`, `in_reply_to` and `reply_handle` (the send result carries `reply_handle` once). Tools:
 `send_notification`, `preview_routing`, `get_notification`,
 `list_notifications`, `list_attention`, `list_targets`, `retry_notification`,
-`cancel_notification`, `get_replies`. Resources: `notify://targets`,
+`cancel_notification`, `get_replies` (takes `reply_handle`). Resources: `notify://targets`,
 `notify://notifications/{id}`. The server instructions tell agents not to
 report `dispatched` as `delivered` and to reserve `critical` for emergencies.
 
@@ -426,6 +499,9 @@ generated). Without that, nothing changes except latency.
 - Health: `/health/live`, `/health/ready`. Metrics (Prometheus text): `/metrics`.
 - Admin UI: `/admin` (session login, CSRF header, strict CSP). Admin API calls also accept a bearer token with the `admin` scope.
 - Backup: `sqlite3 data/notify.sqlite3 ".backup data/notify-$(date +%F).sqlite3"` **plus** `secrets/master.key` (without it the stored Pushover and SMTP secrets cannot be decrypted). Backups include attachment bytes that have not yet been purged. History is kept 90 days (Settings).
+- Reply mailbox: *Reply mailbox* in the admin UI shows the Processed and Quarantine folders, the cleanup
+  settings and the last run; the poll, the connection test and cleanup share one lock per mailbox, so only one IMAP
+  session of hnl-notify acts on it at a time.
 - Delivery guarantee: at-least-once. If the container dies in the few ms after
   Pushover accepts a message but before the result is committed, that message
   is sent again after restart (logged as "send interrupted").
