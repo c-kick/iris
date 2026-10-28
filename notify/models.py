@@ -82,6 +82,9 @@ EVENT_TYPES = [
     "reply.claimed",
     "reply.unclaimed",
     "reply.quarantined",
+    "notification.scheduled",
+    "notification.updated",
+    "notification.missed",
 ]
 
 
@@ -208,6 +211,10 @@ class NotificationIn(BaseModel):
     reply_handle: str | None = Field(default=None, max_length=200,
                                      description="Handle returned when the conversation's first reply:true notification was"
                                                  " sent; required for follow-ups (in_reply_to) into that conversation")
+    send_at: datetime | None = Field(default=None, description="Send later, at this time (offset-less = server local time)")
+    delay: int | str | None = Field(default=None, description="Send later, after this long: seconds or like 2h30m")
+    max_late_seconds: int | None = Field(default=None, ge=60, le=86400,
+                                         description="Scheduled: how late it may still go out after a missed send time (default 3600)")
     _auto_submitted: bool = PrivateAttr(default=False)  # internal: the service's own automatic replies
     _internal: bool = PrivateAttr(default=False)  # internal: hnl-notify's own submissions, exempt from the handle
 
@@ -235,6 +242,42 @@ class NotificationIn(BaseModel):
             if not t or len(t) > 64:
                 raise ValueError("tags must be 1-64 characters")
         return v
+
+    @model_validator(mode="after")
+    def _one_send_time(self) -> "NotificationIn":
+        if self.send_at is not None and self.delay is not None:
+            raise ValueError("send_at and delay are mutually exclusive")
+        return self
+
+
+class ScheduleUpdate(BaseModel):
+    """Edit of a still-scheduled notification. Callers use model_fields_set to tell omitted from null."""
+    model_config = ConfigDict(extra="forbid")
+
+    send_at: datetime | None = None
+    delay: int | str | None = None
+    send_now: bool = False
+    max_late_seconds: int | None = Field(default=None, ge=60, le=86400)
+    title: str | None = Field(default=None, max_length=1000)
+    message: str | None = Field(default=None, min_length=1, max_length=10000)
+    severity: Severity | None = None
+    targets: list[str] | None = Field(default=None, min_length=1, max_length=50)
+    kinds: list[Literal["push", "email"]] | None = None
+    url: str | None = Field(default=None, max_length=2048)
+    url_title: str | None = Field(default=None, max_length=200)
+    actions: list[ActionIn] | None = Field(default=None, max_length=10)
+    tags: list[str] | None = Field(default=None, max_length=20)
+    require_ack: bool | None = None
+    ttl_seconds: int | None = Field(default=None, ge=1, le=60 * 60 * 24 * 30)
+    expires_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _one_send_time(self) -> "ScheduleUpdate":
+        if self.send_now and {"send_at", "delay"} & self.model_fields_set:
+            raise ValueError("send_now excludes send_at and delay")
+        if self.send_at is not None and self.delay is not None:
+            raise ValueError("send_at and delay are mutually exclusive")
+        return self
 
 
 class SubscriptionIn(BaseModel):

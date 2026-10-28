@@ -289,13 +289,18 @@ class Database:
             "registrations": {"decision_sha256": "TEXT"},
             "notifications": {"reply_wanted": "INTEGER NOT NULL DEFAULT 0", "in_reply_to": "TEXT",
                               "conversation_id": "TEXT", "listener_seen_at": "TEXT",
-                              "auto_submitted": "INTEGER NOT NULL DEFAULT 0"},
+                              "auto_submitted": "INTEGER NOT NULL DEFAULT 0",
+                              # 0.8.0 scheduling; release_problem = reason text, null = none
+                              "send_at": "TEXT", "max_late_seconds": "INTEGER", "deliver_by": "TEXT",
+                              "ttl_seconds": "INTEGER", "explicit_expires_at": "TEXT", "released_at": "TEXT",
+                              "dismissed_at": "TEXT", "release_problem": "TEXT"},
             "deliveries": {"recipient_address": "TEXT", "dismissed_at": "TEXT"},
             "replies": {"late_ok": "INTEGER NOT NULL DEFAULT 0"},
         })
         self._add_conversations()
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_scheduled ON notifications(status, send_at)")
         with self.tx() as c:
             c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
