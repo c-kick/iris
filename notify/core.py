@@ -827,6 +827,10 @@ class NotifyService:
         expires = parse_iso(n["expires_at"])
         if expires is not None and expires <= utcnow():
             raise Conflict("notification has expired; submit a new one instead")
+        if n["release_problem"] is not None and not self.db.scalar(
+                "SELECT 1 FROM deliveries WHERE notification_id=?", (nid,)):
+            self.scheduler.release(nid, force=True)  # a release that never produced deliveries: try it again now
+            return {"notification": self.get(client, nid, detail=False), "results": [{"result": "released"}]}
         results = []
         now = now_iso()
         purged = self.db.scalar("SELECT COUNT(*) FROM attachments WHERE notification_id=? AND purged_at IS NOT NULL",
@@ -863,6 +867,8 @@ class NotifyService:
         with self.db.tx() as c:
             n = c.execute("UPDATE deliveries SET dismissed_at=? WHERE notification_id=? AND state IN (?,?)"
                           " AND dismissed_at IS NULL", (now_iso(), nid, FAILED, EXPIRED)).rowcount
+            n += c.execute("UPDATE notifications SET dismissed_at=? WHERE id=? AND release_problem IS NOT NULL"
+                           " AND dismissed_at IS NULL", (now_iso(), nid)).rowcount
         if not n:
             raise Conflict("nothing to dismiss (no failed or expired deliveries left on the attention list)")
         return {"dismissed": n}
@@ -1009,6 +1015,7 @@ class NotifyService:
             "retrying": rows("d.state=? AND d.attempts > 0", [QUEUED]),
             "stuck": rows("d.state IN (?,?) AND d.created_at <= ?", [QUEUED, SENDING, stuck_cut]),
             "awaiting_acknowledgement": rows("d.tracking='receipt' AND d.state IN (?,?)", [DISPATCHED, DELIVERED]),
+            "release_problems": self.scheduler.problems(client),
             "providers": {name: p.health() for name, p in self.providers.items() if not p.configured},
         }
 

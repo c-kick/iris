@@ -325,9 +325,12 @@ async def ready(request: Request) -> JSONResponse:
     checks["providers"] = "ok" if not problems else problems
     ready_devices = [d["target"] for d in svc.targets()["devices"] if d["ready"] and d["enabled"]]
     checks["devices"] = f"{len(ready_devices)} ready" if ready_devices else "none ready; configure one in /admin"
+    overdue = svc.scheduler.overdue_count()
+    checks["scheduler"] = "ok" if not overdue else f"{overdue} overdue"
     if not request.app.state.store.admin_configured():
         checks["admin"] = "setup required: open /admin with the setup code from the container log"
-    ok = checks["database"] == "ok" and checks["dispatcher"] == "ok" and not problems and bool(ready_devices)
+    ok = checks["database"] == "ok" and checks["dispatcher"] == "ok" and checks["scheduler"] == "ok" and not problems \
+        and bool(ready_devices)
     return JSONResponse({"status": "ready" if ok else "not_ready", "version": __version__, "checks": checks},
                         status_code=200 if ok else 503)
 
@@ -348,6 +351,10 @@ async def metrics(request: Request) -> PlainTextResponse:
               "# TYPE notify_webhook_deliveries gauge"]
     for state, count in sorted(st["webhooks_by_state"].items()):
         lines.append(f'notify_webhook_deliveries{{state="{state}"}} {count}')
+    nxt = svc.scheduler.next_in()
+    if nxt is not None:
+        lines += ["# TYPE notify_scheduled_next_seconds gauge", f"notify_scheduled_next_seconds {nxt:.1f}"]
+    lines += ["# TYPE notify_scheduled_overdue gauge", f"notify_scheduled_overdue {svc.scheduler.overdue_count()}"]
     lines.append("# TYPE notify_provider_ready gauge")
     for name, p in svc.providers.items():
         lines.append(f'notify_provider_ready{{provider="{name}"}} {int(p.configured)}')

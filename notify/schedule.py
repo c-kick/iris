@@ -308,6 +308,41 @@ class Scheduler:
         svc._after_commit(dispatch=True)  # send-now or an earlier time: the dispatcher re-checks its next wake-up
         return svc.get(client, nid, detail=False)
 
+    def problems(self, client: Any) -> list[dict[str, Any]]:
+        """Notifications that could not go out (undismissed release problem) or are overdue, newest first."""
+        from .db import iso, parse_iso, utcnow
+        svc = self.svc
+        own = "" if client.admin else " AND client_id=?"
+        p: list[Any] = [] if client.admin else [client.id]
+        now = utcnow()
+        cut = iso(now - timedelta(seconds=OVERDUE_SECONDS))
+        rows = svc.db.query(
+            "SELECT * FROM notifications WHERE ((release_problem IS NOT NULL AND dismissed_at IS NULL)"
+            " OR (status='scheduled' AND send_at <= ?))" + own
+            + " ORDER BY COALESCE(released_at, send_at) DESC LIMIT 50", [cut, *p])
+        out = []
+        for r in rows:
+            reason = r["release_problem"]
+            if reason is None:
+                late = int((now - parse_iso(r["send_at"])).total_seconds())  # type: ignore[operator]
+                reason = f"overdue: still waiting {late} s after its send time"
+            out.append({"notification_id": r["id"], "title": r["title"], "severity": r["severity"],
+                        "source": r["source"], "client": r["client_id"], "status": r["status"],
+                        "send_at": r["send_at"], "reason": reason, "at": r["released_at"] or r["send_at"]})
+        return out
+
+    def overdue_count(self) -> int:
+        from .db import iso, utcnow
+        return int(self.svc.db.scalar(
+            "SELECT COUNT(*) FROM notifications WHERE status='scheduled' AND send_at <= ?",
+            (iso(utcnow() - timedelta(seconds=OVERDUE_SECONDS)),)) or 0)
+
+    def next_in(self) -> float | None:
+        """Seconds until the earliest scheduled send time (negative when already due), None when nothing waits."""
+        from .db import parse_iso, utcnow
+        first = self.svc.db.scalar("SELECT MIN(send_at) FROM notifications WHERE status='scheduled'")
+        return (parse_iso(first) - utcnow()).total_seconds() if first else None  # type: ignore[operator]
+
     def release_due(self) -> int:
         """Release every scheduled notification whose time has come; a bad row never stops the others."""
         from .db import now_iso
