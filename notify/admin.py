@@ -21,12 +21,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import __version__
 from .auth import hash_token, new_token
 from .config import ConfigError, MailboxCleanupConfig
+from .db import now_iso
 from .core import Client, Conflict, Invalid, NotFound, NotifyService
-from .models import NotificationIn, Scope, Severity
+from .models import NotificationIn, ScheduleUpdate, Scope, Severity
 from .providers import REGISTRY
 from .configops import commit_config
 from .cleanup_service import record_event
 from .providers.email_inbound import run_locked
+from .schedule import local_zone
 from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
@@ -201,9 +203,14 @@ def _state(request: Request) -> dict[str, Any]:
         c.pop("token_sha256", None)
     targets = svc.targets()
     pending = svc.db.scalar("SELECT COUNT(*) FROM registrations WHERE status='pending'") or 0
+    per_client = {r[0]: r[1] for r in svc.db.query(
+        "SELECT client_id, COUNT(*) FROM notifications WHERE status='scheduled' GROUP BY client_id")}
+    for name, c in masked["clients"].items():
+        c["scheduled"] = per_client.get(name, 0)
     return {
         "version": __version__,
         "pending_registrations": pending,
+        "scheduled_count": sum(per_client.values()),
         "config": masked,
         "devices": {d["target"].split(":", 1)[1]: {"ready": d["ready"], "problems": d["problems"],
                                                     "capabilities": d["capabilities"],
@@ -496,7 +503,21 @@ async def rotate_client(name: str, request: Request, _: Client = Depends(admin))
 async def delete_client(name: str, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
     def mutate(data: dict[str, Any]) -> None:
         data["clients"].pop(name, None)
-    return _commit(request, mutate)
+    out = _commit(request, mutate)
+    # a later client with the same name must not inherit what this one scheduled
+    svc = _svc(request)
+    cancelled = 0
+    with svc.db.tx() as c:
+        stamp = now_iso()
+        for n in c.execute("SELECT * FROM notifications WHERE client_id=? AND status='scheduled'", (name,)).fetchall():
+            c.execute("UPDATE notifications SET status='cancelled', updated_at=? WHERE id=?", (stamp, n["id"]))
+            svc._emit(c, "notification.status_changed", n, None,
+                      {"from": "scheduled", "to": "cancelled", "reason": "client deleted"})
+            cancelled += 1
+    if cancelled:
+        svc._after_commit()
+    out["cancelled_scheduled"] = cancelled
+    return out
 
 
 # ------------------------------------------------------------------ server settings
@@ -609,7 +630,49 @@ async def activity(request: Request, limit: int = 25, client: Client = Depends(a
     svc = _svc(request)
     admin_view = Client(client.id, frozenset({Scope.admin}))
     return {"notifications": svc.list(admin_view, limit=max(1, min(limit, 100))),
-            "attention": svc.attention(admin_view)}
+            "attention": svc.attention(admin_view), "timezone": local_zone().key}
+
+
+@router.get("/api/scheduled")
+async def scheduled(request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    admin_view = Client(client.id, frozenset({Scope.admin}))
+    return {"items": _svc(request).list(admin_view, status="scheduled"), "timezone": local_zone().key}
+
+
+class PreviewIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    targets: list[str] = Field(min_length=1, max_length=50)
+    severity: Severity = Severity.normal
+    kinds: list[Literal["push", "email"]] | None = None
+    title: str | None = Field(default=None, max_length=1000)
+    message: str = Field(default="preview", min_length=1, max_length=10000)
+
+
+@router.post("/api/preview")
+async def preview(body: PreviewIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    """Routing of an edited version as it would route now: the ordinary dry-run submit, nothing is stored."""
+    req = NotificationIn(targets=body.targets, severity=body.severity, kinds=body.kinds, title=body.title,
+                         message=body.message, source="admin-ui", dry_run=True)
+    try:
+        out, _ = await _svc(request).submit_async(client, req)
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    return out
+
+
+@router.patch("/api/notifications/{nid}")
+async def edit_scheduled(nid: str, body: ScheduleUpdate, request: Request,
+                         client: Client = Depends(admin)) -> dict[str, Any]:
+    try:
+        return _svc(request).scheduler.update(client, nid, body)
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
 
 
 @router.get("/api/replies")
@@ -693,6 +756,10 @@ async def manage(nid: str, action: str, request: Request, client: Client = Depen
             return await svc.cancel(client, nid)
         if action == "dismiss":
             return svc.dismiss(client, nid)
+        if action == "send-now":
+            return svc.scheduler.update(client, nid, ScheduleUpdate(send_now=True))
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
     except Conflict as e:
         raise HTTPException(409, str(e)) from e
     except NotFound as e:

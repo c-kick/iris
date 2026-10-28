@@ -17,6 +17,7 @@ const SECTIONS = [
   ["channels", "Channels"],
   ["access", "API access"],
   ["requests", "Access requests"],
+  ["scheduled", "Scheduled"],
   ["activity", "Activity"],
   ["settings", "Settings"],
 ];
@@ -72,7 +73,7 @@ async function api(method, path, body) {
   if (!res.ok) {
     const d = data?.detail;
     const msg = typeof d === "string" ? d : Array.isArray(d) ? d.map((e) => `${(e.loc || []).slice(1).join(".")}: ${e.msg}`).join("; ") : `Request failed (HTTP ${res.status})`;
-    throw new Error(msg);
+    throw Object.assign(new Error(msg), { status: res.status });
   }
   return data;
 }
@@ -100,6 +101,74 @@ function when(iso) {
   return same ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
               : d.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
+
+// ---- zone helpers (exercised by a node script outside the browser) ----
+// A time the owner reads and types is in the service's zone, not the browser's.
+const clock = (tz) => new Intl.DateTimeFormat([], { timeZone: tz, hour: "2-digit", minute: "2-digit" });
+
+function zoneParts(ms, tz) {
+  const p = {};
+  for (const x of new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit",
+    day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(ms))) p[x.type] = x.value;
+  return p;
+}
+
+// UTC offset of the zone at an instant, in minutes.
+function zoneOffset(ms, tz) {
+  const p = zoneParts(ms, tz);
+  const asUtc = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return Math.round((asUtc - Math.floor(ms / 1000) * 1000) / 60000);
+}
+
+// "2026-10-25T02:30" typed in the zone -> ISO string with that zone's offset at that moment.
+// A time that does not exist (clocks jump forward) throws; one that happens twice takes the first.
+function zonedToIso(local, tz) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(local || "");
+  if (!m) throw new Error("Pick a date and time");
+  const guess = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  const found = [];
+  for (const o of new Set([zoneOffset(guess - 86400000, tz), zoneOffset(guess + 86400000, tz)])) {
+    const t = guess - o * 60000;
+    if (zoneOffset(t, tz) === o) found.push([t, o]);
+  }
+  if (!found.length) throw new Error("That time does not exist in " + tz + " (the clocks change then). Pick another.");
+  const [, o] = found.sort((a, b) => a[0] - b[0])[0];
+  const sign = o < 0 ? "-" : "+";
+  const hh = String(Math.floor(Math.abs(o) / 60)).padStart(2, "0");
+  const mm = String(Math.abs(o) % 60).padStart(2, "0");
+  return `${local}:00${sign}${hh}:${mm}`;
+}
+
+// ISO instant -> value for a datetime-local input, in the zone.
+function zoneInput(iso, tz) {
+  const p = zoneParts(new Date(iso).getTime(), tz);
+  return `${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}`;
+}
+
+// "tomorrow 07:30" / "today 18:05" / "Thu 3 Nov, 07:30", all in the zone.
+function zoneWhen(iso, tz) {
+  const t = new Date(iso);
+  const day = (d) => zoneParts(d.getTime(), tz);
+  const key = (p) => `${p.year}-${p.month}-${p.day}`;
+  const now = Date.now();
+  const hm = clock(tz).format(t);
+  const k = key(day(t));
+  if (k === key(day(new Date(now)))) return `today ${hm}`;
+  if (k === key(day(new Date(now + 86400000)))) return `tomorrow ${hm}`;
+  return `${new Intl.DateTimeFormat([], { timeZone: tz, weekday: "short", day: "numeric", month: "short" }).format(t)}, ${hm}`;
+}
+
+// The counterpart of ago() for times still ahead of us.
+function until(iso) {
+  const s = (new Date(iso) - Date.now()) / 1000;
+  if (!iso || Number.isNaN(s)) return "";
+  if (s < -60) return "overdue";
+  if (s < 90) return "due now";
+  if (s < 5400) return `in ${Math.round(s / 60)} min`;
+  if (s < 129600) return `in ${Math.round(s / 3600)} h`;
+  return `in ${Math.round(s / 86400)} days`;
+}
+// ---- end zone helpers ----
 
 const logo = `<svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="var(--action)"/><circle cx="16" cy="16" r="5" fill="var(--surface)"/></svg>`;
 
@@ -177,7 +246,7 @@ function fieldHtml(f) {
   } else if (f.kind === "textarea") {
     input = `<textarea id="${id}" name="${esc(f.name)}" ${aria}>${esc(f.value)}</textarea>`;
   } else {
-    const type = f.kind === "secret" ? "password" : f.kind === "int" ? "number" : f.kind === "url" ? "url" : "text";
+    const type = f.kind === "secret" ? "password" : f.kind === "int" ? "number" : f.kind === "url" ? "url" : f.kind === "datetime" ? "datetime-local" : "text";
     const ph = f.kind === "secret" && f.stored ? `Stored (${f.stored}). Leave empty to keep it.` : (f.placeholder || "");
     input = `<input id="${id}" type="${type}" name="${esc(f.name)}" value="${f.kind === "secret" ? "" : esc(f.value)}"
       placeholder="${esc(ph)}" ${aria} autocomplete="off" ${f.readonly ? "readonly" : ""} ${f.list ? `list="${id}-list"` : ""}>`;
@@ -278,7 +347,10 @@ async function refresh() {
 
 function render() {
   if (!VIEWS[section]) section = "overview";
-  const badge = (k) => (k === "requests" && state.pending_registrations ? ` <span class="badge" aria-label="${state.pending_registrations} waiting">${state.pending_registrations}</span>` : "");
+  const badge = (k) => {
+    const n = k === "requests" ? state.pending_registrations : k === "scheduled" ? state.scheduled_count : 0;
+    return n ? ` <span class="badge" aria-label="${n} ${k === "scheduled" ? "scheduled" : "waiting"}">${n}</span>` : "";
+  };
   const current = SUBPAGES[section] || section; // a sub-page keeps its parent highlighted
   const nav = SECTIONS.map(([k, l]) => `<button data-nav="${k}" ${k === current ? 'aria-current="page"' : ""}>${esc(l)}${badge(k)}</button>`).join("");
   root.innerHTML = `
@@ -570,8 +642,15 @@ const VIEWS = {
         showToken("New token", b.dataset.rot, res.token);
       })));
     main.querySelectorAll("[data-delcl]").forEach((b) => (b.onclick = () => confirmAction("Revoke token?",
-      `<strong>${esc(b.dataset.delcl)}</strong> can no longer send or read notifications.`, "Revoke",
+      `<strong>${esc(b.dataset.delcl)}</strong> can no longer send or read notifications.${scheduledNote(cfg().clients[b.dataset.delcl]?.scheduled)}`, "Revoke",
       () => mutate("DELETE", `/clients/${b.dataset.delcl}`, undefined, "Token revoked"))));
+  },
+
+  scheduled(main) {
+    main.innerHTML = `
+      <div class="section-head"><h2>Scheduled</h2><p>Notifications waiting for their send time. Who gets them is decided when they go out.</p></div>
+      <div class="rows" id="sched"><div class="empty">Loading…</div></div>`;
+    loadScheduled(main.querySelector("#sched"));
   },
 
   activity(main) {
@@ -905,6 +984,139 @@ async function loadRequests(el) {
   }));
 }
 
+// ---------------------------------------------------------------- scheduled list
+
+const scheduledNote = (n) => (n ? ` ${n} scheduled notification${n === 1 ? "" : "s"} from this client will be cancelled.` : "");
+
+// A 409 means someone got there first: say so, then show the list as it is now.
+function raced(ex) {
+  if (ex.status !== 409) return false;
+  toast(/cancelled/.test(ex.message) ? "Already cancelled" : "Already sent");
+  refresh();
+  return true;
+}
+
+async function loadScheduled(el) {
+  let data;
+  try { data = await api("GET", "/scheduled"); }
+  catch (ex) { el.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  const tz = data.timezone;
+  const items = data.items;
+  if (!items.length) {
+    el.innerHTML = `<div class="empty">Nothing is scheduled. Send with <code>send_at</code> (a time) or <code>delay</code> (such as <code>2h</code>) to schedule one; see the <a href="/docs" target="_blank" rel="noopener">API docs</a>.</div>`;
+    return;
+  }
+  const byId = Object.fromEntries(items.map((n) => [n.id, n]));
+  el.innerHTML = items.map((n) => {
+    const left = until(n.send_at);
+    const markers = [n.reply ? "reply wanted" : "", n.attachments?.length ? `${n.attachments.length} attachment${n.attachments.length === 1 ? "" : "s"}` : "",
+      n.in_reply_to ? "follow-up" : ""].filter(Boolean);
+    return `<div class="row" style="align-items:flex-start"><span class="lamp ${left === "overdue" ? "warn" : ""}" style="margin-top:.45rem"></span>
+      <div class="grow">
+        <div class="title">${esc(n.title || n.message.split("\n")[0].slice(0, 60))}</div>
+        <div class="sub">${esc(zoneWhen(n.send_at, tz))} (${esc(tz)}) · <span class="${left === "overdue" ? "problem" : ""}">${esc(left)}</span></div>
+        <div class="sub">to ${esc(n.targets.join(", "))}, ${esc(n.severity)}, from ${esc(n.source)}</div>
+        ${markers.length ? `<div class="chips">${markers.map((m) => `<span class="chip">${esc(m)}</span>`).join("")}</div>` : ""}
+      </div>
+      <div class="actions">
+        <button class="btn" data-now="${esc(n.id)}">Send now</button>
+        <button class="btn" data-resched="${esc(n.id)}">Reschedule</button>
+        <button class="btn" data-edit="${esc(n.id)}">Edit</button>
+        <button class="btn" data-cancel="${esc(n.id)}">Cancel</button>
+      </div></div>`;
+  }).join("");
+  const label = (n) => esc(n.title || n.message.slice(0, 60));
+  el.querySelectorAll("[data-now]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try { await api("POST", `/notifications/${b.dataset.now}/send-now`); toast("Sending now"); }
+    catch (ex) { if (!raced(ex)) toast(ex.message); }
+    refresh();
+  }));
+  el.querySelectorAll("[data-resched]").forEach((b) => (b.onclick = () => {
+    const n = byId[b.dataset.resched];
+    openForm({
+      title: "Reschedule", intro: `<strong>${label(n)}</strong>. Times are in ${esc(tz)}.`,
+      fields: [{ name: "send_at", label: `New send time (${tz})`, kind: "datetime", value: zoneInput(n.send_at, tz) }],
+      submit: "Reschedule",
+      onSubmit: async (v) => {
+        const send_at = zonedToIso(v.send_at, tz);
+        try { await api("PATCH", `/notifications/${n.id}`, { send_at }); }
+        catch (ex) { if (raced(ex)) return; throw ex; }
+        toast("Rescheduled");
+        refresh();
+      },
+    });
+  }));
+  el.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => editScheduled(byId[b.dataset.edit])));
+  el.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = () => {
+    const n = byId[b.dataset.cancel];
+    confirmAction("Cancel this notification?", `<strong>${label(n)}</strong> will not be sent.`, "Cancel notification", async () => {
+      try { await api("POST", `/notifications/${n.id}/cancel`); }
+      catch (ex) { if (raced(ex)) return; throw ex; }
+      toast("Cancelled");
+      refresh();
+    });
+  }));
+}
+
+function editScheduled(n) {
+  const known = new Set(targetOptions().map(([v]) => v));
+  const options = [...targetOptions(), ...n.targets.filter((t) => !known.has(t)).map((t) => [t, t])];
+  const fields = [
+    { name: "title", label: "Title", kind: "text", value: n.title || "" },
+    { name: "message", label: "Message", kind: "textarea", value: n.message },
+    { name: "severity", label: "Severity", kind: "select", value: n.severity, options: state.severities.map((s) => [s, `${s} (${SEVERITY_HELP[s] || ""})`]) },
+    { name: "targets", label: "Send to", kind: "checks", value: n.targets, options },
+    { name: "kinds", label: "Delivery", kind: "select", value: (n.kinds || []).join(","), options: KINDS },
+    { name: "url", label: "Link URL", kind: "url", value: n.url || "" },
+    { name: "url_title", label: "Link title", kind: "text", value: n.url_title || "" },
+    { name: "ttl_seconds", label: "Valid for (seconds after sending)", kind: "int", value: n.ttl_seconds ?? "", help: "Leave empty for no limit." },
+    { name: "max_late_seconds", label: "May go out up to this late (seconds)", kind: "int", value: n.max_late_seconds, help: "If the service was down at the send time. 60 to 86400." },
+  ];
+  openForm({
+    title: "Edit scheduled notification", fields, submit: "Save",
+    extra: (form) => {
+      // who would get it if it went out now, from the ordinary dry-run
+      const box = document.createElement("div");
+      box.className = "hint";
+      form.querySelector(".form-error").before(box);
+      let seq = 0;
+      const refreshPreview = async () => {
+        const mine = ++seq;
+        const v = readForm(form, fields);
+        if (!v.targets.length) { box.textContent = "Pick at least one target."; return; }
+        try {
+          const r = await api("POST", "/preview", { targets: v.targets, severity: v.severity, kinds: v.kinds ? v.kinds.split(",") : null,
+            title: v.title || null, message: v.message || "preview" });
+          if (mine !== seq) return;
+          const devices = r.routing.devices.map((d) => cfg().devices[d.device]?.description || d.device);
+          const skipped = r.routing.suppressed.map((x) => `${x.target}: ${x.reason}`);
+          box.innerHTML = `If it went out now it would reach ${devices.length ? esc(devices.join(", ")) : "no device"}.${skipped.length ? ` Not reached: ${esc(skipped.join("; "))}.` : ""}`;
+        } catch (ex) { if (mine === seq) box.textContent = ex.message; }
+      };
+      form.addEventListener("change", refreshPreview);
+      refreshPreview();
+    },
+    onSubmit: async (v) => {
+      const patch = {};
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      for (const k of ["title", "url", "url_title"]) if (v[k] !== (n[k] || "")) patch[k] = v[k] || null;
+      if (v.message !== n.message) patch.message = v.message;
+      if (v.severity !== n.severity) patch.severity = v.severity;
+      if (!same([...v.targets].sort(), [...n.targets].sort())) patch.targets = v.targets;
+      const kinds = v.kinds ? v.kinds.split(",") : null;
+      if (!same(kinds, n.kinds || null)) patch.kinds = kinds;
+      if (v.ttl_seconds !== (n.ttl_seconds ?? null)) patch.ttl_seconds = v.ttl_seconds;
+      if (v.max_late_seconds !== null && v.max_late_seconds !== n.max_late_seconds) patch.max_late_seconds = v.max_late_seconds;
+      if (!Object.keys(patch).length) { toast("Nothing changed"); return; }
+      try { await api("PATCH", `/notifications/${n.id}`, patch); }
+      catch (ex) { if (raced(ex)) return; throw ex; }
+      toast("Saved");
+      refresh();
+    },
+  });
+}
+
 // ---------------------------------------------------------------- activity list
 
 async function loadRecent(el, limit, attentionEl) {
@@ -924,14 +1136,26 @@ async function loadRecent(el, limit, attentionEl) {
       }
     }
     const items = [...groups.values()].sort((p, q) => (q.at || "").localeCompare(p.at || ""));
-    attentionEl.innerHTML = items.length || a.awaiting_acknowledgement.length ? `
+    const rp = a.release_problems || [];
+    attentionEl.innerHTML = items.length || a.awaiting_acknowledgement.length || rp.length ? `
       <h3>Needs attention</h3><div class="rows">
+      ${rp.map((x) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
+        <div class="sub">Scheduled for ${esc(zoneWhen(x.send_at, data.timezone))} (${esc(data.timezone)}) · ${esc(x.status)}</div>
+        <div class="sub">${esc(x.reason || "")}</div></div>
+        <div class="actions"><button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button>
+        <button class="btn" data-relretry="${esc(x.notification_id)}">Retry</button></div></div>`).join("")}
       ${a.awaiting_acknowledgement.map((x) => `<div class="row"><span class="lamp warn"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">Critical alert on ${esc(x.device)} not acknowledged yet</div></div></div>`).join("")}
       ${items.map(({ kind, x, devices, at }) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
         <div class="sub">${kind === "failed" || kind === "expired" ? "" : "last change "}${esc(when(at))} (${esc(ago(at))})</div>
         <div class="sub">${esc(kind)} on ${esc(devices.join(", "))} after ${x.attempts} attempts: ${esc(x.last_error || "")}</div></div>
         ${kind === "failed" || kind === "expired" ? `<div class="actions"><button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button></div>` : ""}</div>`).join("")}
       </div>` : "";
+    attentionEl.querySelectorAll("[data-relretry]").forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      try { await api("POST", `/notifications/${b.dataset.relretry}/retry`); toast("Sending now"); }
+      catch (ex) { toast(ex.message); }
+      loadRecent(el, limit, attentionEl);
+    }));
     attentionEl.querySelectorAll("[data-dismiss]").forEach((b) => (b.onclick = async () => {
       b.disabled = true;
       try { await api("POST", `/notifications/${b.dataset.dismiss}/dismiss`); toast("Dismissed"); }
@@ -944,7 +1168,7 @@ async function loadRecent(el, limit, attentionEl) {
     <div class="row" style="align-items:flex-start"><span class="lamp ${lampFor(n.status)}" style="margin-top:.45rem"></span>
       <div class="grow">
         <div class="title">${esc(n.title || n.message.slice(0, 60))}</div>
-        <div class="sub">${esc(when(n.created_at))} from ${esc(n.source)} to ${esc(n.targets.join(", "))}, ${esc(n.severity)}</div>
+        <div class="sub">${n.status === "scheduled" ? `scheduled for ${esc(zoneWhen(n.send_at, data.timezone))} (${esc(data.timezone)})` : esc(when(n.created_at))} from ${esc(n.source)} to ${esc(n.targets.join(", "))}, ${esc(n.severity)}</div>
         <div class="sub"><span class="status">${esc(n.status)}</span>${n.suppressed.length ? `: ${esc(n.suppressed[0].reason)}` : ""}</div>
         ${n.attachments?.length ? `<dl class="kv"><dt>Attachments</dt><dd>${n.attachments.map((a) =>
           `${esc(a.filename)} (${esc(a.content_type)}, ${esc(fmtSize(a.size))})${a.purged ? ` <span class="chip">purged</span>` : ""}`).join("<br>")}</dd></dl>` : ""}

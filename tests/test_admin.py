@@ -376,3 +376,102 @@ def test_ui_bundle_has_reply_mailbox_panel(fresh):
                    "Send size alerts to", "0 switches the rule off",
                    "Manage reply mailbox", "Back to Providers"):
         assert needle in js, needle
+
+
+# ------------------------------------------------------------------ scheduled notifications
+
+def _scheduled_setup(fresh, fake):
+    """An admin session plus a sender token and one device, so scheduled notifications can be created."""
+    srv = fresh()
+    b = setup_admin(srv)
+    b.put("/admin/api/providers/pushover", json={"type": "pushover", "settings": {"app_token": APP_TOKEN}}, headers=H)
+    b.put("/admin/api/users/alex", json={"display_name": "Alex"}, headers=H)
+    b.put("/admin/api/devices/alex-phone", json={
+        "provider": "pushover", "owner": "alex", "address": {"user_key": USER_KEY, "device": "iphone"}}, headers=H)
+    token = b.post("/admin/api/clients/sender", json={"scopes": ["send", "read"]}, headers=H).json()["token"]
+    api = httpx.Client(base_url=srv.url, headers={"Authorization": f"Bearer {token}"}, timeout=10)
+    return srv, b, api
+
+
+def _schedule(api, **body):
+    body.setdefault("targets", ["user:alex"])
+    body.setdefault("message", "hello")
+    body.setdefault("delay", "2h")
+    r = api.post("/v1/notifications", json=body)
+    assert r.status_code == 202, r.text
+    return r.json()["id"]
+
+
+def test_admin_scheduled_list_and_zone(fresh, fake, monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/Amsterdam")
+    srv, b, api = _scheduled_setup(fresh, fake)
+    late = _schedule(api, delay="3h", title="later")
+    soon = _schedule(api, delay="1h", title="sooner")
+    assert b.get("/admin/api/scheduled").status_code == 200
+    out = b.get("/admin/api/scheduled").json()
+    assert out["timezone"] == "Europe/Amsterdam"
+    assert [i["id"] for i in out["items"]] == [soon, late]
+    assert all(i["status"] == "scheduled" for i in out["items"])
+    assert httpx.get(f"{srv.url}/admin/api/scheduled").status_code == 401
+    act = b.get("/admin/api/activity").json()
+    assert act["timezone"] == "Europe/Amsterdam" and "release_problems" in act["attention"]
+
+
+def test_admin_patch_with_offset(fresh, fake):
+    srv, b, api = _scheduled_setup(fresh, fake)
+    nid = _schedule(api)
+    r = b.patch(f"/admin/api/notifications/{nid}", json={"send_at": "2099-01-01T12:00:00+05:00"}, headers=H)
+    assert r.status_code == 422  # beyond the horizon, so use a near date below
+    from datetime import UTC, datetime, timedelta, timezone
+    local = (datetime.now(UTC) + timedelta(days=2)).astimezone(timezone(timedelta(hours=5))).replace(microsecond=0)
+    r = b.patch(f"/admin/api/notifications/{nid}", json={"send_at": local.isoformat()}, headers=H)
+    assert r.status_code == 200, r.text
+    stored = srv.service.db.scalar("SELECT send_at FROM notifications WHERE id=?", (nid,))
+    from notify.db import parse_iso
+    assert parse_iso(stored) == local.astimezone(UTC)
+    assert b.patch(f"/admin/api/notifications/{nid}", json={"send_at": local.isoformat()}).status_code == 403
+    assert b.patch("/admin/api/notifications/nope", json={"title": "x"}, headers=H).status_code == 404
+
+
+def test_admin_send_now(fresh, fake):
+    srv, b, api = _scheduled_setup(fresh, fake)
+    nid = _schedule(api)
+    r = b.post(f"/admin/api/notifications/{nid}/send-now", headers=H)
+    assert r.status_code == 200, r.text
+    wait_for(lambda: api.get(f"/v1/notifications/{nid}").json()["status"] == "dispatched")
+    assert b.post(f"/admin/api/notifications/{nid}/send-now", headers=H).status_code == 409
+
+
+def test_admin_preview(fresh, fake):
+    srv, b, api = _scheduled_setup(fresh, fake)
+    r = b.post("/admin/api/preview", json={"targets": ["user:alex"], "message": "hi", "severity": "high"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert r.json()["dry_run"] is True and r.json()["deliveries"]
+    assert not fake.messages
+    assert b.post("/admin/api/preview", json={"targets": ["user:nobody"], "message": "hi"}, headers=H).status_code in (404, 422)
+
+
+def test_admin_delete_client_cancels_scheduled(fresh, fake):
+    srv, b, api = _scheduled_setup(fresh, fake)
+    ids = [_schedule(api), _schedule(api, delay="3h")]
+    out = b.delete("/admin/api/clients/sender", headers=H).json()
+    assert out["cancelled_scheduled"] == 2
+    rows = srv.service.db.query("SELECT status FROM notifications WHERE id IN (?,?)", tuple(ids))
+    assert {r["status"] for r in rows} == {"cancelled"}
+    ev = srv.service.db.query("SELECT data_json FROM events WHERE notification_id=? AND type='notification.status_changed'"
+                              " ORDER BY id DESC", (ids[0],))
+    assert "client deleted" in ev[0]["data_json"]
+    assert b.delete("/admin/api/clients/sender", headers=H).json()["cancelled_scheduled"] == 0
+
+
+def test_admin_state_counts(fresh, fake):
+    srv, b, api = _scheduled_setup(fresh, fake)
+    other = b.post("/admin/api/clients/other", json={"scopes": ["send"]}, headers=H).json()["token"]
+    _schedule(api)
+    _schedule(api, delay="3h")
+    httpx.post(f"{srv.url}/v1/notifications", headers={"Authorization": f"Bearer {other}"},
+               json={"targets": ["user:alex"], "message": "x", "delay": "1h"})
+    st = b.get("/admin/api/state").json()
+    assert st["scheduled_count"] == 3
+    assert st["config"]["clients"]["sender"]["scheduled"] == 2
+    assert st["config"]["clients"]["other"]["scheduled"] == 1

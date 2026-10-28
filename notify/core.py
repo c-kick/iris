@@ -919,8 +919,8 @@ class NotifyService:
             "suppressed": routing.get("suppressed", []), "delivery_counts": counts, "deliveries": deliveries,
             **self._attachments_out(n["id"]),
             **({"send_at": n["send_at"], "max_late_seconds": n["max_late_seconds"], "deliver_by": n["deliver_by"],
-                "released_at": n["released_at"],
-                **({"routing_preview": routing.get("preview")} if n["status"] == "scheduled" else {})}
+                "released_at": n["released_at"], "ttl_seconds": n["ttl_seconds"],
+                **({"kinds": routing.get("kinds"), "routing_preview": routing.get("preview")} if n["status"] == "scheduled" else {})}
                if n["send_at"] else {}),
             **({"reply": bool(n["reply_wanted"]), "in_reply_to": n["in_reply_to"],
                 "conversation_id": n["conversation_id"] or n["id"]}
