@@ -123,6 +123,11 @@ everyone out and prints a new setup code.
 - New columns: `notifications.reply_wanted`, `in_reply_to`, `conversation_id`
   (own id unless a follow-up), `listener_seen_at`; `deliveries.recipient_address`
   (the address at the moment the delivery was claimed for sending).
+- Scheduling columns on `notifications` (0.8.0): `send_at` (UTC, null for immediate ones), `max_late_seconds`,
+  `deliver_by` (`send_at + max_late_seconds`, recomputed on edit), `ttl_seconds` and `explicit_expires_at` (as
+  submitted, so a TTL can move with the send time while `expires_at` keeps the effective expiry), `released_at`
+  (when routing ran; set on success, miss and failure alike) and `dismissed_at` (dismissed from Needs attention),
+  plus an index on `(status, send_at)`. `status = 'scheduled'` is stored explicitly.
 - `events` — append-only log; its integer id is the global cursor for history,
   SSE resume (`Last-Event-ID`) and webhook payloads. `mailbox.cleanup` and `mailbox.settings` events belong to no
   notification (no webhook fan-out) and are pruned by the retention sweep after `retention_days`.
@@ -162,6 +167,56 @@ Retry: network errors, 5xx and 429 are retried with exponential backoff and
 jitter (10 s × 3ⁿ, capped at 15 min, never below Pushover's 5 s, 8 attempts by
 default, never past `expires_at`). 4xx is permanent (Pushover: "repeating your
 same request will not work"). Manual retry re-queues `failed` deliveries.
+
+### Scheduled notifications
+
+A submit with `send_at` or `delay` (and a send time more than 5 s ahead) creates a notification in status
+`scheduled` with **no deliveries**; routing and planning are deferred.
+
+```
+scheduled ──► released ──► (queued → ... normal delivery states; status derived from the deliveries)
+   │              ├──► suppressed / failed   (nothing to send to, routing error, sender gone, release error)
+   │              └──► expired               (missed: now > deliver_by)
+   └──► cancelled
+```
+
+- **Release door.** `Scheduler.release(nid, force=False)` in `notify/schedule.py` is the only way out of
+  `scheduled`: the scheduled release, *send now* and the retry of a missed or failed release all use it. It runs in
+  one `db.tx()` (no intermediate `releasing` status): re-read the row and continue only while `scheduled`; unless
+  `force`, a release after `deliver_by` marks the notification `expired` (`notification.missed`); a sender that no
+  longer exists makes it `failed`; otherwise routing is resolved **now**, deliveries are planned and inserted, and
+  `released_at` is set. A routing error is `failed`; zero deliveries is `suppressed` (as today) but also counts as a
+  release problem, as does a `reply` notification that reached no email device. `notification.created` (payload
+  `scheduled: true`) is emitted here, not at submit.
+- **Per-row isolation.** `release_due()` runs at the start of every dispatcher pass and releases each scheduled row
+  with `send_at <= now` inside its own `try/except`: an unexpected error marks that one notification `failed`
+  ("release error: ...") and the loop goes on to the next row and to normal dispatch. A bad row cannot stop deliveries.
+  The loop wakes at least once a second, which is the precision; edits and send now call `wake`. The first pass after a
+  start releases everything overdue, subject to `deliver_by`.
+- **`deliver_by` bounds dispatch too.** A delivery of a scheduled notification not dispatched by `deliver_by` is
+  expired by the `expire_due` sweep and retry backoff never schedules past it. It is never passed to a provider:
+  `expires_at` goes to Pushover as TTL, and using `deliver_by` there would make a delivered message vanish later.
+- **Effective time.** Wherever a timestamp means "when it went out" the code uses
+  `COALESCE(released_at, send_at, created_at)`: retention (`retention_sweep` never deletes a `scheduled` row),
+  the attachment purge, and the provider timestamp (Pushover `timestamp`, email `Date`). `created_at` stays "submitted".
+  Because `released_at` is also set on a miss, a missed notification survives `retention_days` from the miss, with its
+  reply conversation and webhook subscription.
+- **Attachments.** For a scheduled request URL attachments are always fetched and all bytes always stored (a preview
+  that reaches nobody now may reach a device at release). The purge skips `scheduled` rows, so the bytes are kept until
+  the send time plus `attachment_retention_days`; a retry soon after a miss still has its files.
+- **Edit and cancel.** `PATCH` (`Scheduler.update`) merges the patch, validates the whole result as a submit would and
+  writes it inside one `db.tx()`; a row that is no longer `scheduled` yields 409 and no change. Cancel is a single
+  `UPDATE ... WHERE status='scheduled' AND (admin OR client_id=caller)` in the service; if it changes no row the caller
+  needs `manage` and the delivery cancel runs. Hence the `send` scope suffices for the caller's own scheduled
+  notifications. Time zone: `ZoneInfo(TZ)` when `TZ` is set and valid, else UTC (needs the `tzdata` package).
+- **Caps and limits.** Per client, 100 scheduled and 50 MiB of their attachment bytes (admin and internal clients
+  exempt); at most 366 days ahead; `max_late_seconds` 60 to 86 400, default 3 600.
+- **`release_problems`.** `attention` has an additive notification-level bucket: missed notifications, release
+  failures, releases that reached no device or no reply-capable device, deliveries expired by `deliver_by`, and rows still
+  `scheduled` more than 60 s past `send_at`. Dismiss sets `notifications.dismissed_at`; retry calls
+  `release(nid, force=True)` (lateness ignored; an already past effective `expires_at` is a 409).
+  `/health/ready` has `checks.scheduler` (not ready while a row is overdue); `/metrics` adds
+  `notify_scheduled_next_seconds` and `notify_scheduled_overdue`.
 
 ## Severity and capabilities
 
@@ -433,10 +488,11 @@ image sets `MALLOC_MMAP_THRESHOLD_` so freed buffers return to the OS.
 
 | Method & path | Purpose |
 |---|---|
-| `POST /v1/notifications` | Submit (optional `kinds`, `attachments`, `reply`, `in_reply_to`). 202; 200 on idempotent replay; `dry_run: true` returns the routing plan only; 413 above 15 MiB |
-| `GET /v1/notifications` | History; filter by status/source/tag/since |
+| `POST /v1/notifications` | Submit (optional `kinds`, `attachments`, `reply`, `in_reply_to`, `send_at` / `delay`, `max_late_seconds`). 202; 200 on idempotent replay; `dry_run: true` returns the routing plan only; 413 above 15 MiB |
+| `GET /v1/notifications` | History; filter by status/source/tag/since. `status=scheduled` lists all of the caller's scheduled ones by `send_at`, no cursor |
+| `PATCH /v1/notifications/{id}` | Reschedule, edit or `send_now` while `scheduled` (`send`; own or `admin`); 409 once released |
 | `GET /v1/notifications/{id}` | Full status: deliveries, attempts, events, attachment metadata |
-| `POST /v1/notifications/{id}/cancel`, `/retry` | Where meaningful; 409 with reason otherwise |
+| `POST /v1/notifications/{id}/cancel`, `/retry` | Where meaningful; 409 with reason otherwise. Cancel needs only `send` for one's own `scheduled` notification, else `manage` |
 | `POST /v1/notifications/{id}/replies/claim?waiter=…&wait=…` | Long-poll for the oldest waiting reply of the conversation: 200 with the reply, 204 when none came in time (`read`; own notification or `admin`) |
 | `GET /v1/notifications/{id}/replies` | Replies of the conversation with state; subject, text and attachments only for claimed replies (all for `admin`) |
 | `GET /v1/replies/{id}/attachments/{idx}` | Download an attachment of a claimed reply |
@@ -477,7 +533,9 @@ Event types: `notification.created`, `notification.status_changed`,
 `delivery.queued`, `delivery.attempt_failed`, `delivery.dispatched`,
 `delivery.delivered`, `delivery.acknowledged`, `delivery.interacted`,
 `delivery.failed`, `delivery.expired`, `delivery.cancelled`, `reply.received`,
-`reply.claimed`, `reply.unclaimed`, `reply.quarantined`.
+`reply.claimed`, `reply.unclaimed`, `reply.quarantined`, `notification.scheduled`, `notification.updated`,
+`notification.missed`. A scheduled notification emits `notification.scheduled` at submit and `notification.created`
+at release; `*` and `notification.*` subscribers receive the new types.
 
 - **SSE** `GET /v1/events/stream`: filterable, resumable with `Last-Event-ID`.
 - **Webhooks**: per-client subscriptions (event types plus optional
@@ -492,9 +550,10 @@ Streamable HTTP at `/mcp` in the same process, same bearer tokens and scopes.
 also takes `attachments` (URLs recommended, inline data up to 256 KiB), `reply` and
 `in_reply_to`. Tools:
 `send_notification`, `preview_routing`, `get_notification`,
-`list_notifications`, `list_attention` (failed / pending / stuck / awaiting ack; failed and expired items
+`list_notifications`, `list_attention` (failed / pending / stuck / awaiting ack / `release_problems`; failed and expired items
 an admin dismissed in Admin → Activity are left out, `deliveries.dismissed_at`, cleared by a retry),
-`list_targets`, `retry_notification`, `cancel_notification`, `get_replies`
+`list_targets`, `retry_notification`, `cancel_notification`, `update_scheduled_notification` (`clear=[...]` removes
+optional fields), `get_replies`
 (conversation replies with state; text only for claimed ones). Resources:
 `notify://targets`, `notify://notifications/{id}`. Everything is phrased in
 notification semantics — targets, severity, states — never Pushover keys or
@@ -504,5 +563,5 @@ priorities.
 
 JSON logs to stdout (one object per line, carrying notification/delivery ids);
 `/health/live` (process up), `/health/ready` (DB writable, dispatcher heartbeat
-fresh, config loaded); `/metrics` in Prometheus text format (deliveries by
-state, queue depth, oldest queued age, webhook backlog, provider quota).
+fresh, config loaded, scheduler not overdue); `/metrics` in Prometheus text format (deliveries by
+state, queue depth, oldest queued age, webhook backlog, provider quota, next scheduled release and overdue count).
