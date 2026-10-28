@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import attachments
+from . import attachments, schedule
 from .attachments import PreparedAttachment
 from .config import NotifyConfig
 from .handles import new_handle
@@ -91,6 +91,7 @@ class SubmitPlan:
     nrow: dict[str, Any]
     deliveries: list[dict[str, Any]]
     attachment_meta: list[dict[str, Any]] = field(default_factory=list)
+    send_at: datetime | None = None  # set = scheduled: `deliveries` is then only the routing preview
 
 
 def backoff_seconds(attempt: int, base: float, cap: float) -> float:
@@ -235,6 +236,8 @@ class NotifyService:
 
     def _refresh_status(self, c: sqlite3.Connection, nid: str) -> str:
         n = c.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
+        if n["status"] == "scheduled":  # no deliveries yet; the release sets the status itself
+            return "scheduled"
         states = [r[0] for r in c.execute("SELECT state FROM deliveries WHERE notification_id=?", (nid,))]
         new = derive_notification_status(states)
         if new != n["status"]:
@@ -269,14 +272,55 @@ class NotifyService:
     # ---------------------------------------------------------------- intake
     def _replay(self, client: Client, req: NotificationIn) -> tuple[dict[str, Any], bool] | None:
         if req.idempotency_key and not req.dry_run:
-            row = self.db.one("SELECT id FROM notifications WHERE client_id=? AND idempotency_key=?",
+            row = self.db.one("SELECT id, send_at, created_at FROM notifications WHERE client_id=? AND idempotency_key=?",
                               (client.id, req.idempotency_key))
             if row:
+                # the request's send time as it resolved when the row was made (a delay moves with the clock)
+                same = self._send_time(req, parse_iso(row["created_at"])) == parse_iso(row["send_at"])
+                if not same:
+                    raise Conflict("idempotency key already used for a different send time; use PATCH")
                 out = self.get(client, row["id"], detail=False)
                 if self.db.one("SELECT 1 FROM conversations WHERE handle_notification_id=?", (row["id"],)):
                     out.update(reply_handle=None, reply_handle_issued=True)  # shown once; a replay cannot repeat it
                 return out, False
         return None
+
+    @staticmethod
+    def _send_time(req: NotificationIn, now: datetime) -> datetime | None:
+        """The UTC send time (None = immediate); a bad one is the sender's mistake (422)."""
+        try:
+            return schedule.resolve_send_at(req.send_at, req.delay, now, schedule.local_zone())
+        except ValueError as e:
+            raise Invalid(str(e)) from e
+
+    @staticmethod
+    def _preview(route: RoutePlan, deliveries: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"devices": [{"device": d["device"], "provider": d["provider"], "via": d["via"],
+                             "capability_gaps": d["capability_gaps"]} for d in deliveries],
+                "suppressed": route.suppressed}
+
+    def scheduled_preview(self, nrow: dict[str, Any], targets: list[str], severity: Severity,
+                          kinds: list[str] | None, attachment_meta: list[dict[str, Any]] | None = None
+                          ) -> dict[str, Any]:
+        """How a scheduled notification would route right now: devices and suppressed, no delivery ids."""
+        try:
+            route = self.router.resolve(targets, severity, kinds)
+        except RoutingError as e:
+            raise Invalid(str(e)) from e
+        return self._preview(route, self._plan_deliveries(nrow, route, attachment_meta or []))
+
+    def _check_caps(self, client: Client, req: NotificationIn, meta: list[dict[str, Any]]) -> None:
+        """Per-client limits on scheduled notifications (admin and internal submissions are exempt)."""
+        if client.admin or req._internal:
+            return
+        row = self.db.one(
+            "SELECT COUNT(*) AS n, COALESCE(SUM((SELECT SUM(size) FROM attachments a WHERE a.notification_id=n.id)),0)"
+            " AS bytes FROM notifications n WHERE n.client_id=? AND n.status='scheduled'", (client.id,))
+        if row["n"] + 1 > schedule.MAX_SCHEDULED:
+            raise Invalid(f"at most {schedule.MAX_SCHEDULED} scheduled notifications per client")
+        if row["bytes"] + sum(m["size"] or 0 for m in meta) > schedule.MAX_SCHEDULED_BYTES:
+            raise Invalid(f"scheduled attachments are limited to {schedule.MAX_SCHEDULED_BYTES // (1024 * 1024)} MiB"
+                          " per client")
 
     def _plan_deliveries(self, nrow: dict[str, Any], route: RoutePlan,
                          attachment_meta: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -310,12 +354,22 @@ class NotifyService:
             return replay
 
         now = utcnow()
-        expires_at: datetime | None = None
+        send_at = self._send_time(req, now)
+        explicit: datetime | None = None
         if req.expires_at is not None:
-            expires_at = req.expires_at if req.expires_at.tzinfo else req.expires_at.replace(tzinfo=now.tzinfo)
+            if send_at is not None:  # one zone rule per request: offset-less means local time once scheduled
+                try:
+                    explicit = schedule.to_utc(req.expires_at, schedule.local_zone())
+                except ValueError as e:
+                    raise Invalid(str(e)) from e
+            else:
+                explicit = req.expires_at if req.expires_at.tzinfo else req.expires_at.replace(tzinfo=now.tzinfo)
+        expires_at = explicit
         if req.ttl_seconds is not None:
-            ttl_exp = now + timedelta(seconds=req.ttl_seconds)
+            ttl_exp = (send_at or now) + timedelta(seconds=req.ttl_seconds)  # counts from the send time
             expires_at = ttl_exp if expires_at is None else min(expires_at, ttl_exp)
+        if send_at is not None and explicit is not None and explicit <= send_at:
+            raise Invalid("expires_at must be after the send time")
         if expires_at is not None and expires_at <= now:
             raise Invalid("notification is already expired (expires_at/ttl_seconds in the past)")
         try:
@@ -326,9 +380,12 @@ class NotifyService:
         if req.in_reply_to:
             if ":" in req.in_reply_to:  # a handle in the wrong field; never echoed
                 raise Invalid("in_reply_to takes a notification id; pass the handle as reply_handle")
-            prev = self.db.one("SELECT id, client_id, conversation_id FROM notifications WHERE id=?", (req.in_reply_to,))
+            prev = self.db.one("SELECT id, client_id, conversation_id, status FROM notifications WHERE id=?",
+                               (req.in_reply_to,))
             if prev is None or not self._visible(client, prev["client_id"]):
                 raise Invalid(f"in_reply_to: notification {req.in_reply_to} not found")
+            if prev["status"] == "scheduled":
+                raise Invalid("cannot follow up a notification that has not been sent yet")
             conversation_id = prev["conversation_id"] or prev["id"]
             try:
                 with self.db._lock:
@@ -347,23 +404,37 @@ class NotifyService:
         }
         nrow.update({"reply_wanted": int(req.reply), "in_reply_to": req.in_reply_to,
                      "conversation_id": conversation_id or nrow["id"], "auto_submitted": int(req._auto_submitted)})
+        if send_at is not None:
+            nrow.update({
+                "send_at": iso(send_at), "max_late_seconds": req.max_late_seconds or schedule.MAX_LATE_DEFAULT,
+                "ttl_seconds": req.ttl_seconds, "explicit_expires_at": iso(explicit)})
+            nrow["deliver_by"] = iso(send_at + timedelta(seconds=nrow["max_late_seconds"]))
         meta = attachment_meta or []
+        if send_at is not None:
+            self._check_caps(client, req, meta)
         deliveries = self._plan_deliveries(nrow, route, meta)
         if req.dry_run:
-            return {"dry_run": True, "severity": req.severity.value, "expires_at": iso(expires_at),
-                    "routing": route.as_dict(),
-                    "deliveries": [{k: v for k, v in d.items() if k != "id"} for d in deliveries]}, True
+            out = {"dry_run": True, "severity": req.severity.value, "expires_at": iso(expires_at),
+                   "routing": route.as_dict(),
+                   "deliveries": [{k: v for k, v in d.items() if k != "id"} for d in deliveries]}
+            if send_at is not None:
+                out["send_at"] = iso(send_at)
+            return out, True
         return SubmitPlan(now=now, expires_at=expires_at, route=route, nrow=nrow, deliveries=deliveries,
-                          attachment_meta=meta)
+                          attachment_meta=meta, send_at=send_at)
 
     def commit(self, client: Client, req: NotificationIn, plan: SubmitPlan,
                prepared: list[PreparedAttachment | None]) -> tuple[dict[str, Any], bool]:
         """The transactional half of a submit. `prepared` holds one entry per request attachment
-        (None = not fetched); bytes are stored only when the plan has deliveries."""
-        nrow, deliveries, route = plan.nrow, plan.deliveries, plan.route
+        (None = not fetched); bytes are stored when the plan has deliveries or is scheduled."""
+        nrow, route = plan.nrow, plan.route
+        scheduled = plan.send_at is not None
+        deliveries = [] if scheduled else plan.deliveries  # a scheduled plan only carries the preview
         nid, source = nrow["id"], nrow["source"]
-        status = derive_notification_status([QUEUED] * len(deliveries))
+        status = "scheduled" if scheduled else derive_notification_status([QUEUED] * len(deliveries))
         routing = {"suppressed": route.suppressed, "via": {d["device"]: d["via"] for d in deliveries}}
+        if scheduled:
+            routing["preview"] = self._preview(route, plan.deliveries)
         if req.kinds is not None:
             routing["kinds"] = req.kinds
         rows = []
@@ -371,8 +442,8 @@ class NotifyService:
             p = prepared[i] if i < len(prepared) else None
             if p is not None:
                 rows.append((nid, i, p.filename, p.content_type, p.size, p.sha256, p.source, p.source_host,
-                             p.data if deliveries else None))
-            else:  # URL attachment that was never fetched (no deliveries)
+                             p.data if (plan.deliveries or scheduled) else None))
+            else:  # URL attachment that was never fetched (nothing to send, not scheduled)
                 rows.append((nid, i, m["filename"] or f"attachment-{i + 1}", m["content_type"] or
                              "application/octet-stream", m["size"] or 0, "", m["source"],
                              urlsplit(it.url or "").hostname, None))
@@ -388,13 +459,16 @@ class NotifyService:
                 c.execute(
                     "INSERT INTO notifications(id, client_id, idempotency_key, source, title, message, severity, url,"
                     " url_title, actions_json, data_json, tags_json, targets_json, require_ack, expires_at, status,"
-                    " routing_json, created_at, updated_at, reply_wanted, in_reply_to, conversation_id, auto_submitted)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " routing_json, created_at, updated_at, reply_wanted, in_reply_to, conversation_id, auto_submitted,"
+                    " send_at, max_late_seconds, deliver_by, ttl_seconds, explicit_expires_at)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (nid, client.id, req.idempotency_key, source, req.title, req.message, req.severity.value,
                      req.url, req.url_title, nrow["actions_json"], nrow["data_json"], nrow["tags_json"],
                      nrow["targets_json"], nrow["require_ack"], nrow["expires_at"], status, dumps(routing),
                      nrow["created_at"], nrow["updated_at"], nrow["reply_wanted"], nrow["in_reply_to"],
-                     nrow["conversation_id"], nrow["auto_submitted"]))
+                     nrow["conversation_id"], nrow["auto_submitted"], nrow.get("send_at"),
+                     nrow.get("max_late_seconds"), nrow.get("deliver_by"), nrow.get("ttl_seconds"),
+                     nrow.get("explicit_expires_at")))
                 if req.reply or req.in_reply_to:
                     conv = nrow["conversation_id"]
                     c.execute("INSERT OR IGNORE INTO conversations(id, legacy, created_at) VALUES (?,0,?)",
@@ -416,9 +490,9 @@ class NotifyService:
                         (new_id("sub"), client.id, req.webhook.url, webhook_secret, dumps(req.webhook.events), nid,
                          "per-notification webhook", nrow["created_at"]))
                 n = c.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
-                self._emit(c, "notification.created", n, None,
+                self._emit(c, "notification.scheduled" if scheduled else "notification.created", n, None,
                            {"severity": req.severity.value, "targets": req.targets, "deliveries": len(deliveries),
-                            "suppressed": route.suppressed})
+                            "suppressed": route.suppressed, **({"send_at": nrow["send_at"]} if scheduled else {})})
                 for d in deliveries:
                     c.execute(
                         "INSERT INTO deliveries(id, notification_id, device, provider, state, max_attempts,"
@@ -479,7 +553,7 @@ class NotifyService:
             res = self.plan_submit(client, req, meta)
             if isinstance(res, tuple):
                 return res
-            if req.attachments and res.deliveries:
+            if req.attachments and (res.deliveries or res.send_at):
                 if self._intake is None:
                     self._intake = asyncio.Semaphore(1)
                 async with self._intake:
@@ -493,6 +567,8 @@ class NotifyService:
                                         "source": p.source} for p in fetched]
                 try:
                     res.deliveries = self._plan_deliveries(res.nrow, res.route, res.attachment_meta)
+                    if res.send_at:  # URL sizes were unknown before the fetch
+                        self._check_caps(client, req, res.attachment_meta)
                 except KeyError as e:  # a device or provider was removed by a reconfigure meanwhile
                     raise Invalid(f"the target configuration changed while attachments were fetched ({e});"
                                   " submit again") from None
@@ -795,6 +871,10 @@ class NotifyService:
             "created_at": n["created_at"], "updated_at": n["updated_at"], "expires_at": n["expires_at"],
             "suppressed": routing.get("suppressed", []), "delivery_counts": counts, "deliveries": deliveries,
             **self._attachments_out(n["id"]),
+            **({"send_at": n["send_at"], "max_late_seconds": n["max_late_seconds"], "deliver_by": n["deliver_by"],
+                "released_at": n["released_at"],
+                **({"routing_preview": routing.get("preview")} if n["status"] == "scheduled" else {})}
+               if n["send_at"] else {}),
             **({"reply": bool(n["reply_wanted"]), "in_reply_to": n["in_reply_to"],
                 "conversation_id": n["conversation_id"] or n["id"]}
                if n["reply_wanted"] or n["in_reply_to"] else {}),
