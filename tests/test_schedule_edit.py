@@ -232,3 +232,31 @@ def test_concurrent_edits_serialise(live):
     assert r["expires_at"] is None or parse_iso(r["expires_at"]) > parse_iso(r["send_at"]) or 422 in results
     if r["expires_at"] is not None:
         assert parse_iso(r["expires_at"]) > parse_iso(r["send_at"])
+
+
+def test_cancel_of_sent_needs_manage_not_send(live, fake):
+    with live.client("agent") as c:
+        nid = c.post("/v1/notifications", json={"targets": ["user:alex"], "message": "now"}).json()["id"]
+    wait_for(lambda: fake.messages)
+    with live.service.db.tx() as c:  # still waiting to go out, so there is something to cancel
+        c.execute("UPDATE notifications SET client_id='manager' WHERE id=?", (nid,))  # visibility is per owner
+        c.execute("UPDATE deliveries SET state='queued', dispatched_at=NULL, next_attempt_at='2999-01-01T00:00:00Z'"
+                  " WHERE notification_id=?", (nid,))
+    assert live.client("reader").post(f"/v1/notifications/{nid}/cancel").status_code == 403
+    assert live.client("sender").post(f"/v1/notifications/{nid}/cancel").status_code == 403
+    r = live.client("manager").post(f"/v1/notifications/{nid}/cancel")  # manage alone: the 0.7.0 rule
+    assert r.status_code == 200, r.text
+
+
+def test_content_only_edit_of_overdue_row_with_short_ttl(live, monkeypatch):
+    monkeypatch.setattr(live.service.scheduler, "release_due", lambda: 0)  # keep it overdue, not released
+    nid = sched(live, ttl_seconds=10)
+    from tests.test_schedule_release import set_times
+    set_times(live, nid, late=30, limit=3600)
+    with live.service.db.tx() as c:  # the ttl window (send_at + 10 s) is long over
+        c.execute("UPDATE notifications SET expires_at=? WHERE id=?",
+                  ((datetime.now(UTC) - timedelta(seconds=20)).isoformat(), nid))
+    assert patch(live, nid, message="new text").status_code == 200
+    assert row(live, nid)["message"] == "new text"
+    r = patch(live, nid, ttl_seconds=10)  # touching the timing re-checks it
+    assert r.status_code == 422 and "expired" in r.text

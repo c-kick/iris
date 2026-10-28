@@ -781,7 +781,7 @@ class NotifyService:
 
     # ---------------------------------------------------------------- manage
     async def cancel(self, client: Client, nid: str) -> dict[str, Any]:
-        done = self.scheduler.cancel(client, nid)  # a scheduled one: `send` scope suffices for one's own
+        done = self.scheduler.cancel(client, nid)  # a scheduled one: `send` or `manage` suffices for one's own
         if done is not None:
             return done
         if not client.can(Scope.manage):

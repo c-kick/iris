@@ -34,6 +34,18 @@ def require(scope: Scope):
     return dep
 
 
+def require_any(*scopes: Scope):
+    """Like require(), but any one of the scopes will do (admin always passes)."""
+    def dep(request: Request) -> Client:
+        client = request.app.state.auth.from_header(request.headers.get("authorization"))
+        if client is None:
+            raise HTTPException(401, "missing or invalid bearer token", headers={"WWW-Authenticate": "Bearer"})
+        if not any(client.can(s) for s in scopes):
+            raise HTTPException(403, f"client {client.id!r} lacks scope {' or '.join(repr(s.value) for s in scopes)}")
+        return client
+    return dep
+
+
 def _errors(fn):
     """Map core exceptions to HTTP errors."""
     @functools.wraps(fn)
@@ -109,7 +121,7 @@ async def update_scheduled(nid: str, body: ScheduleUpdate, request: Request,
 
 @router.post("/v1/notifications/{nid}/cancel", tags=["notifications"])
 @_errors
-async def cancel(nid: str, request: Request, client: Client = Depends(require(Scope.send))) -> dict[str, Any]:
+async def cancel(nid: str, request: Request, client: Client = Depends(require_any(Scope.send, Scope.manage))) -> dict[str, Any]:
     return await service(request).cancel(client, nid)
 
 

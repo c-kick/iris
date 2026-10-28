@@ -56,3 +56,30 @@ def test_released_old_is_swept(live):
     backdate(live, nid, created=days_ago(200), released_at=days_ago(100))
     live.call(live.service.retention_sweep)
     assert row(live, nid) is None
+
+
+def test_cancelled_scheduled_row_loses_bytes_at_once_and_ages_from_the_cancel(live):
+    nid = sched(live, targets=["device:spare"], delay="10d", attachments=ATT)
+    assert has_bytes(live, nid)
+    with live.client() as c:
+        assert c.post(f"/v1/notifications/{nid}/cancel").status_code == 200
+    assert not has_bytes(live, nid)
+    a = live.service.db.one("SELECT purged_at FROM attachments WHERE notification_id=?", (nid,))
+    assert a["purged_at"] is not None and row(live, nid)["released_at"] is not None
+    live.call(live.service.retention_sweep)
+    assert row(live, nid) is not None  # send_at is 10 days ahead, but the cancel is what counts: still young
+    backdate(live, nid, released_at=days_ago(100))
+    live.call(live.service.retention_sweep)
+    assert row(live, nid) is None
+
+
+def test_kept_released_row_loses_bytes_after_attachment_retention(live):
+    nid = sched(live, targets=["device:spare"], attachments=ATT)
+    set_times(live, nid, late=7200, limit=60)
+    assert live.call(lambda: live.service.scheduler.release(nid)) == "expired"
+    backdate(live, nid, released_at=days_ago(3))
+    live.call(live.service.retention_sweep)
+    assert has_bytes(live, nid)  # younger than attachment_retention_days (7)
+    backdate(live, nid, released_at=days_ago(10))
+    live.call(live.service.retention_sweep)
+    assert row(live, nid) is not None and not has_bytes(live, nid)  # kept (90 days), bytes gone

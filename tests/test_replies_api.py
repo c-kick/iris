@@ -202,3 +202,15 @@ def test_claim_410_after_missed(email_live):
 def test_claim_204_when_dispatched(email_live):
     nid, _ = send(email_live)
     assert _claim(email_live, nid).status_code == 204
+
+
+def test_claim_410_for_failed_immediate_conversation_until_retried(email_live):
+    nid, did = send(email_live)  # an ordinary (not scheduled) reply conversation
+    with email_live.service.db.tx() as c:  # its only delivery never went out and failed for good
+        c.execute("UPDATE deliveries SET state='failed', dispatched_at=NULL, finalized_at=? WHERE id=?",
+                  ("2026-01-01T00:00:00Z", did))
+    r = _claim(email_live, nid)
+    assert r.status_code == 410, r.text
+    with email_live.client() as c:
+        assert c.post(f"/v1/notifications/{nid}/retry").status_code == 200
+    assert _claim(email_live, nid).status_code == 204

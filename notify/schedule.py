@@ -188,6 +188,12 @@ class Scheduler:
                            "capability_gaps": d["capability_gaps"]})
         return status, True
 
+    @staticmethod
+    def drop_attachments(c: Any, nid: str, stamp: str) -> None:
+        """A cancelled scheduled notification never goes out: free its attachment bytes now."""
+        c.execute("UPDATE attachments SET data=NULL, purged_at=? WHERE notification_id=? AND data IS NOT NULL",
+                  (stamp, nid))
+
     def cancel(self, client: Any, nid: str) -> dict[str, Any] | None:
         """Cancel a still-scheduled notification of the caller's (any, for an admin) in one conditional
         UPDATE; None when no row changed, so the caller falls back to the delivery cancel."""
@@ -195,11 +201,12 @@ class Scheduler:
         svc = self.svc
         stamp = now_iso()
         with svc.db.tx() as c:
-            cur = c.execute("UPDATE notifications SET status='cancelled', updated_at=? WHERE id=?"
+            cur = c.execute("UPDATE notifications SET status='cancelled', released_at=?, updated_at=? WHERE id=?"
                             " AND status='scheduled' AND (?=1 OR client_id=?)",
-                            (stamp, nid, int(client.admin), client.id))
+                            (stamp, stamp, nid, int(client.admin), client.id))
             if not cur.rowcount:
                 return None
+            self.drop_attachments(c, nid, stamp)
             n = c.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
             svc._emit(c, "notification.status_changed", n, None,
                       {"from": "scheduled", "to": "cancelled", "reason": f"cancelled by {client.id}"})
@@ -274,7 +281,8 @@ class Scheduler:
                 expires = ttl_exp if expires is None else min(expires, ttl_exp)
             if explicit is not None and explicit <= send_at:
                 raise Invalid("expires_at must be after the send time")
-            if expires is not None and expires <= now:
+            timing = {"send_at", "delay", "send_now", "ttl_seconds", "expires_at"} & given
+            if timing and expires is not None and expires <= now:  # a content-only edit keeps what it had
                 raise Invalid("notification is already expired (expires_at/ttl_seconds in the past)")
 
             stamp = now_iso()

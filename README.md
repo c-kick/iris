@@ -364,12 +364,15 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $N/v1/notifications/ntf_.../ca
 ```
 
 Editable while `scheduled`: `send_at` / `delay`, `max_late_seconds`, `title`, `message`, `severity`,
-`targets`, `kinds`, `url`, `url_title`, `actions`, `tags`, `require_ack`, `ttl_seconds`, `expires_at`.
+`targets`, `kinds`, `url`, `url_title`, `actions` (REST only: the MCP tool has no `actions`), `tags`, `require_ack`, `ttl_seconds`, `expires_at`.
 Attachments, reply settings, `webhook`, `data`, `source` and the idempotency key are not editable (cancel and
 schedule again). A TTL moves with the send time; an explicit `expires_at` stays put and must remain after it.
-A notification that has already left is a 409 with its current status and nothing changes. For notifications
+A notification that has already left is a 409 with its current status and nothing changes. An idempotent replay
+(same key) after the notification was rescheduled returns 409 ("use PATCH"). For notifications
 that are still `scheduled` the **`send` scope is enough** to change or cancel your own (an admin can do it
-for any); retry and cancelling released notifications still need `manage`. Over MCP:
+for any); retry and cancelling released notifications still need `manage` (cancel accepts `send` or `manage` at
+the door, so a `read,manage` token keeps cancelling sent ones as in 0.7.0). Cancelling a scheduled notification
+frees its attachment bytes at once and it then ages out like any finished notification. Over MCP:
 `update_scheduled_notification(notification_id, ..., clear=["url", "ttl_seconds"])` (`clear` names the
 optional fields to remove), `list_notifications(status="scheduled")` and `cancel_notification`. The admin UI
 has a **Scheduled** section (send now, reschedule, edit, cancel) and shows times in the service's zone.
@@ -408,6 +411,9 @@ Subscribers to `*` or `notification.*` therefore start receiving `notification.s
 - **Webhooks and SSE.** `*` and `notification.*` subscribers receive three new event types (above).
 - The schema gains columns and an index on `notifications` and migrates itself on start; take a backup first as usual.
 - Deleting an API client cancels its scheduled notifications.
+- **Reply claims.** The claim endpoint also answers **410** for an ordinary (not scheduled) reply conversation
+  whose deliveries all failed, expired or were suppressed without ever being dispatched; 0.7.0 long-polled to 204.
+  A manual retry makes it 204 (waiting) again.
 
 ## REST examples
 

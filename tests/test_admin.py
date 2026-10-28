@@ -462,6 +462,8 @@ def test_admin_delete_client_cancels_scheduled(fresh, fake):
                               " ORDER BY id DESC", (ids[0],))
     assert "client deleted" in ev[0]["data_json"]
     assert b.delete("/admin/api/clients/sender", headers=H).json()["cancelled_scheduled"] == 0
+    left = srv.service.db.query("SELECT released_at FROM notifications WHERE id IN (?,?)", tuple(ids))
+    assert all(r["released_at"] for r in left)  # they age out from the cancel
 
 
 def test_admin_state_counts(fresh, fake):

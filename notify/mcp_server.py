@@ -84,6 +84,11 @@ def _need(client: Client, scope: Scope) -> None:
         raise ToolError(f"client {client.id!r} lacks scope {scope.value!r}")
 
 
+def _need_any(client: Client, *scopes: Scope) -> None:
+    if not any(client.can(s) for s in scopes):
+        raise ToolError(f"client {client.id!r} lacks scope {' or '.join(repr(s.value) for s in scopes)}")
+
+
 def _check_reply_args(nid: str | None, handle: str | None, *, submit: bool = True) -> None:
     """Refuse a handle in the id field and over-long values here, with fixed messages: the model's own validation
     errors would echo the value."""
@@ -269,10 +274,10 @@ def build_mcp(get_service: Any) -> FastMCP:
 
     @mcp.tool()
     async def cancel_notification(ctx: Context, notification_id: str) -> dict[str, Any]:
-        """Cancel a scheduled notification (your own: send scope), or deliveries not yet dispatched, and stop repeating critical alerts where the provider
+        """Cancel a scheduled notification (your own: send or manage scope), or deliveries not yet dispatched, and stop repeating critical alerts where the provider
         allows it. Messages already shown on a device cannot be recalled."""
         client = _client(ctx)
-        _need(client, Scope.send)  # the service decides: a sent one needs manage (Forbidden)
+        _need_any(client, Scope.send, Scope.manage)  # the service decides: a sent one needs manage (Forbidden)
         out = await call(svc().cancel, client, notification_id)
         return {"results": out["results"], "notification": _compact(out["notification"])}
 

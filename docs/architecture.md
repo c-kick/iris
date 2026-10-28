@@ -547,8 +547,9 @@ at release; `*` and `notification.*` subscribers receive the new types.
 
 Streamable HTTP at `/mcp` in the same process, same bearer tokens and scopes.
 `send_notification` and `preview_routing` accept `kinds`; `send_notification`
-also takes `attachments` (URLs recommended, inline data up to 256 KiB), `reply` and
-`in_reply_to`. Tools:
+also takes `attachments` (URLs recommended, inline data up to 256 KiB), `reply`,
+`in_reply_to`, and the scheduling fields `send_at`, `delay` and `max_late_seconds`
+(`update_scheduled_notification` edits, reschedules or sends such a notification now). Tools:
 `send_notification`, `preview_routing`, `get_notification`,
 `list_notifications`, `list_attention` (failed / pending / stuck / awaiting ack / `release_problems`; failed and expired items
 an admin dismissed in Admin → Activity are left out, `deliveries.dismissed_at`, cleared by a retry),

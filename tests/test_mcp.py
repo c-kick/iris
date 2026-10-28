@@ -128,3 +128,21 @@ def test_mcp_clear_rejects_required(live):
 
     res = run_session(live, "sender", flow)
     assert res.isError and "message" in res.content[0].text
+
+
+def test_mcp_cancel_scope_send_or_manage(live, fake):
+    from tests.conftest import wait_for
+    with live.client("agent") as c:
+        nid = c.post("/v1/notifications", json={"targets": ["user:alex"], "message": "now"}).json()["id"]
+    wait_for(lambda: fake.messages)
+    with live.service.db.tx() as c:
+        c.execute("UPDATE notifications SET client_id='manager' WHERE id=?", (nid,))  # visibility is per owner
+        c.execute("UPDATE deliveries SET state='queued', dispatched_at=NULL, next_attempt_at='2999-01-01T00:00:00Z'"
+                  " WHERE notification_id=?", (nid,))
+
+    async def cancel(s: ClientSession):
+        return await s.call_tool("cancel_notification", {"notification_id": nid})
+
+    assert run_session(live, "reader", cancel).isError  # read-only: refused
+    res = run_session(live, "manager", cancel)
+    assert not res.isError, res.content

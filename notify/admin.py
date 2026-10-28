@@ -510,7 +510,9 @@ async def delete_client(name: str, request: Request, _: Client = Depends(admin))
     with svc.db.tx() as c:
         stamp = now_iso()
         for n in c.execute("SELECT * FROM notifications WHERE client_id=? AND status='scheduled'", (name,)).fetchall():
-            c.execute("UPDATE notifications SET status='cancelled', updated_at=? WHERE id=?", (stamp, n["id"]))
+            c.execute("UPDATE notifications SET status='cancelled', released_at=?, updated_at=? WHERE id=?",
+                      (stamp, stamp, n["id"]))
+            svc.scheduler.drop_attachments(c, n["id"], stamp)
             svc._emit(c, "notification.status_changed", n, None,
                       {"from": "scheduled", "to": "cancelled", "reason": "client deleted"})
             cancelled += 1

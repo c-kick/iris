@@ -25,7 +25,7 @@ APP_TOKEN = "a" * 30
 USER_KEY = "u" * 30
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 56
 TOKENS = {"sender": "tok-sender", "reader": "tok-reader", "agent": "tok-agent", "admin": "tok-admin",
-          "other": "tok-other"}
+          "other": "tok-other", "manager": "tok-manager"}
 
 
 @dataclass
@@ -108,6 +108,7 @@ def make_config(**server: Any) -> NotifyConfig:
             "agent": {"token_sha256": hash_token(TOKENS["agent"]), "scopes": ["send", "read", "manage"]},
             "other": {"token_sha256": hash_token(TOKENS["other"]), "scopes": ["send", "read", "manage"]},
             "admin": {"token_sha256": hash_token(TOKENS["admin"]), "scopes": ["admin"]},
+            "manager": {"token_sha256": hash_token(TOKENS["manager"]), "scopes": ["manage"]},
         },
     })
 
