@@ -342,9 +342,10 @@ as the REST endpoints with an admin client.
   (`~/documentation/notifications.md`, not in the repo): how agents schedule.
 - `notify-wait` help text mentions scheduled notifications, `--timeout`, and exit 1 on 410.
 
-Duration grammar (HR-17): `delay` and `notify-wait --timeout` accept the same grammar (`90`,
-`90s`, `45m`, `2h`, `1d`, combinations like `2h30m`). `notify-wait` is a standalone stdlib
-script and keeps its own parser; one shared test table runs against both parsers.
+Duration grammar (HR-17): `delay` and `notify-wait --timeout` accept the same unit forms
+(`90s`, `45m`, `2h`, `1d`, combinations like `2h30m`). A bare number differs and stays so:
+`delay` takes seconds, `notify-wait` minutes (existing callers rely on it). `notify-wait` is a
+standalone stdlib script and keeps its own parser; one shared test table runs against both.
 
 ## Calls made by the designer (not discussed with the owner)
 
