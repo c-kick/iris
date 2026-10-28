@@ -971,11 +971,13 @@ class NotifyService:
         if since:
             sql += " AND created_at >= ?"
             params.append(since)
-        if before:
+        # the scheduled listing is the whole queue by send time, with no cursor and no page cap
+        queue = status is not None and status.strip() == "scheduled"
+        if before and not queue:
             sql += " AND id < ?"
             params.append(before)
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(max(1, min(limit, 200)))
+        sql += " ORDER BY send_at, id LIMIT ?" if queue else " ORDER BY id DESC LIMIT ?"
+        params.append(1000 if queue else max(1, min(limit, 200)))
         out = []
         for n in self.db.query(sql, params):
             ds = [self._delivery_out(d) for d in

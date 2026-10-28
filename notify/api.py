@@ -82,7 +82,8 @@ async def list_notifications(request: Request, status: str | None = None, source
                              limit: int = Query(default=50, ge=1, le=200),
                              client: Client = Depends(require(Scope.read))) -> dict[str, Any]:
     items = service(request).list(client, status=status, source=source, tag=tag, since=since, before=before, limit=limit)
-    return {"items": items, "next_before": items[-1]["id"] if len(items) == limit else None}
+    queue = status is not None and status.strip() == "scheduled"
+    return {"items": items, "next_before": None if queue or len(items) != limit else items[-1]["id"]}
 
 
 @router.get("/v1/notifications/{nid}", tags=["notifications"])

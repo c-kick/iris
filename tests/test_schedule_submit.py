@@ -175,3 +175,14 @@ def test_dry_run_returns_send_at(live):
     r = submit(live, delay="1h", dry_run=True)
     assert r.status_code == 200 and r.json()["send_at"] and r.json()["deliveries"]
     assert live.client().get("/v1/notifications").json()["items"] == []
+
+
+def test_list_scheduled_sorted_without_cursor(live):
+    ids = {h: submit(live, send_at=at(h)).json()["id"] for h in (3, 2, 1)}
+    with live.client() as c:
+        r = c.get("/v1/notifications", params={"status": "scheduled", "limit": 2})
+        r2 = c.get("/v1/notifications", params={"status": "scheduled", "limit": 2, "before": ids[1]})
+    assert r.status_code == 200, r.text
+    assert [i["id"] for i in r.json()["items"]] == [ids[1], ids[2], ids[3]]
+    assert r.json()["next_before"] is None
+    assert [i["id"] for i in r2.json()["items"]] == [ids[1], ids[2], ids[3]]
