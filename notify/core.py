@@ -114,6 +114,7 @@ class NotifyService:
         self._intake: asyncio.Semaphore | None = None  # created on first use, in the serving loop
         from .replies import Replies  # replies imports core for types; import here to avoid a cycle
         self.replies = Replies(self)
+        self.scheduler = schedule.Scheduler(self)
         self.inbound_status: dict[str, dict[str, Any]] = {}  # per provider: last_success, last_error, last_stats
         self.open_mailbox: Any = None  # seam: tests return a fake mailbox; None = the provider's own
         self.open_cleanup_mailbox: Any = None  # same seam for mailbox cleanup (a CleanupMailbox)
@@ -183,11 +184,22 @@ class NotifyService:
             notification_id=n["id"], delivery_id=delivery_id, title=n["title"], message=n["message"],
             severity=Severity(n["severity"]), url=n["url"], url_title=n["url_title"],
             actions=loads(n["actions_json"], []), tags=loads(n["tags_json"], []),
-            require_ack=bool(n["require_ack"]), created_at=parse_iso(n["created_at"]),  # type: ignore[arg-type]
+            require_ack=bool(n["require_ack"]),
+            created_at=parse_iso(self._went_out(n)),  # type: ignore[arg-type]
             expires_at=parse_iso(n["expires_at"]), callback_url=self.callback_url(provider),
             attachments=atts, reply=bool(n["reply_wanted"]), auto_submitted=bool(n["auto_submitted"]),
             thread_delivery_ids=self._thread_delivery_ids(n["in_reply_to"], device) if device else [],
         )
+
+    @staticmethod
+    def _went_out(n: sqlite3.Row | dict) -> str:
+        """The effective time as provider timestamps want it: release, else planned send, else submit."""
+        def get(k: str) -> Any:
+            try:
+                return n[k]
+            except (KeyError, IndexError):
+                return None
+        return get("released_at") or get("send_at") or n["created_at"]
 
     def _thread_delivery_ids(self, ref: str | None, device: str) -> list[str]:
         """Deliveries to the same device along the in_reply_to chain, oldest first (for email threading)."""
@@ -598,12 +610,18 @@ class NotifyService:
     def expire_due(self) -> int:
         now = now_iso()
         rows = self.db.query(
-            "SELECT d.* FROM deliveries d JOIN notifications n ON n.id=d.notification_id"
-            " WHERE d.state=? AND n.expires_at IS NOT NULL AND n.expires_at <= ?", (QUEUED, now))
+            "SELECT d.*, n.expires_at AS n_expires_at FROM deliveries d JOIN notifications n ON n.id=d.notification_id"
+            " WHERE d.state=? AND ((n.expires_at IS NOT NULL AND n.expires_at <= ?)"
+            " OR (n.deliver_by IS NOT NULL AND n.deliver_by <= ?))", (QUEUED, now, now))
         for d in rows:
+            ttl = d["n_expires_at"] is not None and d["n_expires_at"] <= now
+            reason = "ttl elapsed before dispatch" if ttl else "lateness limit passed before dispatch"
             with self.db.tx() as c:
                 self._transition(c, d, EXPIRED, {"last_error": d["last_error"]},
-                                 {"reason": "ttl elapsed before dispatch", "last_error": d["last_error"]})
+                                 {"reason": reason, "last_error": d["last_error"]})
+                if not ttl:
+                    c.execute("UPDATE notifications SET release_problem=? WHERE id=?",
+                              ("not sent within its lateness limit", d["notification_id"]))
         if rows:
             self._after_commit()
         return len(rows)
@@ -666,6 +684,7 @@ class NotifyService:
                                  {"provider_message_id": result.provider_message_id, "attempt": cur["attempts"]})
                 return
             expires = parse_iso(n["expires_at"])
+            deliver_by = parse_iso(n["deliver_by"])
             if result.outcome == "retryable" and cur["attempts"] < cur["max_attempts"]:
                 delay = backoff_seconds(cur["attempts"], s.retry_base_seconds, s.retry_max_seconds)
                 if result.retry_after:
@@ -674,6 +693,13 @@ class NotifyService:
                 if expires is not None and next_at >= expires:
                     self._transition(c, cur, EXPIRED, {"last_error": result.error},
                                      {"reason": "ttl would elapse before the next retry", "error": result.error})
+                    return
+                if deliver_by is not None and next_at >= deliver_by:
+                    self._transition(c, cur, EXPIRED, {"last_error": result.error},
+                                     {"reason": "lateness limit would pass before the next retry",
+                                      "error": result.error})
+                    c.execute("UPDATE notifications SET release_problem=? WHERE id=?",
+                              ("not sent within its lateness limit", n["id"]))
                     return
                 self._transition(c, cur, QUEUED, {"next_attempt_at": iso(next_at), "last_error": result.error},
                                  {"attempt": cur["attempts"], "error": result.error, "http_status": result.http_status,

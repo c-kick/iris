@@ -101,6 +101,7 @@ class Workers:
         async def once() -> None:
             svc = self.service
             svc.wake.clear()
+            svc.scheduler.release_due()
             svc.expire_due()
             svc.recover_leases()
             for name, provider in svc.providers.items():
