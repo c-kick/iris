@@ -503,7 +503,7 @@ async def rotate_client(name: str, request: Request, _: Client = Depends(admin))
 async def delete_client(name: str, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
     def mutate(data: dict[str, Any]) -> None:
         data["clients"].pop(name, None)
-    out = _commit(request, mutate)
+    _commit(request, mutate)
     # a later client with the same name must not inherit what this one scheduled
     svc = _svc(request)
     cancelled = 0
@@ -516,6 +516,7 @@ async def delete_client(name: str, request: Request, _: Client = Depends(admin))
             cancelled += 1
     if cancelled:
         svc._after_commit()
+    out = _state(request)  # after the cancel, so the counts match
     out["cancelled_scheduled"] = cancelled
     return out
 

@@ -1142,14 +1142,22 @@ async function loadRecent(el, limit, attentionEl) {
       ${rp.map((x) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
         <div class="sub">Scheduled for ${esc(zoneWhen(x.send_at, data.timezone))} (${esc(data.timezone)}) · ${esc(x.status)}</div>
         <div class="sub">${esc(x.reason || "")}</div></div>
-        <div class="actions"><button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button>
-        <button class="btn" data-relretry="${esc(x.notification_id)}">Retry</button></div></div>`).join("")}
+        <div class="actions">${x.status === "scheduled"
+          ? `<button class="btn" data-relnow="${esc(x.notification_id)}">Send now</button>`
+          : `<button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button>
+        <button class="btn" data-relretry="${esc(x.notification_id)}">Retry</button>`}</div></div>`).join("")}
       ${a.awaiting_acknowledgement.map((x) => `<div class="row"><span class="lamp warn"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">Critical alert on ${esc(x.device)} not acknowledged yet</div></div></div>`).join("")}
       ${items.map(({ kind, x, devices, at }) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
         <div class="sub">${kind === "failed" || kind === "expired" ? "" : "last change "}${esc(when(at))} (${esc(ago(at))})</div>
         <div class="sub">${esc(kind)} on ${esc(devices.join(", "))} after ${x.attempts} attempts: ${esc(x.last_error || "")}</div></div>
         ${kind === "failed" || kind === "expired" ? `<div class="actions"><button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button></div>` : ""}</div>`).join("")}
       </div>` : "";
+    attentionEl.querySelectorAll("[data-relnow]").forEach((b) => (b.onclick = async () => {
+      b.disabled = true;
+      try { await api("POST", `/notifications/${b.dataset.relnow}/send-now`); toast("Sending now"); }
+      catch (ex) { toast(ex.status === 409 ? "Already sent" : ex.message); }
+      loadRecent(el, limit, attentionEl);
+    }));
     attentionEl.querySelectorAll("[data-relretry]").forEach((b) => (b.onclick = async () => {
       b.disabled = true;
       try { await api("POST", `/notifications/${b.dataset.relretry}/retry`); toast("Sending now"); }

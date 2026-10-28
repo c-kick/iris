@@ -87,3 +87,16 @@ def test_problems_own_only(live):
     nid = missed(live)
     assert attention(live, "other")["release_problems"] == []
     assert attention(live, "admin")["release_problems"][0]["notification_id"] == nid
+
+
+def test_admin_send_now_on_overdue_row(live, monkeypatch):
+    monkeypatch.setattr(live.service.scheduler, "release_due", lambda: 0)
+    nid = sched(live)
+    set_times(live, nid, late=120)
+    assert attention(live)["release_problems"][0]["status"] == "scheduled"
+    with live.client("admin") as c:
+        assert c.post(f"/admin/api/notifications/{nid}/dismiss").status_code == 409
+        monkeypatch.undo()  # the dispatcher may release again
+        assert c.post(f"/admin/api/notifications/{nid}/send-now").status_code == 200
+    wait_for(lambda: row(live, nid)["status"] != "scheduled")
+    assert attention(live)["release_problems"] == []

@@ -455,7 +455,7 @@ def test_admin_delete_client_cancels_scheduled(fresh, fake):
     srv, b, api = _scheduled_setup(fresh, fake)
     ids = [_schedule(api), _schedule(api, delay="3h")]
     out = b.delete("/admin/api/clients/sender", headers=H).json()
-    assert out["cancelled_scheduled"] == 2
+    assert out["cancelled_scheduled"] == 2 and out["scheduled_count"] == 0
     rows = srv.service.db.query("SELECT status FROM notifications WHERE id IN (?,?)", tuple(ids))
     assert {r["status"] for r in rows} == {"cancelled"}
     ev = srv.service.db.query("SELECT data_json FROM events WHERE notification_id=? AND type='notification.status_changed'"
