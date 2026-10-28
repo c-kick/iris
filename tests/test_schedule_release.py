@@ -193,3 +193,37 @@ def test_timestamp_is_release_time(live, fake):
     make_due(live, nid)
     wait_for(lambda: fake.messages)
     assert abs(int(fake.messages[0]["timestamp"]) - datetime.now(UTC).timestamp()) < 30
+
+
+def test_reply_without_email_device_is_problem(email_live):
+    nid = sched(email_live, reply=True, kinds=["push"])
+    make_due(email_live, nid)
+    wait_for(lambda: row(email_live, nid)["status"] != "scheduled")
+    r = row(email_live, nid)
+    assert r["release_problem"] == "reply requested but no email device received it"
+    assert r["released_at"] and email_live.service.db.scalar(
+        "SELECT COUNT(*) FROM deliveries WHERE notification_id=?", (nid,)) == 1
+
+
+def test_manual_retry_clears_lateness_limit(live, fake):
+    fake.responses = [(400, {"status": 0, "errors": ["nope"]})]
+    nid = sched(live)
+    make_due(live, nid, late=1)
+    wait_for(lambda: get(live, nid)["deliveries"] and get(live, nid)["deliveries"][0]["state"] == "failed")
+    with live.service.db.tx() as c:
+        c.execute("UPDATE notifications SET deliver_by=? WHERE id=?",
+                  (iso(datetime.now(UTC) - timedelta(seconds=5)), nid))
+    with live.client() as c:
+        assert c.post(f"/v1/notifications/{nid}/retry").status_code == 200
+    wait_for(lambda: get(live, nid)["status"] == "dispatched")
+    assert row(live, nid)["deliver_by"] is None
+
+
+def test_release_wakes_bus_for_every_outcome(live):
+    calls = []
+    live.service._after_commit = lambda dispatch=False: calls.append(dispatch)
+    nid = sched(live)
+    set_times(live, nid, late=7200, limit=60)  # missed
+    assert live.call(lambda: live.service.scheduler.release(nid)) == "expired"
+    assert calls and calls[-1] is True
+    del live.service._after_commit

@@ -826,6 +826,8 @@ class NotifyService:
                if purged else None)
         for d in self.db.query("SELECT * FROM deliveries WHERE notification_id=?", (nid,)):
             if d["state"] == FAILED:
+                with self.db.tx() as c:  # a person chose to send it now: the unattended-lateness limit no longer applies
+                    c.execute("UPDATE notifications SET deliver_by=NULL WHERE id=?", (nid,))
                 fields: dict[str, Any] = {"attempts": 0, "next_attempt_at": now, "finalized_at": None,
                                           "last_error": d["last_error"], "dismissed_at": None}
                 gaps = loads(d["capability_gaps_json"], [])

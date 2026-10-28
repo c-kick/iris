@@ -103,6 +103,12 @@ class Scheduler:
     def release(self, nid: str, *, force: bool = False) -> str:
         """Turn a scheduled notification into deliveries (or a recorded problem) and return its status.
         Used by the scheduled release, send-now and the retry of a missed/failed release."""
+        status, committed = self._release(nid, force)
+        if committed:  # every outcome changed the row: wake SSE streams, and the dispatcher for new deliveries
+            self.svc._after_commit(dispatch=True)
+        return status
+
+    def _release(self, nid: str, force: bool) -> tuple[str, bool]:
         from .core import NotFound, SYSTEM_CLIENT
         from .db import dumps, loads, now_iso, parse_iso, utcnow
         from .models import QUEUED, Severity, derive_notification_status
@@ -117,7 +123,7 @@ class Scheduler:
                 force and n["release_problem"] is not None
                 and not c.execute("SELECT 1 FROM deliveries WHERE notification_id=?", (nid,)).fetchone())
             if not eligible:
-                return n["status"]
+                return n["status"], False
             now = utcnow()
             stamp = now_iso()
             if force:
@@ -137,10 +143,10 @@ class Scheduler:
                 finish("expired", f"missed: due at {n['send_at']}, could not be sent until {stamp}")
                 svc._emit(c, "notification.missed", n, None,
                           {"send_at": n["send_at"], "deliver_by": n["deliver_by"], "missed_at": stamp})
-                return "expired"
+                return "expired", True
             if n["client_id"] not in svc.config.clients and n["client_id"] not in (SYSTEM_CLIENT.id, UI_CLIENT_ID):
                 finish("failed", "sender no longer exists")
-                return status_changed("failed")
+                return status_changed("failed"), True
 
             old = loads(n["routing_json"], {})
             kinds = old.get("kinds")
@@ -148,7 +154,7 @@ class Scheduler:
                 route = svc.router.resolve(loads(n["targets_json"], []), Severity(n["severity"]), kinds)
             except RoutingError as e:
                 finish("failed", f"routing failed: {e}")
-                return status_changed("failed")
+                return status_changed("failed"), True
             meta = [{"filename": r["filename"], "content_type": r["content_type"], "size": r["size"]}
                     for r in c.execute("SELECT filename, content_type, size FROM attachments WHERE notification_id=?"
                                        " ORDER BY idx", (nid,))]
@@ -180,8 +186,7 @@ class Scheduler:
                 svc._emit(c, "delivery.queued", n, d["id"],
                           {"device": d["device"], "provider": d["provider"], "to": QUEUED,
                            "capability_gaps": d["capability_gaps"]})
-        svc._after_commit(dispatch=True)
-        return status
+        return status, True
 
     def release_due(self) -> int:
         """Release every scheduled notification whose time has come; a bad row never stops the others."""
