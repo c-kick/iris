@@ -35,16 +35,18 @@ def test_scheduled_far_ahead_survives_sweep(live):
     assert row(live, nid) is not None and has_bytes(live, nid)
 
 
-def test_missed_survives(live):
-    nid = sched(live, targets=["device:spare"], attachments=ATT)
+def test_missed_survives(email_live):
+    live = email_live
+    nid = sched(live, targets=["device:alex-email"], kinds=["email"], reply=True, attachments=ATT)
+    conv = "SELECT 1 FROM conversations WHERE id=?"
+    assert live.service.db.one(conv, (nid,)) is not None
     set_times(live, nid, late=7200, limit=60)
     assert live.call(lambda: live.service.scheduler.release(nid)) == "expired"
     assert row(live, nid)["release_problem"].startswith("missed")
     backdate(live, nid, created=days_ago(200))
-    convs = live.service.db.scalar("SELECT COUNT(*) FROM conversations")
     live.call(live.service.retention_sweep)
     assert row(live, nid) is not None and has_bytes(live, nid)
-    assert live.service.db.scalar("SELECT COUNT(*) FROM conversations") == convs
+    assert live.service.db.one(conv, (nid,)) is not None
 
 
 def test_released_old_is_swept(live):
