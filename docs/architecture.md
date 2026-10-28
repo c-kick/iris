@@ -175,7 +175,8 @@ A submit with `send_at` or `delay` (and a send time more than 5 s ahead) creates
 
 ```
 scheduled ──► released ──► (queued → ... normal delivery states; status derived from the deliveries)
-   │              ├──► suppressed / failed   (nothing to send to, routing error, sender gone, release error)
+   │              ├──► suppressed / failed   (nothing to send to, routing error, sender gone or no longer
+   │              │                           allowed to send, release error)
    │              └──► expired               (missed: now > deliver_by)
    └──► cancelled
 ```
@@ -184,7 +185,8 @@ scheduled ──► released ──► (queued → ... normal delivery states; s
   `scheduled`: the scheduled release, *send now* and the retry of a missed or failed release all use it. It runs in
   one `db.tx()` (no intermediate `releasing` status): re-read the row and continue only while `scheduled`; unless
   `force`, a release after `deliver_by` marks the notification `expired` (`notification.missed`); a sender that no
-  longer exists makes it `failed`; otherwise routing is resolved **now**, deliveries are planned and inserted, and
+  longer exists, or no longer has the `send` (or `admin`) scope, makes it `failed` (authority is re-checked at
+  send time); otherwise routing is resolved **now**, deliveries are planned and inserted, and
   `released_at` is set. A routing error is `failed`; zero deliveries is `suppressed` (as today) but also counts as a
   release problem, as does a `reply` notification that reached no email device. `notification.created` (payload
   `scheduled: true`) is emitted here, not at submit.

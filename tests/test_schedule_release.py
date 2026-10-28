@@ -9,6 +9,7 @@ from notify import schedule
 from notify.admin import UI_CLIENT
 from notify.core import SYSTEM_CLIENT
 from notify.db import iso
+from notify.models import Scope
 from tests.conftest import PNG, wait_for
 
 PNG_B64 = base64.b64encode(PNG).decode()
@@ -101,6 +102,15 @@ def test_sender_gone(live, fake):
     make_due(live, nid)
     wait_for(lambda: row(live, nid)["status"] == "failed")
     assert row(live, nid)["release_problem"] == "sender no longer exists" and fake.messages == []
+
+
+def test_sender_lost_send_scope(live, fake):
+    # authority is checked again at release: a client whose send scope was taken away sends nothing
+    nid = sched(live, who="other")
+    live.service.config.clients["other"].scopes = [Scope.read, Scope.manage]
+    make_due(live, nid)
+    wait_for(lambda: row(live, nid)["status"] == "failed")
+    assert row(live, nid)["release_problem"] == "sender no longer allowed to send" and fake.messages == []
 
 
 def test_routing_error_at_release(live, fake):

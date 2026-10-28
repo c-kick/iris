@@ -111,7 +111,7 @@ class Scheduler:
     def _release(self, nid: str, force: bool) -> tuple[str, bool]:
         from .core import NotFound, SYSTEM_CLIENT
         from .db import dumps, loads, now_iso, parse_iso, utcnow
-        from .models import QUEUED, Severity, derive_notification_status
+        from .models import QUEUED, Scope, Severity, derive_notification_status
         from .routing import RoutingError
 
         svc = self.svc
@@ -144,9 +144,14 @@ class Scheduler:
                 svc._emit(c, "notification.missed", n, None,
                           {"send_at": n["send_at"], "deliver_by": n["deliver_by"], "missed_at": stamp})
                 return "expired", True
-            if n["client_id"] not in svc.config.clients and n["client_id"] not in (SYSTEM_CLIENT.id, UI_CLIENT_ID):
-                finish("failed", "sender no longer exists")
-                return status_changed("failed"), True
+            if n["client_id"] not in (SYSTEM_CLIENT.id, UI_CLIENT_ID):
+                sender = svc.config.clients.get(n["client_id"])
+                if sender is None:
+                    finish("failed", "sender no longer exists")
+                    return status_changed("failed"), True
+                if not ({Scope.send, Scope.admin} & set(sender.scopes)):  # authority re-checked at send time
+                    finish("failed", "sender no longer allowed to send")
+                    return status_changed("failed"), True
 
             old = loads(n["routing_json"], {})
             kinds = old.get("kinds")
