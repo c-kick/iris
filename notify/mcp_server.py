@@ -5,16 +5,18 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
+from pydantic import ValidationError
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from .attachments import MCP_INLINE_MAX
-from .core import Client, Conflict, Invalid, NotFound, NotifyService
-from .models import NotificationIn, Scope
+from .core import Client, Conflict, Forbidden, Invalid, NotFound, NotifyService
+from .models import NotificationIn, ScheduleUpdate, Scope
+from .schedule import local_zone
 
 SCOPE_KEY = "notify.client"
 
-INSTRUCTIONS = """\
+_INSTRUCTIONS = """\
 hnl-notify is the household notification service. Send notifications to logical
 targets (user:NAME, device:NAME, group:NAME, channel:NAME) — call list_targets
 first to see what exists and what each device can observably report.
@@ -52,7 +54,21 @@ can still be collected later with the same handle. get_replies (pass
 reply_handle) lists replies but shows reply text only for replies already
 collected; use notify-wait to collect.
 Reply text passed sender and DKIM checks: it comes from the person the mail was
-sent to."""
+sent to.
+
+Scheduling: pass send_at (ISO time; without offset = {zone}) or delay ('2h', '30m', seconds)
+to send later; it is accepted up to a year ahead. List your scheduled notifications with
+list_notifications(status='scheduled'), change them with update_scheduled_notification and
+cancel them with cancel_notification (your own scheduled ones need only the send scope).
+Routing is decided at send time, not when you schedule. With reply=true, give notify-wait a
+--timeout that covers the wait."""
+
+
+def instructions(zone: str) -> str:
+    return _INSTRUCTIONS.replace("{zone}", zone)
+
+
+_CLEARABLE = ("title", "url", "url_title", "ttl_seconds", "expires_at", "kinds", "tags")
 
 
 def _client(ctx: Context) -> Client:
@@ -97,7 +113,7 @@ def _compact(n: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_mcp(get_service: Any) -> FastMCP:
-    mcp = FastMCP("hnl-notify", instructions=INSTRUCTIONS, stateless_http=True, json_response=True,
+    mcp = FastMCP("hnl-notify", instructions=instructions(local_zone().key), stateless_http=True, json_response=True,
                   streamable_http_path="/mcp", host="0.0.0.0")
 
     def svc() -> NotifyService:
@@ -110,6 +126,8 @@ def build_mcp(get_service: Any) -> FastMCP:
                 res = await res
             return res
         except NotFound as e:
+            raise ToolError(str(e)) from e
+        except Forbidden as e:
             raise ToolError(str(e)) from e
         except Invalid as e:
             raise ToolError(f"invalid request: {e}") from e
@@ -136,6 +154,9 @@ def build_mcp(get_service: Any) -> FastMCP:
         reply: bool = False,
         in_reply_to: str | None = None,
         reply_handle: str | None = None,
+        send_at: str | None = None,
+        delay: int | str | None = None,
+        max_late_seconds: int | None = None,
     ) -> dict[str, Any]:
         """Send a notification to logical targets (e.g. ["user:alex"]).
 
@@ -151,6 +172,11 @@ def build_mcp(get_service: Any) -> FastMCP:
         `NOTIFY_REPLY_HANDLE=<handle> notify-wait`.
         in_reply_to: id (never the handle) of an earlier notification this one follows up (threads the email,
         same conversation). reply_handle: the conversation's handle, required for follow-ups.
+        send_at / delay: send later instead of now. send_at is an ISO-8601 time (without offset it is
+        local time in the service's zone); delay is seconds or a string like '90s', '45m', '2h30m', '1d'.
+        Give at most one. Routing is decided at send time. max_late_seconds (60..86400, default 3600): how
+        late it may still go out if the service was down at the due time. Reply waits need notify-wait
+        --timeout to cover the delay.
         ttl_seconds: drop/expire if not dispatched in time. Returns the notification with
         per-device deliveries, observable_states and capability_gaps."""
         client = _client(ctx)
@@ -160,7 +186,8 @@ def build_mcp(get_service: Any) -> FastMCP:
                              url_title=url_title, tags=tags or [], ttl_seconds=ttl_seconds, require_ack=require_ack,
                              data=data, idempotency_key=idempotency_key, source=source or f"mcp:{client.id}", kinds=kinds,
                              attachments=attachments or [], reply=reply, in_reply_to=in_reply_to,
-                             reply_handle=reply_handle)
+                             reply_handle=reply_handle, send_at=send_at, delay=delay,
+                             max_late_seconds=max_late_seconds)
         out, created = await call(svc().submit_async, client, req, inline_limit=MCP_INLINE_MAX)
         res = _compact(out)
         res["created"] = created
@@ -206,7 +233,8 @@ def build_mcp(get_service: Any) -> FastMCP:
     async def list_notifications(ctx: Context, status: str | None = None, source: str | None = None,
                                  tag: str | None = None, since: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
         """Notification history, newest first. status may be a comma list of: pending, dispatched,
-        delivered, acknowledged, partial, failed, expired, cancelled, suppressed. since is ISO-8601 UTC."""
+        delivered, acknowledged, partial, failed, expired, cancelled, suppressed, scheduled.
+        status='scheduled' lists all scheduled ones by send time, oldest first. since is ISO-8601 UTC."""
         client = _client(ctx)
         _need(client, Scope.read)
         items = await call(svc().list, client, status=status, source=source, tag=tag, since=since, limit=limit)
@@ -241,12 +269,56 @@ def build_mcp(get_service: Any) -> FastMCP:
 
     @mcp.tool()
     async def cancel_notification(ctx: Context, notification_id: str) -> dict[str, Any]:
-        """Cancel deliveries not yet dispatched, and stop repeating critical alerts where the provider
+        """Cancel a scheduled notification (your own: send scope), or deliveries not yet dispatched, and stop repeating critical alerts where the provider
         allows it. Messages already shown on a device cannot be recalled."""
         client = _client(ctx)
-        _need(client, Scope.manage)
+        _need(client, Scope.send)  # the service decides: a sent one needs manage (Forbidden)
         out = await call(svc().cancel, client, notification_id)
         return {"results": out["results"], "notification": _compact(out["notification"])}
+
+    @mcp.tool()
+    async def update_scheduled_notification(
+        ctx: Context,
+        notification_id: str,
+        send_at: str | None = None,
+        delay: int | str | None = None,
+        send_now: bool = False,
+        title: str | None = None,
+        message: str | None = None,
+        severity: Literal["min", "low", "normal", "high", "critical"] | None = None,
+        targets: list[str] | None = None,
+        kinds: list[Literal["push", "email"]] | None = None,
+        url: str | None = None,
+        url_title: str | None = None,
+        tags: list[str] | None = None,
+        require_ack: bool | None = None,
+        ttl_seconds: int | None = None,
+        expires_at: str | None = None,
+        max_late_seconds: int | None = None,
+        clear: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Change a notification that is still scheduled: reschedule it (send_at or delay, as in
+        send_notification), send it now (send_now=true) or edit its content. Only the fields you pass change.
+        clear: names of optional fields to remove: title, url, url_title, ttl_seconds, expires_at, kinds,
+        tags. Fails once the notification has been sent."""
+        client = _client(ctx)
+        _need(client, Scope.send)
+        bad = [c for c in clear or [] if c not in _CLEARABLE]
+        if bad:
+            raise ToolError(f"cannot clear {', '.join(bad)}; clearable: {', '.join(_CLEARABLE)}")
+        fields = {k: v for k, v in dict(
+            send_at=send_at, delay=delay, title=title, message=message, severity=severity, targets=targets,
+            kinds=kinds, url=url, url_title=url_title, tags=tags, require_ack=require_ack,
+            ttl_seconds=ttl_seconds, expires_at=expires_at, max_late_seconds=max_late_seconds).items()
+            if v is not None}
+        if send_now:
+            fields["send_now"] = True
+        fields.update({c: None for c in clear or []})
+        try:
+            patch = ScheduleUpdate(**fields)
+        except ValidationError as e:
+            raise ToolError(f"invalid request: {'; '.join(x['msg'] for x in e.errors())}") from e
+        return _compact(await call(svc().scheduler.update, client, notification_id, patch))
 
     @mcp.tool()
     async def get_replies(ctx: Context, notification_id: str, reply_handle: str | None = None) -> dict[str, Any]:

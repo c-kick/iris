@@ -83,3 +83,48 @@ def test_mcp_advertises_email_and_attachments(live):
         assert phrase in instructions
     for phrase in ("kind", "opt_in", "attachment"):
         assert phrase in tools["list_targets"]
+
+
+def test_mcp_instructions_name_zone(monkeypatch, server_factory):
+    monkeypatch.setenv("TZ", "Europe/Amsterdam")
+    live = server_factory()
+
+    async def flow(s: ClientSession):
+        return (await s.initialize()).instructions
+
+    text = run_session(live, "agent", flow)
+    assert "without offset = Europe/Amsterdam" in text
+    assert "update_scheduled_notification" in text
+
+
+def test_mcp_schedule_update_cancel(live):
+    async def schedule(s: ClientSession):
+        return payload(await s.call_tool("send_notification", {
+            "targets": ["user:alex"], "title": "Later", "message": "hello", "url": "https://example.org/x",
+            "delay": "2h"}))
+
+    sent = run_session(live, "sender", schedule)
+    nid = sent["id"]
+    assert sent["status"] == "scheduled"
+
+    async def edit(s: ClientSession):
+        upd = payload(await s.call_tool("update_scheduled_notification", {
+            "notification_id": nid, "title": "Changed", "clear": ["url"]}))
+        cancelled = payload(await s.call_tool("cancel_notification", {"notification_id": nid}))
+        return upd, cancelled
+
+    upd, cancelled = run_session(live, "sender", edit)
+    assert upd["title"] == "Changed" and upd["status"] == "scheduled"
+    assert cancelled["notification"]["status"] == "cancelled"
+    assert live.service.db.scalar("SELECT url FROM notifications WHERE id=?", (nid,)) is None
+
+
+def test_mcp_clear_rejects_required(live):
+    async def flow(s: ClientSession):
+        sent = payload(await s.call_tool("send_notification", {
+            "targets": ["user:alex"], "message": "hello", "delay": "2h"}))
+        return await s.call_tool("update_scheduled_notification", {
+            "notification_id": sent["id"], "clear": ["message"]})
+
+    res = run_session(live, "sender", flow)
+    assert res.isError and "message" in res.content[0].text
