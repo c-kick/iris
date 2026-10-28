@@ -10,7 +10,7 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from .attachments import MCP_INLINE_MAX
-from .core import Client, Conflict, Forbidden, Invalid, NotFound, NotifyService
+from .core import Client, Conflict, Forbidden, Gone, Invalid, NotFound, NotifyService
 from .models import NotificationIn, ScheduleUpdate, Scope
 from .schedule import local_zone
 
@@ -127,7 +127,7 @@ def build_mcp(get_service: Any) -> FastMCP:
             return res
         except NotFound as e:
             raise ToolError(str(e)) from e
-        except Forbidden as e:
+        except (Forbidden, Gone) as e:
             raise ToolError(str(e)) from e
         except Invalid as e:
             raise ToolError(f"invalid request: {e}") from e

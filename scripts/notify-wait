@@ -13,7 +13,8 @@ with a "Late reply (received ...) to: <title>" line first. Attachments the servi
 "<name>: not available any more".
 
 Long-polls POST /v1/notifications/{id}/replies/claim with one waiter id per run, so a retry after a
-lost response gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error, 2 no reply before --timeout.
+lost response gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error (also: the notification was
+cancelled, missed or never sent, so no reply can come), 2 no reply before --timeout.
 Base URL: --url, else NOTIFY_URL, else the url of the hnl-notify entry in ~/.claude.json without /mcp.
 Token: --token-file, else NOTIFY_TOKEN, else that entry's Authorization header. The token is never printed.
 """
@@ -44,12 +45,20 @@ class Fatal(Exception):
     pass
 
 
+class Gone(Exception):
+    """HTTP 410: the conversation can never get a reply."""
+
+
 def parse_duration(s: str) -> int:
-    """90s, 30m, 2h; a bare number means minutes."""
-    m = re.fullmatch(r"(\d+)([smh]?)", s.strip())
-    if not m:
-        raise argparse.ArgumentTypeError(f"not a duration: {s!r} (e.g. 90s, 30m, 2h)")
-    return int(m.group(1)) * {"": 60, "s": 1, "m": 60, "h": 3600}[m.group(2)]
+    """90s, 30m, 2h, 1d, 2h30m (any case); a bare number means minutes (the service's `delay` takes seconds)."""
+    t = s.strip()
+    if re.fullmatch(r"\d+", t):
+        return int(t) * 60
+    m = re.fullmatch(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", t, re.I)
+    if not t or not m:
+        raise argparse.ArgumentTypeError(f"not a duration: {s!r} (e.g. 90s, 30m, 2h, 1d, 2h30m)")
+    d, h, mi, sec = (int(x or 0) for x in m.groups())
+    return d * 86400 + h * 3600 + mi * 60 + sec
 
 
 def mcp_entry(path: Path = Path.home() / ".claude.json") -> dict[str, Any]:
@@ -165,6 +174,12 @@ def claim_loop(base: str, token: str, nid: str, deadline: float, handle: str | N
         try:
             status, body = _request("POST", url, token, timeout=wait + 15, handle=handle)
         except urllib.error.HTTPError as e:
+            if e.code == 410:
+                try:
+                    reason = json.loads(e.read()).get("detail")
+                except (ValueError, AttributeError):
+                    reason = None
+                raise Gone(_clean(reason) if isinstance(reason, str) else "the conversation is closed") from None
             if e.code in (401, 403, 404, 422):
                 note = ""
                 if e.code == 404 and handle and nid != handle.partition(":")[0]:
@@ -261,7 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="notify-wait", description="Wait for a reply to an hnl-notify notification.")
     ap.add_argument("notification_id", nargs="?", help="the reply handle, or (older conversations) a notification id")
     ap.add_argument("--handle-file", help="read the reply handle from this file")
-    ap.add_argument("--timeout", type=parse_duration, default=3600, help="how long to wait (90s, 30m, 2h; default 60m)")
+    ap.add_argument("--timeout", type=parse_duration, default=3600,
+                    help="how long to wait (90s, 30m, 2h, 1d; a bare number is minutes; default 60m). A reply to a"
+                         " scheduled notification can only come after it is sent: use --timeout to cover the delay")
     ap.add_argument("--save-dir", help="where to save attachments (default: a new temporary folder)")
     ap.add_argument("--url", help="service base URL (default: NOTIFY_URL or ~/.claude.json)")
     ap.add_argument("--json", action="store_true", help="print the reply as JSON")
@@ -287,6 +304,9 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_REPLY
     except (KeyError, ValueError, TypeError, AttributeError):
         print("notify-wait: unexpected reply format from the service", file=sys.stderr)
+        return EXIT_ERROR
+    except Gone as e:
+        print(f"No reply possible: {e}.")
         return EXIT_ERROR
     except Fatal as e:
         print(f"notify-wait: {e}", file=sys.stderr)

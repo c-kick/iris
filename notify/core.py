@@ -51,6 +51,10 @@ class Forbidden(Exception):
     pass
 
 
+class Gone(Exception):
+    """The thing can never happen any more (a reply to a conversation that will never be sent)."""
+
+
 @dataclass(frozen=True)
 class Client:
     id: str

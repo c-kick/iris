@@ -338,3 +338,13 @@ def test_timeout_text(email_live, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Replies are kept; run notify-wait again later to collect them." in out
     assert "autoreply" not in out
+
+
+def test_cli_exit_1_on_410(email_live, monkeypatch, capsys):
+    with email_live.client() as c:
+        out = c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "Pick", "kinds": ["email"],
+                                                "reply": True, "delay": "1h"}).json()
+        assert c.post(f"/v1/notifications/{out['id']}/cancel").status_code == 200
+    monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
+    assert nw.main([out["reply_handle"], "--url", email_live.url, "--timeout", "5s"]) == 1
+    assert "No reply possible: notification was cancelled." in capsys.readouterr().out

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from . import __version__, arr
-from .core import Client, Conflict, Forbidden, Invalid, NotFound, NotifyService
+from .core import Client, Conflict, Forbidden, Gone, Invalid, NotFound, NotifyService
 from .models import NotificationIn, ScheduleUpdate, Scope, SubscriptionIn, event_matches
 
 router = APIRouter()
@@ -44,6 +44,8 @@ def _errors(fn):
             raise HTTPException(404, str(e)) from e
         except Forbidden as e:
             raise HTTPException(403, str(e)) from e
+        except Gone as e:
+            raise HTTPException(410, str(e)) from e
         except Invalid as e:
             raise HTTPException(422, str(e)) from e
         except Conflict as e:
@@ -119,7 +121,8 @@ async def retry(nid: str, request: Request, client: Client = Depends(require(Sco
 
 # ------------------------------------------------------------------ replies
 
-@router.post("/v1/notifications/{nid}/replies/claim", tags=["replies"], responses={204: {"description": "no reply yet"}})
+@router.post("/v1/notifications/{nid}/replies/claim", tags=["replies"], responses={204: {"description": "no reply yet"},
+                                                                                            410: {"description": "no reply can ever come (cancelled, missed or never sent)"}})
 @_errors
 async def claim_reply(nid: str, request: Request,
                       waiter: str = Query(min_length=8, max_length=64, pattern=r"^[A-Za-z0-9_-]+$",

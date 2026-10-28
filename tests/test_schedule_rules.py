@@ -1,7 +1,10 @@
 """Scheduling: time rules, request fields and schema (pure, no server)."""
 
+import importlib.machinery
+import importlib.util
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -15,10 +18,31 @@ AMS = ZoneInfo("Europe/Amsterdam")
 NOW = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
-@pytest.mark.parametrize("v,expected", [(90, 90), ("90", 90), ("90s", 90), ("45m", 2700), ("2h30m", 9000),
-                                        ("1d", 86400), ("1H30M", 5400)])
+# One table for the server and the notify-wait script: forms with a unit mean the same in both
+DURATIONS = [("90s", 90), ("45m", 2700), ("2h30m", 9000), ("1d", 86400), ("1H30M", 5400)]
+
+
+def _notify_wait():
+    path = Path(__file__).resolve().parent.parent / "scripts" / "notify-wait"
+    loader = importlib.machinery.SourceFileLoader("notify_wait_rules", str(path))
+    mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("notify_wait_rules", loader))
+    loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("v,expected", DURATIONS + [(90, 90), ("90", 90)])
 def test_parse_duration_accepts(v, expected):
     assert schedule.parse_duration(v) == expected
+
+
+@pytest.mark.parametrize("v,expected", DURATIONS)
+def test_notify_wait_parses_the_same_grammar(v, expected):
+    assert _notify_wait().parse_duration(v) == expected
+
+
+def test_bare_number_differs_by_design():
+    assert _notify_wait().parse_duration("90") == 5400  # notify-wait: minutes (existing callers)
+    assert schedule.parse_duration("90") == 90  # server delay: seconds
 
 
 @pytest.mark.parametrize("v", [0, -5, "0", "-5m", "1.5h", "", "5 m", "1h1h", "m"])

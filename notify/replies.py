@@ -146,6 +146,7 @@ class Replies:
         else the oldest late-collectable unclaimed one."""
         n = self._access(client, nid, handle)
         conv = n["conversation_id"] or n["id"]
+        self._gone_if_dead(conv)
         deadline = time.monotonic() + max(0.0, min(wait, 55.0))
         while True:
             got = self._claim_once(client, conv, waiter)
@@ -153,8 +154,38 @@ class Replies:
                 return self._out(got)
             left = deadline - time.monotonic()
             if left <= 0:
+                self._gone_if_dead(conv)
                 return None
             await self.svc.bus.wait(min(left, 5.0))  # every commit (including a stored reply) wakes it
+
+    def _gone_if_dead(self, conv: str) -> None:
+        from .core import Gone
+        reason = self.dead_reason(conv)
+        if reason:
+            raise Gone(reason)
+
+    def dead_reason(self, conv: str) -> str | None:
+        """Why no reply can ever come to this conversation, or None while one still can: nothing of it is
+        scheduled, being sent or dispatched, and no reply waits to be collected."""
+        db = self.svc.db
+        if not db.scalar("SELECT 1 FROM notifications WHERE conversation_id=? OR id=? LIMIT 1", (conv, conv)):
+            return None
+        if db.scalar("SELECT 1 FROM replies WHERE conversation_id=? AND state IN ('waiting','unclaimed') LIMIT 1",
+                     (conv,)):
+            return None
+        if db.scalar("SELECT 1 FROM notifications n WHERE (n.conversation_id=? OR n.id=?) AND (n.status='scheduled'"
+                     " OR EXISTS (SELECT 1 FROM deliveries d WHERE d.notification_id=n.id AND"
+                     " (d.dispatched_at IS NOT NULL OR d.state IN ('queued','sending')))) LIMIT 1", (conv, conv)):
+            return None
+        root = db.one("SELECT status, release_problem FROM notifications WHERE id=?", (conv,))
+        if root is None:
+            root = db.one("SELECT status, release_problem FROM notifications WHERE conversation_id=?"
+                          " ORDER BY created_at, id LIMIT 1", (conv,))
+        if root["status"] == "cancelled":
+            return "notification was cancelled"
+        if root["status"] == "expired" and (root["release_problem"] or "").startswith("missed"):
+            return "notification was missed"
+        return "notification was not sent"
 
     def _claim_once(self, client: Client, conv: str, waiter: str) -> sqlite3.Row | None:
         now = iso(self.now())

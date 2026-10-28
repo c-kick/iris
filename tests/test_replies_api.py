@@ -160,3 +160,45 @@ def test_mcp_refuses_overlong_ids_without_echo(email_live):
     texts, errors = run_session(email_live, "agent", flow)
     assert all(errors)
     assert all(secret not in t for t in texts), texts
+
+
+def _sched_reply(srv, **body):
+    with srv.client() as c:
+        r = c.post("/v1/notifications", json={"targets": ["device:alex-email"], "message": "Pick", "kinds": ["email"],
+                                              "reply": True, "delay": "1h", **body})
+    assert r.status_code == 202, r.text
+    HANDLES[r.json()["id"]] = r.json()["reply_handle"]
+    return r.json()["id"]
+
+
+def _claim(srv, nid):
+    with srv.client() as c:
+        return c.post(f"/v1/notifications/{nid}/replies/claim?wait=0&waiter={'w' * 12}",
+                      headers={"X-Reply-Handle": HANDLES[nid]})
+
+
+def test_claim_still_204_while_scheduled(email_live):
+    nid = _sched_reply(email_live)
+    assert _claim(email_live, nid).status_code == 204
+
+
+def test_claim_410_after_cancel(email_live):
+    nid = _sched_reply(email_live)
+    with email_live.client() as c:
+        assert c.post(f"/v1/notifications/{nid}/cancel").status_code == 200
+    r = _claim(email_live, nid)
+    assert r.status_code == 410 and "cancelled" in r.json()["detail"]
+
+
+def test_claim_410_after_missed(email_live):
+    nid = _sched_reply(email_live)
+    with email_live.service.db.tx() as c:
+        c.execute("UPDATE notifications SET status='expired', release_problem='missed: service was down'"
+                  " WHERE id=?", (nid,))
+    r = _claim(email_live, nid)
+    assert r.status_code == 410 and "missed" in r.json()["detail"]
+
+
+def test_claim_204_when_dispatched(email_live):
+    nid, _ = send(email_live)
+    assert _claim(email_live, nid).status_code == 204
