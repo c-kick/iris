@@ -106,6 +106,9 @@ def test_mcp_schedule_update_cancel(live):
     sent = run_session(live, "sender", schedule)
     nid = sent["id"]
     assert sent["status"] == "scheduled"
+    # the agent sees when it goes out, its lateness limit and who it would reach now
+    assert sent["send_at"] and sent["deliver_by"] and sent["max_late_seconds"] == 3600
+    assert sent["routing_preview"]["devices"][0]["device"] == "alex-phone"
 
     async def edit(s: ClientSession):
         upd = payload(await s.call_tool("update_scheduled_notification", {

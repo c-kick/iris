@@ -114,6 +114,9 @@ def _compact(n: dict[str, Any]) -> dict[str, Any]:
         } for d in n["deliveries"]],
         **({"attachments": n["attachments"]} if "attachments" in n else {}),
         **{k: n[k] for k in ("reply", "conversation_id", "in_reply_to") if k in n},
+        # scheduled notifications: when it goes out, its lateness limit and (while waiting) who it would reach now
+        **{k: n[k] for k in ("send_at", "max_late_seconds", "deliver_by", "released_at", "routing_preview")
+           if n.get(k) is not None},
     }
 
 
