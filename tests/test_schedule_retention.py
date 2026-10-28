@@ -1,0 +1,56 @@
+"""Scheduling: retention and attachment purge count from the effective time, never the creation time."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+from notify.db import iso
+from tests.test_schedule_release import PNG_B64, row, sched, set_times
+
+ATT = [{"filename": "door.png", "content_type": "image/png", "data_base64": PNG_B64}]
+
+
+def days_ago(n):
+    return iso(datetime.now(UTC) - timedelta(days=n))
+
+
+def backdate(srv, nid, created=None, **cols):
+    sets = dict(cols)
+    if created is not None:
+        sets["created_at"] = created
+    with srv.service.db.tx() as c:
+        c.execute(f"UPDATE notifications SET {', '.join(k + '=?' for k in sets)} WHERE id=?",
+                  (*sets.values(), nid))
+
+
+def has_bytes(srv, nid):
+    return srv.service.db.one("SELECT data IS NOT NULL AS has FROM attachments WHERE notification_id=?",
+                              (nid,))["has"] == 1
+
+
+def test_scheduled_far_ahead_survives_sweep(live):
+    nid = sched(live, targets=["device:spare"], delay="10d", attachments=ATT)
+    backdate(live, nid, created=days_ago(200))
+    live.call(live.service.retention_sweep)
+    assert row(live, nid) is not None and has_bytes(live, nid)
+
+
+def test_missed_survives(live):
+    nid = sched(live, targets=["device:spare"], attachments=ATT)
+    set_times(live, nid, late=7200, limit=60)
+    assert live.call(lambda: live.service.scheduler.release(nid)) == "expired"
+    assert row(live, nid)["release_problem"].startswith("missed")
+    backdate(live, nid, created=days_ago(200))
+    convs = live.service.db.scalar("SELECT COUNT(*) FROM conversations")
+    live.call(live.service.retention_sweep)
+    assert row(live, nid) is not None and has_bytes(live, nid)
+    assert live.service.db.scalar("SELECT COUNT(*) FROM conversations") == convs
+
+
+def test_released_old_is_swept(live):
+    nid = sched(live, targets=["device:spare"], attachments=ATT)
+    set_times(live, nid, late=7200, limit=60)
+    assert live.call(lambda: live.service.scheduler.release(nid)) == "expired"
+    backdate(live, nid, created=days_ago(200), released_at=days_ago(100))
+    live.call(live.service.retention_sweep)
+    assert row(live, nid) is None

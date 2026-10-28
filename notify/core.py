@@ -1150,7 +1150,8 @@ class NotifyService:
         cutoff = iso(utcnow() - timedelta(days=self.config.server.retention_days))
         with self.db.tx() as c:
             ids = [r[0] for r in c.execute(
-                "SELECT id FROM notifications WHERE created_at < ? AND NOT EXISTS (SELECT 1 FROM deliveries d"
+                f"SELECT id FROM notifications WHERE status != 'scheduled' AND {schedule.EFFECTIVE_SQL} < ?"
+                " AND NOT EXISTS (SELECT 1 FROM deliveries d"
                 " WHERE d.notification_id=notifications.id AND d.finalized_at IS NULL)", (cutoff,))]
             for nid in ids:
                 c.execute("DELETE FROM notifications WHERE id=?", (nid,))
@@ -1160,7 +1161,8 @@ class NotifyService:
                       " (SELECT 1 FROM notifications n WHERE n.id=subscriptions.notification_id)")
             att_cutoff = iso(utcnow() - timedelta(days=self.config.server.attachment_retention_days))
             c.execute("UPDATE attachments SET data=NULL, purged_at=? WHERE data IS NOT NULL AND notification_id IN"
-                      " (SELECT id FROM notifications WHERE created_at < ?) AND NOT EXISTS (SELECT 1 FROM deliveries d"
+                      f" (SELECT id FROM notifications WHERE status != 'scheduled' AND {schedule.EFFECTIVE_SQL} < ?)"
+                      " AND NOT EXISTS (SELECT 1 FROM deliveries d"
                       " WHERE d.notification_id=attachments.notification_id AND d.state IN (?,?))",
                       (now_iso(), att_cutoff, QUEUED, SENDING))
             c.execute("UPDATE reply_attachments SET data=NULL, purged_at=? WHERE data IS NOT NULL AND reply_id IN"
