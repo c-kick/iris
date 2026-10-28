@@ -188,6 +188,126 @@ class Scheduler:
                            "capability_gaps": d["capability_gaps"]})
         return status, True
 
+    def cancel(self, client: Any, nid: str) -> dict[str, Any] | None:
+        """Cancel a still-scheduled notification of the caller's (any, for an admin) in one conditional
+        UPDATE; None when no row changed, so the caller falls back to the delivery cancel."""
+        from .db import now_iso
+        svc = self.svc
+        stamp = now_iso()
+        with svc.db.tx() as c:
+            cur = c.execute("UPDATE notifications SET status='cancelled', updated_at=? WHERE id=?"
+                            " AND status='scheduled' AND (?=1 OR client_id=?)",
+                            (stamp, nid, int(client.admin), client.id))
+            if not cur.rowcount:
+                return None
+            n = c.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
+            svc._emit(c, "notification.status_changed", n, None,
+                      {"from": "scheduled", "to": "cancelled", "reason": f"cancelled by {client.id}"})
+        svc._after_commit()
+        return {"notification": svc.get(client, nid, detail=False), "results": [{"result": "cancelled"}]}
+
+    def update(self, client: Any, nid: str, patch: Any) -> dict[str, Any]:
+        """Edit a scheduled notification (or send it now) in one transaction; any problem leaves the row alone."""
+        from pydantic import ValidationError
+        from .core import Conflict, Invalid, NotFound
+        from .db import dumps, iso, loads, now_iso, parse_iso, utcnow
+        from .models import NotificationIn
+
+        svc = self.svc
+        given = patch.model_fields_set
+        with svc.db.tx() as c:
+            n = c.execute("SELECT * FROM notifications WHERE id=?", (nid,)).fetchone()
+            if n is None or not svc._visible(client, n["client_id"]):
+                raise NotFound(f"notification {nid} not found")
+            if n["status"] != "scheduled":
+                raise Conflict(f"notification is {n['status']}", {"status": n["status"]})
+            now = utcnow()
+            zone = local_zone()
+
+            for name in ("message", "severity", "targets", "require_ack", "max_late_seconds"):
+                if name in given and getattr(patch, name) is None:
+                    raise Invalid(f"{name} cannot be cleared")
+
+            send_at = parse_iso(n["send_at"])
+            if patch.send_now:
+                send_at = now
+            elif patch.send_at is not None or patch.delay is not None:
+                try:
+                    when = resolve_send_at(patch.send_at, patch.delay, now, zone)
+                except ValueError as e:
+                    raise Invalid(str(e)) from e
+                send_at = now if when is None else when  # "now-ish" means now
+            max_late = patch.max_late_seconds if "max_late_seconds" in given else n["max_late_seconds"]
+            ttl = patch.ttl_seconds if "ttl_seconds" in given else n["ttl_seconds"]
+            if "expires_at" in given:
+                try:
+                    explicit = None if patch.expires_at is None else to_utc(patch.expires_at, zone)
+                except ValueError as e:
+                    raise Invalid(str(e)) from e
+            else:
+                explicit = parse_iso(n["explicit_expires_at"]) if n["explicit_expires_at"] else None
+
+            # the merged content must pass the same field rules as a submit
+            old_routing = loads(n["routing_json"], {})
+            merged: dict[str, Any] = {
+                "targets": loads(n["targets_json"], []), "message": n["message"], "title": n["title"],
+                "severity": n["severity"], "url": n["url"], "url_title": n["url_title"],
+                "actions": loads(n["actions_json"], []), "tags": loads(n["tags_json"], []),
+                "kinds": old_routing.get("kinds"), "require_ack": bool(n["require_ack"]), "ttl_seconds": ttl}
+            for name in ("targets", "message", "title", "severity", "url", "url_title", "actions", "tags",
+                         "kinds", "require_ack"):
+                if name in given:
+                    v = getattr(patch, name)
+                    merged[name] = [a.model_dump() for a in v] if name == "actions" and v is not None else v
+            if merged["actions"] is None:
+                merged["actions"] = []
+            if merged["tags"] is None:
+                merged["tags"] = []
+            try:
+                checked = NotificationIn.model_validate(merged)
+            except ValidationError as e:
+                raise Invalid("; ".join(f"{'.'.join(map(str, err['loc']))}: {err['msg']}" for err in e.errors())) from e
+
+            expires = explicit
+            if ttl is not None:
+                ttl_exp = send_at + timedelta(seconds=ttl)
+                expires = ttl_exp if expires is None else min(expires, ttl_exp)
+            if explicit is not None and explicit <= send_at:
+                raise Invalid("expires_at must be after the send time")
+            if expires is not None and expires <= now:
+                raise Invalid("notification is already expired (expires_at/ttl_seconds in the past)")
+
+            stamp = now_iso()
+            new = dict(n)
+            new.update({
+                "title": checked.title, "message": checked.message, "severity": checked.severity.value,
+                "url": checked.url, "url_title": checked.url_title,
+                "actions_json": dumps([a.model_dump() for a in checked.actions]), "tags_json": dumps(checked.tags),
+                "targets_json": dumps(checked.targets), "require_ack": int(checked.require_ack),
+                "send_at": iso(send_at), "max_late_seconds": max_late,
+                "deliver_by": iso(send_at + timedelta(seconds=max_late)), "ttl_seconds": ttl,
+                "explicit_expires_at": iso(explicit), "expires_at": iso(expires), "updated_at": stamp})
+            meta = [dict(r) for r in c.execute("SELECT filename, content_type, size FROM attachments"
+                                                " WHERE notification_id=? ORDER BY idx", (nid,))]
+            preview = svc.scheduled_preview(new, checked.targets, checked.severity, checked.kinds, meta)
+            routing = {k: v for k, v in old_routing.items() if k != "kinds"}
+            routing["preview"] = preview
+            if checked.kinds is not None:
+                routing["kinds"] = checked.kinds
+            c.execute(
+                "UPDATE notifications SET title=?, message=?, severity=?, url=?, url_title=?, actions_json=?,"
+                " tags_json=?, targets_json=?, require_ack=?, send_at=?, max_late_seconds=?, deliver_by=?,"
+                " ttl_seconds=?, explicit_expires_at=?, expires_at=?, routing_json=?, updated_at=? WHERE id=?",
+                (new["title"], new["message"], new["severity"], new["url"], new["url_title"], new["actions_json"],
+                 new["tags_json"], new["targets_json"], new["require_ack"], new["send_at"], max_late,
+                 new["deliver_by"], ttl, new["explicit_expires_at"], new["expires_at"], dumps(routing), stamp, nid))
+            data: dict[str, Any] = {"fields": sorted(given), "by": client.id}
+            if new["send_at"] != n["send_at"]:
+                data["send_at"] = {"from": n["send_at"], "to": new["send_at"]}
+            svc._emit(c, "notification.updated", n, None, data)
+        svc._after_commit(dispatch=True)  # send-now or an earlier time: the dispatcher re-checks its next wake-up
+        return svc.get(client, nid, detail=False)
+
     def release_due(self) -> int:
         """Release every scheduled notification whose time has come; a bad row never stops the others."""
         from .db import now_iso

@@ -13,8 +13,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from . import __version__, arr
-from .core import Client, Conflict, Invalid, NotFound, NotifyService
-from .models import NotificationIn, Scope, SubscriptionIn, event_matches
+from .core import Client, Conflict, Forbidden, Invalid, NotFound, NotifyService
+from .models import NotificationIn, ScheduleUpdate, Scope, SubscriptionIn, event_matches
 
 router = APIRouter()
 
@@ -42,6 +42,8 @@ def _errors(fn):
             return await fn(*args, **kwargs)
         except NotFound as e:
             raise HTTPException(404, str(e)) from e
+        except Forbidden as e:
+            raise HTTPException(403, str(e)) from e
         except Invalid as e:
             raise HTTPException(422, str(e)) from e
         except Conflict as e:
@@ -95,9 +97,16 @@ async def notification_events(nid: str, request: Request, client: Client = Depen
     return {"items": service(request).get(client, nid)["events"]}
 
 
+@router.patch("/v1/notifications/{nid}", tags=["notifications"])
+@_errors
+async def update_scheduled(nid: str, body: ScheduleUpdate, request: Request,
+                           client: Client = Depends(require(Scope.send))) -> dict[str, Any]:
+    return service(request).scheduler.update(client, nid, body)
+
+
 @router.post("/v1/notifications/{nid}/cancel", tags=["notifications"])
 @_errors
-async def cancel(nid: str, request: Request, client: Client = Depends(require(Scope.manage))) -> dict[str, Any]:
+async def cancel(nid: str, request: Request, client: Client = Depends(require(Scope.send))) -> dict[str, Any]:
     return await service(request).cancel(client, nid)
 
 

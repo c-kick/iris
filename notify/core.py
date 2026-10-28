@@ -47,6 +47,10 @@ class Invalid(Exception):
     pass
 
 
+class Forbidden(Exception):
+    pass
+
+
 @dataclass(frozen=True)
 class Client:
     id: str
@@ -773,6 +777,11 @@ class NotifyService:
 
     # ---------------------------------------------------------------- manage
     async def cancel(self, client: Client, nid: str) -> dict[str, Any]:
+        done = self.scheduler.cancel(client, nid)  # a scheduled one: `send` scope suffices for one's own
+        if done is not None:
+            return done
+        if not client.can(Scope.manage):
+            raise Forbidden("cancelling a sent notification needs the manage scope")
         n = self._notification_row(client, nid)
         results = []
         for d in self.db.query("SELECT * FROM deliveries WHERE notification_id=?", (nid,)):
