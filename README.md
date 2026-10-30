@@ -406,6 +406,15 @@ notification is released (payload gains `scheduled: true`), followed by the usua
 Subscribers to `*` or `notification.*` therefore start receiving `notification.scheduled`,
 `notification.updated` and `notification.missed`.
 
+### Upgrading to 0.9.0
+
+- No schema change. Pushover device names are checked with Pushover (`users/validate.json`) at start-up, after a
+  configuration change, and before a push when the last good check is older than `device_check_seconds` (900).
+- **A device name Pushover no longer knows now fails.** Before, Pushover delivered such a push to every other
+  device on the account (duplicates). Now that delivery is `failed`, the device shows `ready: false` with the reason,
+  and the announce targets get one alert per broken device (source `hnl-notify/device-check`). Fix the device at
+  Pushover or in hnl-notify, or disable it.
+
 ### Upgrading to 0.8.0
 
 - Nothing changes for senders that do not use `send_at` / `delay`.
