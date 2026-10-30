@@ -406,7 +406,7 @@ notification is released (payload gains `scheduled: true`), followed by the usua
 Subscribers to `*` or `notification.*` therefore start receiving `notification.scheduled`,
 `notification.updated` and `notification.missed`.
 
-### Upgrading to 0.9.0
+### Upgrading to 0.9.0 (and 0.9.1)
 
 - No schema change. Pushover device names are checked with Pushover (`users/validate.json`) at start-up, after a
   configuration change, and before a push when the last good check is older than `device_check_seconds` (900).
