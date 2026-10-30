@@ -15,7 +15,7 @@ import secrets
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from . import attachments, schedule
@@ -696,6 +696,8 @@ class NotifyService:
                     fields["tracking"] = "none"  # provider gave no receipt after all
                 self._transition(c, cur, DISPATCHED, fields,
                                  {"provider_message_id": result.provider_message_id, "attempt": cur["attempts"]})
+                if cur["tracking"] == "report" and (cur["delivered_at"] or cur["acknowledged_at"]):
+                    self._apply_early_report(c, cur["id"])
                 return
             expires = parse_iso(n["expires_at"])
             deliver_by = parse_iso(n["deliver_by"])
@@ -761,9 +763,76 @@ class NotifyService:
                 self._transition(c, d, EXPIRED, {"last_error": "expired without acknowledgement"},
                                  {**evidence, "reason": "provider alert expired without acknowledgement",
                                   "delivered_at": d["delivered_at"]})
-            elif d["state"] in (DISPATCHED, DELIVERED):
+            elif d["state"] in (DISPATCHED, DELIVERED) and d["tracking"] == "receipt":
                 c.execute("UPDATE deliveries SET next_poll_at=? WHERE id=?", (in_seconds(poll_every), delivery_id))
         self._after_commit()
+
+    def _apply_early_report(self, c: sqlite3.Connection, delivery_id: str) -> None:
+        """A browser reported before the dispatch committed: replay what it stored on the row."""
+        d = c.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+        evidence = {"via": "report"}
+        if d["delivered_at"]:
+            self._transition(c, d, DELIVERED, {}, {**evidence, "delivered_at": d["delivered_at"]})
+            d = c.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+        if d["acknowledged_at"]:
+            self._transition(c, d, ACKNOWLEDGED, {},
+                             {**evidence, "acknowledged_at": d["acknowledged_at"],
+                              "acknowledged_by": d["acknowledged_by"]})
+
+    def apply_report(self, delivery_id: str, kind: Literal["shown", "clicked"], device: str) -> None:
+        """A browser reported that it showed (or the user clicked) a `report`-tracked delivery."""
+        now = utcnow()
+        st = (ReceiptStatus(delivered_at=now) if kind == "shown"
+              else ReceiptStatus(delivered_at=now, acknowledged_at=now, acknowledged_by=device))
+        d = self.db.one("SELECT * FROM deliveries WHERE id=?", (delivery_id,))
+        if d is None or d["tracking"] != "report" or d["finalized_at"]:
+            return
+        if d["state"] in (DISPATCHED, DELIVERED):
+            self.apply_receipt(delivery_id, st, via="report")
+        elif d["state"] == SENDING:
+            with self.db.tx() as c:  # the dispatch commit replays this (see _apply_early_report)
+                c.execute("UPDATE deliveries SET delivered_at=COALESCE(delivered_at, ?),"
+                          " acknowledged_at=COALESCE(acknowledged_at, ?),"
+                          " acknowledged_by=COALESCE(acknowledged_by, ?) WHERE id=? AND state=?",
+                          (iso(now), iso(st.acknowledged_at) if st.acknowledged_at else None,
+                           st.acknowledged_by, delivery_id, SENDING))
+
+    def expire_reports(self) -> int:
+        """Close `report` deliveries whose lifetime has passed without the report that would finish them."""
+        now = utcnow()
+        rows = self.db.query(
+            "SELECT d.*, n.expires_at AS n_expires_at, n.severity AS n_severity, n.require_ack AS n_require_ack"
+            " FROM deliveries d JOIN notifications n ON n.id=d.notification_id"
+            " WHERE d.tracking='report' AND d.state IN (?,?) AND d.finalized_at IS NULL"
+            " AND d.dispatched_at IS NOT NULL", (DISPATCHED, DELIVERED))
+        closed = 0
+        for d in rows:
+            provider = self.providers.get(d["provider"])
+            ttl = getattr(provider, "default_ttl_seconds", 86400)
+            horizon = parse_iso(d["n_expires_at"]) or parse_iso(d["dispatched_at"]) + timedelta(seconds=ttl)
+            if horizon > now:
+                continue
+            needs_ack = d["n_severity"] in ("high", "critical") or bool(d["n_require_ack"])
+            with self.db.tx() as c:
+                cur = c.execute("SELECT * FROM deliveries WHERE id=?", (d["id"],)).fetchone()
+                if cur["state"] not in (DISPATCHED, DELIVERED):
+                    continue  # a report landed meanwhile
+                if cur["state"] == DISPATCHED:
+                    reason = "not shown within its lifetime"
+                elif needs_ack:
+                    reason = "not acknowledged within its lifetime"
+                else:
+                    c.execute("UPDATE deliveries SET finalized_at=?, updated_at=? WHERE id=?",
+                              (iso(now), iso(now), d["id"]))
+                    self._refresh_status(c, d["notification_id"])
+                    closed += 1
+                    continue
+                self._transition(c, cur, EXPIRED, {"last_error": reason},
+                                 {"reason": reason, "delivered_at": cur["delivered_at"]})
+                closed += 1
+        if closed:
+            self._after_commit()
+        return closed
 
     def poll_failed(self, d: sqlite3.Row, error: str, http_status: int | None, body: str | None) -> None:
         errors = d["poll_errors"] + 1
@@ -1024,7 +1093,8 @@ class NotifyService:
             "expired": rows("d.state=? AND d.updated_at >= ? AND d.dismissed_at IS NULL", [EXPIRED, since]),
             "retrying": rows("d.state=? AND d.attempts > 0", [QUEUED]),
             "stuck": rows("d.state IN (?,?) AND d.created_at <= ?", [QUEUED, SENDING, stuck_cut]),
-            "awaiting_acknowledgement": rows("d.tracking='receipt' AND d.state IN (?,?)", [DISPATCHED, DELIVERED]),
+            "awaiting_acknowledgement": rows("(d.tracking='receipt' OR (d.tracking='report' AND (n.severity IN ('high','critical')"
+                                         " OR n.require_ack=1))) AND d.state IN (?,?)", [DISPATCHED, DELIVERED]),
             "release_problems": self.scheduler.problems(client),
             "providers": {name: p.health() for name, p in self.providers.items() if not p.configured},
         }

@@ -121,6 +121,7 @@ class Workers:
             svc.wake.clear()
             svc.scheduler.release_due()
             svc.expire_due()
+            svc.expire_reports()
             svc.recover_leases()
             for name, provider in svc.providers.items():
                 free = provider.max_concurrency - self._busy.setdefault(name, 0)
