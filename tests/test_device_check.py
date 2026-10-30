@@ -80,6 +80,16 @@ def test_check_trouble_does_not_hold_the_push():
     assert len(fake.messages) == 1
 
 
+def test_known_bad_device_stays_blocked_when_the_check_gets_no_answer():
+    fake = FakePushover(devices=["ipad"])
+    p = _provider(fake)
+    assert _send(p).outcome == "permanent"
+    fake.validate_status = 500
+    r = _send(p)
+    assert r.outcome == "permanent" and r.address_check is None  # still flagged, nothing new learned
+    assert fake.messages == []
+
+
 def test_address_without_device_is_not_checked():
     fake = FakePushover()
     p = _provider(fake)

@@ -318,9 +318,11 @@ class PushoverProvider(Provider):
             # configuration can be fixed and the service restarted; keep the message queued
             return SendResult(outcome="retryable", error="; ".join(problems), request_summary=summary)
         check = await self.check_address(address)
-        if check is not None and not check.valid:
+        # no answer keeps a device that was rejected before blocked: only an unflagged device is sent on trust
+        rejected = [check.problem] if check is not None and not check.valid else self.address_problems(address)
+        if rejected:
             return SendResult(outcome="permanent", request_summary=summary, address_check=check,
-                              error=f"{check.problem}. Not sent: Pushover would deliver it to every other device "
+                              error=f"{rejected[0]}. Not sent: Pushover would deliver it to every other device "
                                     "on the account instead")
         result = await self._post_message(form, summary, now)
         result.address_check = check
