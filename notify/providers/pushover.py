@@ -7,6 +7,11 @@ What Pushover reports back, and nothing more:
   publicly reachable URL on acknowledgement.
 No read receipts, no action buttons, no interaction reports, no recall of
 non-emergency messages.
+
+A message for a device name the account no longer has is still accepted, and goes
+to every active device instead. So a named device is checked (users/validate.json)
+before a push when its last good check is older than device_check_seconds, and a
+push to an unknown name fails instead of being sent.
 """
 
 from __future__ import annotations
@@ -14,13 +19,14 @@ from __future__ import annotations
 import base64
 import html
 import re
+import time
 from datetime import UTC, datetime
 from typing import Any
 
 import httpx
 
 from ..models import ACKNOWLEDGED, DELIVERED, Severity
-from .base import (BASE_OBSERVABLE, AttachmentData, DeliveryPlan, OutboundMessage, Provider, ProviderError,
+from .base import (BASE_OBSERVABLE, AddressCheck, AttachmentData, DeliveryPlan, OutboundMessage, Provider, ProviderError,
                    ReceiptStatus, SendResult)
 
 PRIORITY = {
@@ -40,6 +46,7 @@ MAX_ATTACHMENT = 5242880
 MIN_RETRY = 30
 _KEY_RE = re.compile(r"^[A-Za-z0-9]{30}$")
 _BODY_LIMIT = 4000
+_CHECK_TIMEOUT = 10.0
 
 
 def _ts(v: Any) -> datetime | None:
@@ -65,6 +72,9 @@ class PushoverProvider(Provider):
         "emergency_retry_seconds": {"label": "Critical alert repeats every (seconds)", "kind": "int", "default": 60},
         "emergency_expire_seconds": {"label": "Critical alert stops repeating after (seconds)", "kind": "int",
                                      "default": 3600},
+        "device_check_seconds": {"label": "Re-check device names after (seconds)", "kind": "int", "default": 900,
+                                 "help": "Before a push, a named device is checked with Pushover when its last check "
+                                         "is older than this. 0 checks before every push."},
     }
     address_schema = {
         "user_key": {"label": "User key", "kind": "secret",
@@ -82,8 +92,12 @@ class PushoverProvider(Provider):
         self.receipt_poll_seconds = max(5.0, float(settings.get("receipt_poll_seconds", 30)))
         self.sounds: dict[str, str] = dict(settings.get("sounds") or {})
         self.quota: dict[str, Any] = {}
+        self.device_check_seconds = max(0, int(settings.get("device_check_seconds", 900)))
+        self._checked: dict[tuple[str, str], float] = {}  # (user key, device) -> monotonic time of the last good check
+        self._invalid: dict[tuple[str, str], str] = {}  # (user key, device) -> what Pushover said at the last check
         unknown = set(settings) - {"type", "app_token", "api_base", "emergency_retry_seconds",
-                                   "emergency_expire_seconds", "receipt_poll_seconds", "sounds"}
+                                   "emergency_expire_seconds", "receipt_poll_seconds", "sounds",
+                                   "device_check_seconds"}
         self._unknown = sorted(unknown)
 
     # --- configuration ---
@@ -265,6 +279,36 @@ class PushoverProvider(Provider):
                 "observed_at": datetime.now(UTC),
             }
 
+    async def check_address(self, address: dict[str, Any], force: bool = False) -> AddressCheck | None:
+        device = str(address.get("device") or "")
+        if not device or self.config_problems() or self.device_problems(address):
+            return None
+        k = (str(address["user_key"]), device)
+        last = self._checked.get(k)
+        if not force and last is not None and time.monotonic() - last < self.device_check_seconds:
+            return None
+        try:
+            resp = await self.http.post(f"{self.api_base}/users/validate.json", timeout=_CHECK_TIMEOUT,
+                                        data={"token": self.app_token, "user": k[0], "device": device})
+            data = resp.json()
+        except (httpx.HTTPError, ValueError):
+            return None  # no answer: the push goes ahead as before
+        if resp.status_code == 200 and data.get("status") == 1:
+            self._checked[k] = time.monotonic()
+            self._invalid.pop(k, None)
+            return AddressCheck(valid=True)
+        if resp.status_code in (400, 404) and data.get("status") == 0:
+            errors = "; ".join(data.get("errors") or []) or f"HTTP {resp.status_code}"
+            problem = f"Pushover rejects device {device!r}: {errors}"
+            self._checked.pop(k, None)  # a bad answer is never cached: the next push asks again
+            self._invalid[k] = problem
+            return AddressCheck(valid=False, problem=problem)
+        return None
+
+    def address_problems(self, address: dict[str, Any]) -> list[str]:
+        problem = self._invalid.get((str(address.get("user_key") or ""), str(address.get("device") or "")))
+        return [problem] if problem else []
+
     async def send(self, msg: OutboundMessage, address: dict[str, Any]) -> SendResult:
         now = datetime.now(UTC)
         problems = self.config_problems() + self.device_problems(address)
@@ -273,6 +317,16 @@ class PushoverProvider(Provider):
         if problems:
             # configuration can be fixed and the service restarted; keep the message queued
             return SendResult(outcome="retryable", error="; ".join(problems), request_summary=summary)
+        check = await self.check_address(address)
+        if check is not None and not check.valid:
+            return SendResult(outcome="permanent", request_summary=summary, address_check=check,
+                              error=f"{check.problem}. Not sent: Pushover would deliver it to every other device "
+                                    "on the account instead")
+        result = await self._post_message(form, summary, now)
+        result.address_check = check
+        return result
+
+    async def _post_message(self, form: dict[str, str], summary: dict[str, Any], now: datetime) -> SendResult:
         try:
             resp = await self.http.post(f"{self.api_base}/messages.json", data=form)
         except httpx.HTTPError as e:

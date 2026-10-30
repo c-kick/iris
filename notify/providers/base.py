@@ -65,6 +65,13 @@ class DeliveryPlan:
 
 
 @dataclass
+class AddressCheck:
+    """The provider's answer to "does this address still reach the device it names?"."""
+    valid: bool
+    problem: str | None = None
+
+
+@dataclass
 class SendResult:
     outcome: Outcome
     http_status: int | None = None
@@ -74,6 +81,7 @@ class SendResult:
     error: str | None = None
     retry_after: float | None = None
     request_summary: dict[str, Any] = field(default_factory=dict)
+    address_check: AddressCheck | None = None  # set when this send asked the provider about the address
 
 
 @dataclass
@@ -166,6 +174,16 @@ class Provider(ABC):
     async def validate_address(self, address: dict[str, Any]) -> dict[str, Any]:
         """Ask the provider whether an address is valid; may list its sub-devices."""
         return {"supported": False}
+
+    async def check_address(self, address: dict[str, Any], force: bool = False) -> AddressCheck | None:
+        """Ask the provider whether the address still reaches its device, unless the last good answer is
+        recent (and not `force`). None: nothing asked, or no usable answer."""
+        return None
+
+    def address_problems(self, address: dict[str, Any]) -> list[str]:
+        """What the provider said was wrong with the address at the last check. A send to it fails;
+        unlike device_problems, nothing is held back waiting for a fix."""
+        return []
 
     async def test_connection(self) -> dict[str, Any]:
         """Check the provider's connection settings without sending anything."""

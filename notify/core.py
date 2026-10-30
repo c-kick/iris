@@ -360,6 +360,9 @@ class NotifyService:
             problems = provider.config_problems() + provider.device_problems(dev.address)
             if problems:
                 gaps.append("provider not ready (will retry until fixed): " + "; ".join(problems))
+            rejected = provider.address_problems(dev.address)
+            if rejected:
+                gaps.append("device rejected at the last check (fails unless fixed): " + "; ".join(rejected))
             deliveries.append({"id": did, "device": device_name, "provider": dev.provider, "via": via,
                                "tracking": plan.tracking, "observable_states": plan.observable_states,
                                "capability_gaps": gaps})
@@ -1030,7 +1033,7 @@ class NotifyService:
             d = cfg.devices[name]
             p = self.providers[d.provider]
             caps = {**p.capabilities(), **d.capabilities}
-            problems = p.config_problems() + p.device_problems(d.address)
+            problems = p.config_problems() + p.device_problems(d.address) + p.address_problems(d.address)
             return {"target": f"device:{name}", "description": d.description, "owner": d.owner,
                     "provider": d.provider, "kind": cfg.device_kind(name), "opt_in": cfg.device_opt_in(name),
                     "enabled": d.enabled, "min_severity": d.min_severity.value,

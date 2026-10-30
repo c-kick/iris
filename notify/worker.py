@@ -13,6 +13,7 @@ import httpx
 
 from .core import Client, Conflict, NotifyService
 from .db import dumps, now_iso
+from .device_check import check_devices, record_check
 from .providers.base import ProviderError, SendResult
 from .providers.email_inbound import mask_secret, poll_once
 
@@ -59,16 +60,33 @@ class Workers:
         self.cleanup_check_seconds = 60.0
         self.cleanup_backoff_max = 21600.0
         self.clock = time.monotonic        # seam for the cleanup schedule
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._device_check: asyncio.Task[Any] | None = None
 
     # ---------------------------------------------------------------- control
     def start(self) -> None:
+        self._loop = asyncio.get_running_loop()
         self.service.recover_leases(all_sending=True)
         for coro in (self._dispatch_loop(), self._receipt_loop(), self._webhook_loop(), self._sweep_loop(),
                      self._inbound_loop(), self._cleanup_loop()):
             self._tasks.append(asyncio.create_task(coro))
 
+    def check_devices(self) -> None:
+        """Check every device with its provider (start-up, configuration change). Callable from any thread;
+        a newer request replaces a check that is still running."""
+        def begin() -> None:
+            if self._stopping:
+                return
+            if self._device_check and not self._device_check.done():
+                self._device_check.cancel()
+            self._device_check = asyncio.create_task(check_devices(self.service))
+        if self._loop is not None:
+            self._loop.call_soon_threadsafe(begin)
+
     async def stop(self, grace: float = 10.0) -> None:
         self._stopping = True
+        if self._device_check:
+            self._device_check.cancel()
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -139,6 +157,8 @@ class Workers:
                     log.exception("provider send crashed", extra={"delivery_id": d["id"]})
                     result = SendResult(outcome="retryable", error=f"adapter error: {type(e).__name__}: {e}")
             svc.complete_send(d, result, started)
+            if result.address_check is not None:
+                record_check(svc, d["device"], result.address_check)
             if result.outcome == "success" and result.receipt and svc.cancel_requested_after_dispatch(d["id"]):
                 try:
                     await svc.cancel(Client(n["client_id"], frozenset()), n["id"])

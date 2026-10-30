@@ -54,7 +54,10 @@ admin password. Then, in the admin UI:
 2. **People & groups → Add person**: add yourself (e.g. `alex`).
 3. **Devices → Add device**: name it (e.g. `alex-phone`), let it belong to
    you, paste your Pushover user key, press *Find devices* and pick the phone
-   (leave it empty to reach all your Pushover devices). For email, add a
+   (leave it empty to reach all your Pushover devices). hnl-notify re-checks a
+   picked device name with Pushover at most every 15 minutes before a push: if
+   the device is gone from your account, the push fails and you get one alert,
+   instead of Pushover quietly sending it to all your other devices. For email, add a
    second device (e.g. `alex-email`), pick the email provider and enter the
    address. By default an email device is used only when a sender asks for it
    (`kinds`, below) or names it directly; untick *Only when an app asks for

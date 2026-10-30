@@ -250,6 +250,7 @@ capabilities state the condition under which they apply (e.g.
 | TTL | `ttl` seconds, auto-deletes from device; ignored for priority 2 | local expiry always; `ttl` forwarded when not critical |
 | Errors | 4xx + `errors[]` = invalid, don't retry; 429 = monthly quota exhausted; 5xx = retry after ≥ 5 s | `permanent` / `retryable` attempt outcome, raw body stored |
 | Limits | message 1024 chars, title 250, url 512, url_title 100; 10 000 msgs/month; ≤ 2 concurrent connections | truncation recorded as gap; adapter concurrency 2; quota headers surfaced in `/v1/providers` and `/metrics` |
+| Unknown device name | `messages.json` still answers `status:1` and sends to **every active device** on the account (checked 2026-10-30); only `users/validate.json` with `device` says "device name is not valid for user". Validation does not count as a message | before a push to a named device, `users/validate.json` when the last good check is older than `device_check_seconds` (default 900, 0 = every push); a rejected name fails the delivery (`permanent`, nothing sent), shows as a device problem (`ready: false`) and alerts the announce targets once until a check passes again (`meta` flag `device_invalid:<device>`, events `device.invalid` / `device.valid`). All devices are also checked at start-up and after every configuration change. No answer (network, 5xx, 429) never holds a push |
 
 Severity → Pushover priority: `min`→−2, `low`→−1, `normal`→0, `high`→1,
 `critical`→2 (retry 60 s, expire = min(TTL, 3 h)). `require_ack` below

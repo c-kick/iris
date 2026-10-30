@@ -75,6 +75,8 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
         service.reconfigure(cfg, providers)
         app.state.auth = Authenticator(cfg)
         app.state.config = cfg
+        if app.state.workers:
+            app.state.workers.check_devices()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -100,6 +102,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
                         extra={"setup_code": code})
         if workers:
             workers.start()
+            workers.check_devices()
         log.info("hnl-notify started", extra={"version": __version__, "devices": list(cfg.devices),
                                               "providers": list(providers), "clients": list(cfg.clients)})
         async with mcp.session_manager.run():

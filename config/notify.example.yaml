@@ -24,6 +24,7 @@ providers:
     emergency_retry_seconds: 60     # how often a critical alert re-alerts (min 30)
     emergency_expire_seconds: 3600  # stop re-alerting after this (max 10800)
     receipt_poll_seconds: 30        # critical alerts only (Pushover minimum 5)
+    device_check_seconds: 900       # re-check a named device before a push after this (0 = every push)
     # sounds: {critical: siren, high: tugboat}
   mail:
     type: email

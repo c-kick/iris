@@ -38,6 +38,9 @@ class FakePushover:
     webhooks: list[httpx.Request] = field(default_factory=list)
     webhook_status: int = 200
     file_requests: list[str] = field(default_factory=list)  # paths fetched from files.test
+    devices: list[str] = field(default_factory=lambda: ["iphone", "ipad"])  # active devices on USER_KEY
+    validations: list[dict[str, str]] = field(default_factory=list)
+    validate_status: int | None = None  # force this HTTP status on users/validate.json
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -56,9 +59,14 @@ class FakePushover:
                 return httpx.Response(200, content=PNG, headers={"content-type": "image/png"})
             if path.endswith("/users/validate.json"):
                 form = dict(parse_qsl(request.content.decode()))
-                if form.get("user") == USER_KEY and form.get("token") == APP_TOKEN:
-                    return httpx.Response(200, json={"status": 1, "group": 0, "devices": ["iphone", "ipad"]})
-                return httpx.Response(400, json={"status": 0, "errors": ["user key is invalid"]})
+                self.validations.append(form)
+                if self.validate_status is not None:
+                    return httpx.Response(self.validate_status, json={"status": 0, "errors": ["server trouble"]})
+                if form.get("user") != USER_KEY or form.get("token") != APP_TOKEN:
+                    return httpx.Response(400, json={"status": 0, "errors": ["user key is invalid"]})
+                if form.get("device") and form["device"] not in self.devices:
+                    return httpx.Response(400, json={"status": 0, "errors": ["device name is not valid for user"]})
+                return httpx.Response(200, json={"status": 1, "group": 0, "devices": list(self.devices)})
             if path.endswith("/messages.json"):
                 form = dict(parse_qsl(request.content.decode()))
                 self.messages.append(form)
