@@ -1,6 +1,6 @@
 # Browser push (Web Push) — design
 
-Date: 2026-10-30 · Status: revision 2 (after builder check and owner answers) · Target version: 0.10.0 (on top of 0.9.1)
+Date: 2026-10-30 · Status: revision 3, approved 2026-10-30 (after builder check, owner answers, staff review and ambassador rulings) · Target version: 0.10.0 (on top of 0.9.1)
 
 ## Intent
 
@@ -127,8 +127,6 @@ hnl-notify, so it can report that a notification was **shown** and **clicked**. 
 - The payload format between hnl-notify and the service worker (it is our own; keep it small,
   under the ~4 KiB push limit after encryption, truncating the message with a marker).
 - Default device naming from the user agent, and how the admin edits it.
-- Whether the browser re-subscribes by itself when its subscription changes
-  (`pushsubscriptionchange`) and updates the device; recommended where supported.
 - Admin UI placement (a webpush provider card with *Create enrollment link*, and browser
   devices in Devices).
 
@@ -139,3 +137,49 @@ hnl-notify, so it can report that a notification was **shown** and **clicked**. 
   `NOTIFY_EXTERNAL_URL` changes to that HTTPS URL (links in Pushover and email follow).
 - hnl-notify needs outbound HTTPS to the push services (it already has outbound internet for
   Pushover).
+
+## Revision 3: staff review, as ruled by the project ambassador
+
+All adopted; these override anything above that conflicts.
+
+- **R1 Tracking mode `report`.** Webpush deliveries use a new `tracking` value `report`: never polled
+  (`next_poll_at` NULL), **not** final at dispatch, ended by a report or the lifetime sweep. Touches
+  `_transition` (finalize only `none` at dispatch), `attention()` and a new sweep next to `expire_due`.
+  If `deliveries.tracking` has a CHECK constraint, migrate it. Document in architecture.md's data model.
+- **R2 Report before dispatch.** A *shown*/*clicked* report for a delivery still in `sending` is stored on
+  the row (`delivered_at` / `acknowledged_at` / `acknowledged_by`) and applied when the dispatch commits
+  (`_complete_send`). Not solved by service-worker retries.
+- **R3 Report token.** Random per-delivery token in the encrypted payload; its **hash** is stored in
+  `deliveries.receipt`, looked up with `delivery_by_receipt`. Reports feed `apply_receipt`. The report
+  endpoint always answers 204 (unknown, finished, duplicate alike), is rate-limited per address, and is
+  idempotent.
+- **R4 Lifetime.** Provider setting `default_ttl_seconds` (default 86400) is both the `TTL` header (when the
+  notification has no expiry) and the sweep horizon: past it, DISPATCHED → `expired` (never shown), and for
+  high/critical/require_ack also DELIVERED → `expired` (unacknowledged); ordinary DELIVERED ones finalize
+  as delivered.
+- **R5 Attention.** *awaiting acknowledgement* = `tracking='receipt'` OR (`tracking='report'` AND
+  (severity in high, critical OR require_ack)), in DISPATCHED/DELIVERED.
+- **R6 SSRF.** Subscription endpoints must be `https` on a fixed allowlist: `fcm.googleapis.com`,
+  `*.push.services.mozilla.com`, `*.notify.windows.com`, `web.push.apple.com` (kept for a later iPhone
+  path). Checked at enrollment and before every send (permanent failure otherwise). No setting.
+- **R7 VAPID.** The admin API generates the P-256 key pair when a webpush provider is saved without one;
+  edits never regenerate it (regenerating kills every subscription; the UI says so). Setting `contact`
+  (`mailto:…`) is required (`config_problems` otherwise). Private key is a secret setting.
+- **R8 Enrollment.** Code: random, stored hashed, 24 h, single use; consumed in the same locked step as the
+  `commit_config` write; throttled like decide links. Device name `<person>-browser`, then `-2`, `-3`…;
+  user-agent label in `description`. Each enrollment rebuilding providers and re-running device checks is
+  accepted at household scale.
+- **R9 No `pushsubscriptionchange`** (YAGNI): a dead subscription is flagged, alerts once, re-enroll.
+- **R10 Payload budget.** Truncate the message by encoded bytes (with `…`) so the encrypted record stays
+  ≤ 4096 bytes including RFC 8291 overhead.
+- **R11 Service worker** served under `/push/` (scope `/push/`), `Cache-Control: no-cache`; it never controls
+  `/admin`. Enrollment page has a strict CSP and no inline script.
+- **R12 Redaction.** Attempt logs show the endpoint host and a short suffix only; never `p256dh`/`auth`.
+- **R13 Host guard** compares scheme, host **and port** with `server.external_url`; creating an enrollment link
+  needs an `https` external URL.
+- **R14 Tests.** RFC 8291 Appendix A vector (seam for salt and ephemeral key), VAPID JWT shape, fake push
+  service (201, 404/410, 413, 429 + Retry-After, 5xx), report race, lifetime sweep, attention predicate,
+  dead subscription → flag + one alert, SSRF refusal, enrollment single use + throttle.
+- **R15 Release.** Version 0.10.0; README *Upgrading to 0.10.0*; architecture.md capability table for webpush;
+  MCP server instructions and `list_targets` text mention browser devices. The page and service worker get an
+  owner check in Edge and Firefox on the real hostname (no browser automation available).
