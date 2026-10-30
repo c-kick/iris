@@ -9,10 +9,12 @@ import httpx
 from .base import Provider
 from .email import EmailProvider
 from .pushover import PushoverProvider
+from .webpush import WebPushProvider
 
 REGISTRY: dict[str, type[Provider]] = {
     PushoverProvider.type: PushoverProvider,
     EmailProvider.type: EmailProvider,
+    WebPushProvider.type: WebPushProvider,
 }
 
 

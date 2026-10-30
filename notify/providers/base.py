@@ -49,6 +49,7 @@ class OutboundMessage:
     reply: bool = False
     thread_delivery_ids: list[str] = field(default_factory=list)  # earlier deliveries to this device, oldest first
     auto_submitted: bool = False
+    external_url: str | None = None  # this service's own base URL, no trailing slash
 
     def ttl_remaining(self, now: datetime) -> int | None:
         if self.expires_at is None:
@@ -59,7 +60,7 @@ class OutboundMessage:
 @dataclass
 class DeliveryPlan:
     """What this device can do for this particular message."""
-    tracking: Literal["none", "receipt"]
+    tracking: Literal["none", "receipt", "report"]
     observable_states: list[str]
     capability_gaps: list[str] = field(default_factory=list)
 

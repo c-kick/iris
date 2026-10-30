@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import random
 import secrets
 import sqlite3
@@ -197,6 +198,8 @@ class NotifyService:
             expires_at=parse_iso(n["expires_at"]), callback_url=self.callback_url(provider),
             attachments=atts, reply=bool(n["reply_wanted"]), auto_submitted=bool(n["auto_submitted"]),
             thread_delivery_ids=self._thread_delivery_ids(n["in_reply_to"], device) if device else [],
+            external_url=((self.config.server.external_url or os.environ.get("NOTIFY_EXTERNAL_URL") or "")
+                          .rstrip("/") or None),
         )
 
     @staticmethod

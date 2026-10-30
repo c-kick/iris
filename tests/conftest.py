@@ -41,6 +41,8 @@ class FakePushover:
     devices: list[str] = field(default_factory=lambda: ["iphone", "ipad"])  # active devices on USER_KEY
     validations: list[dict[str, str]] = field(default_factory=list)
     validate_status: int | None = None  # force this HTTP status on users/validate.json
+    push_requests: list[httpx.Request] = field(default_factory=list)  # web push POSTs to fcm.googleapis.com
+    push_responses: list[tuple[int, dict[str, str]]] = field(default_factory=list)  # (status, headers), default 201
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -49,6 +51,10 @@ class FakePushover:
                 self.webhooks.append(request)
                 return httpx.Response(self.webhook_status)
             path = request.url.path
+            if request.url.host == "fcm.googleapis.com":
+                self.push_requests.append(request)
+                status, headers = self.push_responses.pop(0) if self.push_responses else (201, {})
+                return httpx.Response(status, headers=headers)
             if request.url.host == "files.test":
                 self.file_requests.append(path)
                 if path == "/missing":
