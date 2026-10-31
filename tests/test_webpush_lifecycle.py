@@ -146,3 +146,32 @@ def test_attention_awaits_ack_only_for_high(wp):
 def test_report_delivery_not_final_at_dispatch(wp):
     nid, _ = sent(wp)
     assert delivery(wp, nid)["finalized_at"] is None
+
+
+def test_report_racing_the_dispatch_commit_is_not_lost(wp):
+    """The dispatch commit lands just before apply_report's transaction opens."""
+    from notify.db import Database
+    svc = wp.service
+    provider = svc.providers["browser"]
+    real_tx = Database.tx
+    armed = {"on": False}
+
+    async def send(msg, address):
+        armed["on"] = True
+        svc.apply_report(msg.delivery_id, "shown", "alex-browser")
+        return SendResult(outcome="success", http_status=201)
+
+    def tx(self):
+        if armed["on"]:
+            armed["on"] = False
+            svc.complete_send(svc.db.one("SELECT * FROM deliveries WHERE state='sending'"),
+                              SendResult(outcome="success", http_status=201), iso(utcnow()))
+        return real_tx(self)
+
+    provider.send = send
+    Database.tx = tx
+    try:
+        nid = submit(wp, targets=["device:alex-browser"], severity="high").json()["id"]
+        wait_for(lambda: delivery(wp, nid)["state"] == "delivered")
+    finally:
+        Database.tx = real_tx

@@ -784,18 +784,20 @@ class NotifyService:
         now = utcnow()
         st = (ReceiptStatus(delivered_at=now) if kind == "shown"
               else ReceiptStatus(delivered_at=now, acknowledged_at=now, acknowledged_by=device))
-        d = self.db.one("SELECT * FROM deliveries WHERE id=?", (delivery_id,))
-        if d is None or d["tracking"] != "report" or d["finalized_at"]:
-            return
-        if d["state"] in (DISPATCHED, DELIVERED):
-            self.apply_receipt(delivery_id, st, via="report")
-        elif d["state"] == SENDING:
-            with self.db.tx() as c:  # the dispatch commit replays this (see _apply_early_report)
+        with self.db.tx() as c:  # read and write together: the dispatch commit cannot land in between
+            d = c.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
+            if d is None or d["tracking"] != "report" or d["finalized_at"]:
+                return
+            if d["state"] == SENDING:  # the dispatch commit replays this (see _apply_early_report)
                 c.execute("UPDATE deliveries SET delivered_at=COALESCE(delivered_at, ?),"
                           " acknowledged_at=COALESCE(acknowledged_at, ?),"
-                          " acknowledged_by=COALESCE(acknowledged_by, ?) WHERE id=? AND state=?",
+                          " acknowledged_by=COALESCE(acknowledged_by, ?) WHERE id=?",
                           (iso(now), iso(st.acknowledged_at) if st.acknowledged_at else None,
-                           st.acknowledged_by, delivery_id, SENDING))
+                           st.acknowledged_by, delivery_id))
+                return
+            state = d["state"]
+        if state in (DISPATCHED, DELIVERED):
+            self.apply_receipt(delivery_id, st, via="report")
 
     def expire_reports(self) -> int:
         """Close `report` deliveries whose lifetime has passed without the report that would finish them."""
