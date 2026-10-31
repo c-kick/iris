@@ -177,3 +177,17 @@ def test_vapid_generated_once(wp):
     assert second["vapid_private_key"] == first["vapid_private_key"] and second["contact"] == "mailto:b@example.org"
     state = wp.client("admin").get("/admin/api/state").text
     assert first["vapid_private_key"] not in state and first["vapid_public_key"] in state
+    shown = wp.client("admin").get("/admin/api/state").json()["config"]["providers"]["browser"]
+    assert shown["vapid_private_key"] == {"set": True, "hint": "…" + first["vapid_private_key"][-4:]}
+    assert shown["vapid_public_key"] == first["vapid_public_key"]
+
+
+def test_enrolled_keys_are_masked_in_admin_listing(wp):
+    code = link(wp)
+    assert web(wp).post("/push/enroll", json={"code": code, "subscription": SUB}).status_code == 201
+    text = wp.client("admin").get("/admin/api/state").text
+    assert UA_PUBLIC not in text and AUTH not in text
+    address = wp.client("admin").get("/admin/api/state").json()["config"]["devices"]["alex-browser"]["address"]
+    assert address["p256dh"] == {"set": True, "hint": "…" + UA_PUBLIC[-4:]}
+    assert address["auth"] == {"set": True, "hint": "…" + AUTH[-4:]}
+    assert address["endpoint"] == SUB["endpoint"]
