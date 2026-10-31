@@ -40,6 +40,10 @@ it. Do not describe 'dispatched' as 'delivered'. capability_gaps lists requested
 features a device could not honour. Use severity critical only for real
 emergencies: on a phone it repeats loudly until acknowledged.
 
+Browser devices (a person's Chrome, Edge or Firefox, kind push) report 'delivered' when the
+browser showed the message and 'acknowledged' when it was clicked, at every severity; they
+carry no attachments and receive messages only while the browser is running.
+
 Replies by email: send_notification(..., kinds=["email"], reply=true) lets the
 recipient answer by replying to the mail. To wait for the answer, start
 `NOTIFY_REPLY_HANDLE=<reply_handle> notify-wait` (or `notify-wait <reply_handle>`)

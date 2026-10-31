@@ -43,6 +43,7 @@ const SEVERITY_HELP = {
 // Provider types whose /test (connection) and /check (address) endpoints do something.
 const TESTABLE = new Set(["email"]);
 const CHECKABLE = new Set(["pushover"]);
+const BROWSER_FIELDS = new Set(["endpoint", "user_agent"]); // set by the enrollment, not typed
 
 const KINDS = [["", "Default devices"], ["push", "Push"], ["email", "Email"], ["push,email", "Push and email"]];
 
@@ -492,7 +493,7 @@ const VIEWS = {
     const list = Object.entries(c.providers);
     main.innerHTML = `
       <div class="section-head"><h2>Providers</h2>
-        <p>A provider carries notifications to devices. Pushover delivers to the Pushover app on your phone: normal messages are reported as sent once Pushover accepts them, and only critical messages report delivery and acknowledgement back. Email goes out through your mail server.</p></div>
+        <p>A provider carries notifications to devices. Browser push delivers to Chrome, Edge or Firefox on a computer or phone once you open an enrollment link in that browser; it reports when a message was shown and when it was clicked. Pushover delivers to the Pushover app on your phone: normal messages are reported as sent once Pushover accepts them, and only critical messages report delivery and acknowledgement back. Email goes out through your mail server.</p></div>
       <div class="rows">${list.length ? list.map(([n, p]) => {
         const t = state.provider_types[p.type] || {};
         const h = state.providers[n];
@@ -504,13 +505,14 @@ const VIEWS = {
             ${h?.problems?.length ? `<div class="problem">${esc(h.problems.join("; "))}</div>` : ""}
             ${p.imap_host ? `<div class="sub" data-mbox-sum="${esc(n)}">Reply mailbox: reading…</div>` : ""}
             <div class="sub" data-result></div></div>
-          <div class="actions">${p.imap_host ? `<button class="btn" data-mbox aria-label="Manage reply mailbox">Manage…</button>` : ""}${TESTABLE.has(p.type) ? `<button class="btn" data-test="${esc(n)}" aria-label="Test connection">Test</button>` : ""}<button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
+          <div class="actions">${p.imap_host ? `<button class="btn" data-mbox aria-label="Manage reply mailbox">Manage…</button>` : ""}${TESTABLE.has(p.type) ? `<button class="btn" data-test="${esc(n)}" aria-label="Test connection">Test</button>` : ""}${p.type === "webpush" ? `<button class="btn" data-enroll="${esc(n)}">Enrollment link</button>` : ""}<button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
       }).join("") : `<div class="empty">No providers yet. Connect Pushover to reach phones, or add your mail server to send email.</div>`}</div>
       <p style="margin-top:1rem"><button class="btn primary" id="add">Add provider</button></p>`;
     main.querySelector("#add").onclick = () => addProviderForm();
     main.querySelectorAll("[data-mbox]").forEach((b) => (b.onclick = () => goTo("mailbox")));
     if (main.querySelector("[data-mbox-sum]")) loadMailboxSummaries(main);
     main.querySelectorAll("[data-edit]").forEach((b) => (b.onclick = () => providerForm(b.dataset.edit)));
+    main.querySelectorAll("[data-enroll]").forEach((b) => (b.onclick = () => enrollmentForm(b.dataset.enroll)));
     main.querySelectorAll("[data-del]").forEach((b) => (b.onclick = () => confirmAction(
       "Remove provider?", `Remove <strong>${esc(b.dataset.del)}</strong>. Devices that use it must be removed first.`,
       "Remove provider", () => mutate("DELETE", `/providers/${b.dataset.del}`, undefined, "Provider removed"))));
@@ -779,6 +781,38 @@ function addProviderForm() {
   });
 }
 
+/** Creates a single-use link that enrolls one browser as a device of the chosen person. */
+function enrollmentForm(name) {
+  const users = Object.entries(cfg().users);
+  if (!users.length) { toast("Add a person first"); section = "people"; render(); return; }
+  openForm({
+    title: "Enrollment link",
+    intro: "Open the link in the browser you want to enroll (Chrome, Edge or Firefox), then press Enable notifications. The link works once and expires after 24 hours.",
+    fields: [{ name: "owner", label: "Belongs to", kind: "select", value: users[0][0], options: users.map(([n, u]) => [n, u.display_name || n]) }],
+    submit: "Create link",
+    onSubmit: async (v) => {
+      const r = await api("POST", `/providers/${name}/enrollments`, { owner: v.owner });
+      setTimeout(() => showEnrollment(r.url, r.expires_at), 0);
+    },
+  });
+}
+
+function showEnrollment(url, expires) {
+  dialog.innerHTML = `
+    <div class="stack" style="display:flex;flex-direction:column;gap:1rem">
+      <h2>Enrollment link</h2>
+      <p>Open this link in the browser to enroll. It works once and expires ${esc(when(expires))}.</p>
+      <div class="secret-box"><code id="lnk">${esc(url)}</code><button class="btn" id="copy">Copy</button></div>
+      <div class="form-actions"><button class="btn primary" id="done">Done</button></div>
+    </div>`;
+  dialog.querySelector("#copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(url); toast("Link copied"); }
+    catch { toast("Copy isn't available here; select the link and copy it manually"); }
+  };
+  dialog.querySelector("#done").onclick = () => dialog.close();
+  dialog.showModal();
+}
+
 function providerForm(name, newType) {
   const p = cfg().providers[name];
   const type = p?.type || newType;
@@ -787,7 +821,9 @@ function providerForm(name, newType) {
   openForm({
     title: p ? `Edit ${name === type ? t.label : name}` : pushover ? "Connect Pushover" : `Add ${t.label}`,
     intro: pushover ? `Create an application at <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">pushover.net/apps/build</a> (name it hnl-notify), then paste its API token.` : "",
-    fields: Object.entries(t.settings).map(([k, s]) => ({ name: k, label: s.label, kind: s.kind, help: s.help, options: s.options,
+    fields: Object.entries(t.settings)
+      .filter(([k]) => type !== "webpush" || (k !== "vapid_private_key" && (k !== "vapid_public_key" || p))) // the key pair is generated, never typed
+      .map(([k, s]) => ({ name: k, label: s.label, kind: s.kind, help: s.help, options: s.options, readonly: k === "vapid_public_key",
       value: p?.[k] ?? s.default ?? (s.kind === "check" ? false : ""), stored: s.kind === "secret" && p?.[k]?.set ? p[k].hint : "" })),
     submit: "Save",
     onSubmit: (v) => mutate("PUT", `/providers/${name}`, { type, settings: v }, `${t.label} saved`),
@@ -818,6 +854,7 @@ function deviceForm(name, draft = null) {
       name: `addr_${k}`, label: s.label, kind: s.kind, help: s.help, options: s.options,
       value: same ? d.address?.[k] ?? "" : "",
       stored: s.kind === "secret" && same && d.address?.[k]?.set ? d.address[k].hint : "",
+      readonly: ptype === "webpush" && BROWSER_FIELDS.has(k),
       list: k === "device", button: k === "device" && CHECKABLE.has(ptype) ? { action: "check", label: "Check address" } : null,
     })),
     { name: "min_severity", label: "Receive from urgency", kind: "select", value: pick("min_severity", d?.min_severity || "min"),

@@ -26,6 +26,14 @@ providers:
     receipt_poll_seconds: 30        # critical alerts only (Pushover minimum 5)
     device_check_seconds: 900       # re-check a named device before a push after this (0 = every push)
     # sounds: {critical: siren, high: tugboat}
+  # Browser push (Chrome, Edge, Firefox). Needs an https server.external_url. Easier in the admin UI:
+  # it generates the VAPID key pair and creates single-use enrollment links for each person's browser.
+  # browser:
+  #   type: webpush
+  #   contact: mailto:alex@example.org
+  #   default_ttl_seconds: 86400
+  #   vapid_private_key: ...   # generated; never change it once browsers are enrolled
+  #   vapid_public_key: ...
   mail:
     type: email
     host: smtp.example.org

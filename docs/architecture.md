@@ -101,7 +101,7 @@ everyone out and prints a new setup code.
   tags, targets, require_ack, expires_at, derived status, routing notes.
 - `deliveries` — one per (notification, device): state, attempt counters,
   `next_attempt_at`, lease, provider message id, provider receipt,
-  `tracking` (`none`/`receipt`), **`observable_states`**,
+  `tracking` (`none`/`receipt`/`report`), **`observable_states`**,
   **`capability_gaps`**, per-state timestamps (dispatched / delivered /
   acknowledged / interacted / finalized), acknowledged_by, last error.
 - `attempts` — every provider call: start/finish, outcome
@@ -256,6 +256,26 @@ Severity → Pushover priority: `min`→−2, `low`→−1, `normal`→0, `high`
 `critical`→2 (retry 60 s, expire = min(TTL, 3 h)). `require_ack` below
 `critical` is **not** silently escalated to an emergency alarm; it becomes the
 gap "acknowledgement on pushover requires severity=critical".
+
+## What browser push can and cannot report (RFC 8030/8291/8292)
+
+| Question | Browser push | Modelled as |
+|---|---|---|
+| Request accepted? | The vendor push service answers 201/202 | `dispatched`; tracking `report` (not finalized at dispatch) |
+| Shown? | The service worker POSTs `shown` to `/push/report` after `showNotification`; works only while the browser runs | `delivered`; authenticated by a per-delivery HMAC token carried in the payload |
+| Clicked? | The service worker POSTs `clicked` on `notificationclick` (implies shown) | `acknowledged` (`acknowledged_by` = the device), at every severity |
+| Report before the dispatch commit? | Possible: the browser can beat the worker's database write | stored on the row while `sending`, replayed when `dispatched` commits |
+| Never shown? | Push service drops the message after its TTL | sweep: `dispatched` past its horizon becomes `expired` ("not shown within its lifetime") |
+| Shown but not clicked? | n/a | high/critical/`require_ack`: `expired` ("not acknowledged within its lifetime", keeps `delivered_at`) and listed under awaiting acknowledgement; ordinary: finalized `delivered` |
+| Dead subscription? | 404/410 from the push service | `permanent`; device flagged `ready: false` with an alert (`AddressCheck` invalid) until a later send succeeds; re-enroll the browser |
+| TTL | `TTL` header = remaining expiry, else `default_ttl_seconds` (86400) | horizon of the sweep above |
+| Urgency | `Urgency` header: min `very-low`, low `low`, normal `normal`, high/critical `high` | no repeating alarm for critical |
+| Images / attachments | Not carried | capability gap `attachments: not supported on browser push` |
+| Actions | Not carried; one tap link (`url`, else the first action URL) opens on click | `actions: 0` |
+| Browser not running | Chrome/Edge/Firefox receive nothing until it runs | message waits at the push service until TTL |
+| Errors | 429 retry (honours `Retry-After`), 5xx/network retryable, 413 and other 4xx permanent | attempt outcomes as for other providers |
+| Payload | Encrypted aes128gcm record ≤ 4096 bytes; the message is truncated with `…` to fit | recorded in the request summary as byte size |
+| Security | Subscription endpoints must be `https` on a fixed vendor allowlist; `/push/*` answers only on `server.external_url` | `push_endpoint_ok`, host guard |
 
 ## What email can and cannot report
 

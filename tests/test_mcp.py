@@ -79,7 +79,7 @@ def test_mcp_advertises_email_and_attachments(live):
         return init.instructions, tools
 
     instructions, tools = run_session(live, "agent", flow)
-    for phrase in ("email", "kinds", "attachments", "image"):
+    for phrase in ("email", "kinds", "attachments", "image", "browser"):
         assert phrase in instructions
     for phrase in ("kind", "opt_in", "attachment"):
         assert phrase in tools["list_targets"]
