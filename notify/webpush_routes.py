@@ -6,6 +6,7 @@ browser can never be enrolled against, or report to, some other origin.
 
 from __future__ import annotations
 
+import html
 import logging
 import threading
 import time
@@ -33,6 +34,7 @@ _enroll_lock = threading.Lock()
 _REPORT_PER_MINUTE = 120
 _reports: dict[str, list[float]] = {}
 _reports_lock = threading.Lock()
+_warned: set[tuple[str | None, str]] = set()  # one warning per distinct origin miss
 CSP = ("default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
@@ -52,6 +54,11 @@ def host_guard(request: Request) -> None:
     scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
     host = request.headers.get("host") or ""
     if not base or _origin(base) is None or _origin(f"{scheme}://{host}") != _origin(base):
+        seen = f"{scheme}://{host}"
+        if (base, seen) not in _warned:
+            _warned.add((base, seen))
+            log.warning(f"push request refused: expected {base}, received {seen}; the reverse proxy must pass the "
+                        "original Host and X-Forwarded-Proto", extra={"expected": base, "received": seen})
         raise HTTPException(404)
 
 
@@ -93,8 +100,8 @@ def enroll_page(request: Request, c: str = "") -> Response:
                             "expired. Ask for a new one.</p>", status_code=410, headers={"Content-Security-Policy": CSP})
     provider = request.app.state.config.providers.get(row["provider"])
     public = (provider.model_dump().get("vapid_public_key") if provider else "") or ""
-    html = (UI / "enroll.html").read_text().replace("{{KEY}}", public)
-    return HTMLResponse(html, headers={"Content-Security-Policy": CSP, "Cache-Control": "no-store",
+    page = (UI / "enroll.html").read_text().replace("{{KEY}}", html.escape(public, quote=True))
+    return HTMLResponse(page, headers={"Content-Security-Policy": CSP, "Cache-Control": "no-store",
                                        "Referrer-Policy": "no-referrer", "X-Content-Type-Options": "nosniff"})
 
 

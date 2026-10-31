@@ -33,7 +33,8 @@ def record_check(svc: NotifyService, device: str, check: AddressCheck) -> None:
             record_event(svc, "device.valid", "hnl-notify", {"device": device})
         return
     with svc.db.tx() as c:
-        new = c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (_flag(device), now_iso())).rowcount
+        new = c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)",
+                        (_flag(device), check.problem or now_iso())).rowcount
     if not new:
         return  # already flagged and announced
     log.warning("device invalid", extra={"device": device, "problem": check.problem})

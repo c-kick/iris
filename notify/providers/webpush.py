@@ -10,6 +10,7 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -18,7 +19,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from ..models import ACKNOWLEDGED, DELIVERED, Severity
-from ..webpush_crypto import encrypt, unb64u, vapid_authorization
+from ..webpush_crypto import encrypt, load_private, unb64u, vapid_authorization
 from .base import BASE_OBSERVABLE, AddressCheck, DeliveryPlan, OutboundMessage, Provider, SendResult
 
 ALLOWED_PUSH_HOSTS = ("fcm.googleapis.com", "*.push.services.mozilla.com", "*.notify.windows.com",
@@ -32,6 +33,7 @@ URGENCY = {
     Severity.critical: "high",
 }
 _BODY_LIMIT = 4000
+MAX_RETRY_AFTER = 3600.0
 
 
 def push_endpoint_ok(url: str) -> bool:
@@ -95,9 +97,9 @@ class WebPushProvider(Provider):
             problems.append("VAPID key pair is not set (vapid_private_key, vapid_public_key)")
         else:
             try:
-                _token(self.vapid_private_key, "check")
+                load_private(self.vapid_private_key)
             except ValueError:
-                problems.append("vapid_private_key is not valid base64url")
+                problems.append("vapid_private_key is not a valid P-256 private key")
         if not self.contact.startswith("mailto:"):
             problems.append("contact must start with mailto:")
         if self._unknown:
@@ -202,13 +204,16 @@ class WebPushProvider(Provider):
             return SendResult(outcome="permanent", request_summary=summary,
                               error=f"browser subscription keys are invalid ({e}): re-enroll this browser")
         summary["bytes"] = len(body)
-        headers = {
-            "TTL": str(ttl), "Urgency": urgency, "Content-Encoding": "aes128gcm",
-            "Content-Type": "application/octet-stream",
-            "Authorization": vapid_authorization(endpoint, self.vapid_private_key, self.contact, int(time.time())),
-        }
         try:
+            headers = {
+                "TTL": str(ttl), "Urgency": urgency, "Content-Encoding": "aes128gcm",
+                "Content-Type": "application/octet-stream",
+                "Authorization": vapid_authorization(endpoint, self.vapid_private_key, self.contact,
+                                                     int(time.time())),
+            }
             resp = await self.http.post(endpoint, content=body, headers=headers)
+        except ValueError as e:  # the signing key cannot sign
+            return SendResult(outcome="permanent", error=f"VAPID signing failed ({e})", request_summary=summary)
         except httpx.HTTPError as e:
             return SendResult(outcome="retryable", error=f"{type(e).__name__}: {e}", request_summary=summary)
         text = resp.text[:_BODY_LIMIT]
@@ -225,9 +230,10 @@ class WebPushProvider(Provider):
                               request_summary=summary, address_check=AddressCheck(False, problem))
         if code == 429:
             try:
-                retry_after: float | None = float(resp.headers.get("Retry-After", ""))
+                wait = float(resp.headers.get("Retry-After", ""))
             except ValueError:
-                retry_after = None
+                wait = math.nan
+            retry_after = min(wait, MAX_RETRY_AFTER) if math.isfinite(wait) and wait >= 0 else None
             return SendResult(outcome="retryable", http_status=code, response_body=text, error=error,
                               retry_after=retry_after, request_summary=summary)
         outcome = "permanent" if 400 <= code < 500 else "retryable"

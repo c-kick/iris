@@ -152,3 +152,28 @@ def test_config_problems():
     assert any("mailto" in x for x in p.config_problems())
     http = httpx.AsyncClient()
     assert WebPushProvider("b", {"contact": "mailto:a@example.org"}, http).config_problems()
+
+
+def test_retry_after_is_finite_and_clamped():
+    for value, expected in (("inf", None), ("nan", None), ("-5", None), ("abc", None), ("1e999", None),
+                            ("99999", 3600), ("0", 0), ("120", 120)):
+        fake = FakePushover(push_responses=[(429, {"Retry-After": value})])
+        r = _send(_provider(fake))
+        assert r.outcome == "retryable" and r.retry_after == expected, value
+
+
+def test_corrupt_private_key_is_a_config_problem():
+    p = _provider(FakePushover(), vapid_private_key="AAAA")
+    assert any("vapid_private_key" in x for x in p.config_problems())
+    assert _provider(FakePushover()).config_problems() == []
+
+
+def test_vapid_signing_failure_is_permanent(monkeypatch):
+    import notify.providers.webpush as mod
+
+    def boom(*a, **k):
+        raise ValueError("bad key")
+    monkeypatch.setattr(mod, "vapid_authorization", boom)
+    fake = FakePushover()
+    r = _send(_provider(fake))
+    assert r.outcome == "permanent" and fake.push_requests == []

@@ -191,3 +191,17 @@ def test_enrolled_keys_are_masked_in_admin_listing(wp):
     assert address["p256dh"] == {"set": True, "hint": "…" + UA_PUBLIC[-4:]}
     assert address["auth"] == {"set": True, "hint": "…" + AUTH[-4:]}
     assert address["endpoint"] == SUB["endpoint"]
+
+
+def test_host_guard_miss_is_logged(wp, caplog):
+    import logging
+    with caplog.at_level(logging.WARNING, logger="notify.webpush"):
+        httpx.get(wp.url + "/push/sw.js")
+    assert any("expected" in r.getMessage() and "notify.example.org" in r.getMessage() for r in caplog.records)
+
+
+def test_key_is_html_escaped_in_page(wp):
+    code = link(wp)
+    wp.service.config.providers["browser"].__pydantic_extra__["vapid_public_key"] = '"><script>x</script>'
+    page = web(wp).get("/push/enroll", params={"c": code})
+    assert "<script>x" not in page.text and "&lt;script&gt;x" in page.text

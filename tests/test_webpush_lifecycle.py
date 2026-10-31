@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -175,3 +176,23 @@ def test_report_racing_the_dispatch_commit_is_not_lost(wp):
         wait_for(lambda: delivery(wp, nid)["state"] == "delivered")
     finally:
         Database.tx = real_tx
+
+
+def test_rejected_device_stays_not_ready_across_rebuild(wp):
+    def ready() -> bool:
+        return next(d for d in wp.service.targets()["devices"] if d["target"] == "device:alex-browser")["ready"]
+
+    assert ready()
+    wp.fake.push_responses += [(410, {}), (410, {})]  # the push, then the alert to the same (only) device
+    nid = submit(wp, targets=["device:alex-browser"]).json()["id"]
+    wait_for(lambda: delivery(wp, nid)["state"] == "failed")
+    wait_for(lambda: wp.service.db.one("SELECT 1 FROM meta WHERE key='device_invalid:alex-browser'"))
+    wait_for(lambda: not wp.fake.push_responses)
+    time.sleep(0.3)
+    assert not ready()
+    wp.call(lambda: wp.app.state.apply_config(wp.app.state.config))  # providers are rebuilt, memory is lost
+    assert not ready()
+    again = submit(wp, targets=["device:alex-browser"]).json()
+    assert any("rejected" in g for g in get(wp, again["id"])["deliveries"][0]["capability_gaps"])
+    wait_for(lambda: delivery(wp, again["id"])["state"] == "dispatched")
+    wait_for(ready)

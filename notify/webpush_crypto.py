@@ -30,7 +30,7 @@ def _point(key: ec.EllipticCurvePrivateKey) -> bytes:
     return key.public_key().public_bytes(Encoding.X962, PublicFormat.UncompressedPoint)
 
 
-def _load_private(private: str) -> ec.EllipticCurvePrivateKey:
+def load_private(private: str) -> ec.EllipticCurvePrivateKey:
     return ec.derive_private_key(int.from_bytes(unb64u(private), "big"), ec.SECP256R1())
 
 
@@ -54,7 +54,7 @@ def encrypt(
 ) -> bytes:
     """RFC 8291 aes128gcm body for one record. `salt` and `sender_private` are test seams."""
     ua_public = unb64u(p256dh)
-    sender = _load_private(sender_private) if sender_private else ec.generate_private_key(ec.SECP256R1())
+    sender = load_private(sender_private) if sender_private else ec.generate_private_key(ec.SECP256R1())
     salt = salt if salt is not None else os.urandom(16)
     sender_public = _point(sender)
     shared = sender.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), ua_public))
@@ -77,7 +77,7 @@ def vapid_authorization(endpoint: str, private_key: str, contact: str, now: int)
             ).encode()
         ),
     ]
-    key = _load_private(private_key)
+    key = load_private(private_key)
     r, s = decode_dss_signature(key.sign(".".join(segments).encode(), ec.ECDSA(hashes.SHA256())))
     segments.append(b64u(r.to_bytes(32, "big") + s.to_bytes(32, "big")))
     return f"vapid t={'.'.join(segments)}, k={b64u(_point(key))}"

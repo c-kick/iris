@@ -367,7 +367,7 @@ class NotifyService:
             problems = provider.config_problems() + provider.device_problems(dev.address)
             if problems:
                 gaps.append("provider not ready (will retry until fixed): " + "; ".join(problems))
-            rejected = provider.address_problems(dev.address)
+            rejected = self.rejected_problems(device_name, provider, dev.address)
             if rejected:
                 gaps.append("device rejected at the last check (fails unless fixed): " + "; ".join(rejected))
             deliveries.append({"id": did, "device": device_name, "provider": dev.provider, "via": via,
@@ -791,7 +791,7 @@ class NotifyService:
         with self.db.tx() as c:  # read and write together: the dispatch commit cannot land in between
             d = c.execute("SELECT * FROM deliveries WHERE id=?", (delivery_id,)).fetchone()
             if d is None or d["tracking"] != "report" or d["finalized_at"]:
-                return
+                return  # by design: a click after the horizon finalized an ordinary delivery is ignored
             if d["state"] == SENDING:  # the dispatch commit replays this (see _apply_early_report)
                 c.execute("UPDATE deliveries SET delivered_at=COALESCE(delivered_at, ?),"
                           " acknowledged_at=COALESCE(acknowledged_at, ?),"
@@ -1105,6 +1105,20 @@ class NotifyService:
             "providers": {name: p.health() for name, p in self.providers.items() if not p.configured},
         }
 
+    def rejected_problems(self, device: str, provider: Provider, address: dict[str, Any]) -> list[str]:
+        """What the provider said was wrong with the address: its own memory, else the persisted flag
+        (device_check.record_check), which survives provider rebuilds and restarts."""
+        live = provider.address_problems(address)
+        if live:
+            return live
+        row = self.db.one("SELECT value FROM meta WHERE key=?", (f"device_invalid:{device}",))
+        if row is None:
+            return []
+        text = row["value"] or ""
+        if not text or text[:2] == "20" and text[4:5] == "-":  # empty, or a 0.9.x flag holding a timestamp
+            text = "rejected by the provider at the last send or check; a successful send clears this"
+        return [text]
+
     def targets(self) -> dict[str, Any]:
         cfg = self.config
 
@@ -1112,7 +1126,7 @@ class NotifyService:
             d = cfg.devices[name]
             p = self.providers[d.provider]
             caps = {**p.capabilities(), **d.capabilities}
-            problems = p.config_problems() + p.device_problems(d.address) + p.address_problems(d.address)
+            problems = p.config_problems() + p.device_problems(d.address) + self.rejected_problems(name, p, d.address)
             return {"target": f"device:{name}", "description": d.description, "owner": d.owner,
                     "provider": d.provider, "kind": cfg.device_kind(name), "opt_in": cfg.device_opt_in(name),
                     "enabled": d.enabled, "min_severity": d.min_severity.value,

@@ -267,7 +267,7 @@ gap "acknowledgement on pushover requires severity=critical".
 | Report before the dispatch commit? | Possible: the browser can beat the worker's database write | stored on the row while `sending`, replayed when `dispatched` commits |
 | Never shown? | Push service drops the message after its TTL | sweep: `dispatched` past its horizon becomes `expired` ("not shown within its lifetime") |
 | Shown but not clicked? | n/a | high/critical/`require_ack`: `expired` ("not acknowledged within its lifetime", keeps `delivered_at`) and listed under awaiting acknowledgement; ordinary: finalized `delivered` |
-| Dead subscription? | 404/410 from the push service | `permanent`; device flagged `ready: false` with an alert (`AddressCheck` invalid) until a later send succeeds; re-enroll the browser |
+| Dead subscription? | 404/410 from the push service | `permanent`; the `device_invalid:<device>` meta flag is set (persisted, so `ready: false` survives provider rebuilds and restarts) with one alert, until a later send succeeds; re-enroll the browser |
 | TTL | `TTL` header = remaining expiry, else `default_ttl_seconds` (86400) | horizon of the sweep above |
 | Urgency | `Urgency` header: min `very-low`, low `low`, normal `normal`, high/critical `high` | no repeating alarm for critical |
 | Images / attachments | Not carried | capability gap `attachments: not supported on browser push` |
