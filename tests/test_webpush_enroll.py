@@ -205,3 +205,32 @@ def test_key_is_html_escaped_in_page(wp):
     wp.service.config.providers["browser"].__pydantic_extra__["vapid_public_key"] = '"><script>x</script>'
     page = web(wp).get("/push/enroll", params={"c": code})
     assert "<script>x" not in page.text and "&lt;script&gt;x" in page.text
+
+
+def flag(srv, device):
+    with srv.service.db.tx() as c:
+        c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, 'gone')", (f"device_invalid:{device}",))
+
+
+def flagged(srv, device):
+    return srv.service.db.one("SELECT 1 FROM meta WHERE key=?", (f"device_invalid:{device}",)) is not None
+
+
+def test_reenrolled_device_does_not_inherit_old_flag(wp):
+    code = link(wp)
+    assert web(wp).post("/push/enroll", json={"code": code, "subscription": SUB}).status_code == 201
+    flag(wp, "alex-browser")
+    assert wp.client("admin").delete("/admin/api/devices/alex-browser").status_code == 200
+    assert not flagged(wp, "alex-browser")
+    flag(wp, "alex-browser")  # a flag left behind some other way is cleared by the new enrollment
+    code = link(wp)
+    assert web(wp).post("/push/enroll", json={"code": code, "subscription": SUB}).json() == {"device": "alex-browser"}
+    assert not flagged(wp, "alex-browser")
+    dev = next(d for d in wp.service.targets()["devices"] if d["target"] == "device:alex-browser")
+    assert dev["ready"] is True
+
+
+def test_deleting_a_flagged_pushover_device_leaves_no_flag(wp):
+    flag(wp, "alex-phone")
+    assert wp.client("admin").delete("/admin/api/devices/alex-phone").status_code == 200
+    assert not flagged(wp, "alex-phone")

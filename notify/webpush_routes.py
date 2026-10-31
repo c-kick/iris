@@ -22,6 +22,7 @@ from .auth import hash_token
 from .config import ConfigError
 from .configops import commit_config
 from .core import external_base
+from .device_check import clear_flag
 from .db import now_iso, parse_iso, utcnow
 from .providers.webpush import WebPushProvider, push_endpoint_ok
 from .webpush_crypto import unb64u
@@ -172,6 +173,7 @@ def enroll(body: dict[str, Any], request: Request) -> dict[str, str]:
             commit_config(app, mutate)
         except ConfigError as e:
             raise HTTPException(409, str(e)) from e
+        clear_flag(app.state.service, out["device"])  # a same-named device removed earlier left no verdict behind
         with db.tx() as c:
             c.execute("UPDATE enrollments SET used_at=?, device=? WHERE id=?", (now_iso(), out["device"], row["id"]))
     throttle.ok(key)

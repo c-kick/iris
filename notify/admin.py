@@ -29,6 +29,7 @@ from .models import NotificationIn, ScheduleUpdate, Scope, Severity
 from .providers import REGISTRY
 from .configops import commit_config
 from .cleanup_service import record_event
+from .device_check import clear_flag
 from .providers.email_inbound import run_locked
 from .schedule import local_zone
 from .registrations import announce_targets, approve, deny, list_registrations
@@ -412,7 +413,9 @@ async def delete_device(name: str, request: Request, _: Client = Depends(admin))
         for u in data["users"].values():
             u["devices"] = [d for d in u["devices"] if d != name]
         _drop_refs(data, f"device:{name}")
-    return _commit(request, mutate)
+    out = _commit(request, mutate)
+    clear_flag(_svc(request), name)
+    return out
 
 
 class UserIn(BaseModel):

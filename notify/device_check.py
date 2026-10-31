@@ -24,6 +24,12 @@ def _flag(device: str) -> str:
     return f"device_invalid:{device}"
 
 
+def clear_flag(svc: NotifyService, device: str) -> None:
+    """Forget what was said about a device name: it was removed or enrolled again, so the old flag is not its own."""
+    with svc.db.tx() as c:
+        c.execute("DELETE FROM meta WHERE key=?", (_flag(device),))
+
+
 def record_check(svc: NotifyService, device: str, check: AddressCheck) -> None:
     if check.valid:
         with svc.db.tx() as c:
