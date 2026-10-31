@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Enable notifications</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; }
+  button { font: inherit; padding: .6rem 1rem; }
+  #status { margin-top: 1rem; }
+  small { color: #666; display: block; margin-top: 1.5rem; }
+</style>
+</head>
+<body data-key="{{KEY}}">
+<h1>Enable notifications</h1>
+<p>This links this browser to your household notifications. It works once; the link is then used up.</p>
+<button id="enable" type="button">Enable notifications on this browser</button>
+<p id="status" role="status"></p>
+<small>Chrome and Edge only receive notifications while the browser runs: keep "continue running background apps
+when closed" turned on in the browser settings. Firefox must stay open.</small>
+<script src="/push/enroll.js"></script>
+</body>
+</html>

@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+from datetime import timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -21,8 +22,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import __version__
 from .auth import hash_token, new_token
 from .config import ConfigError, MailboxCleanupConfig
-from .db import now_iso
-from .core import Client, Conflict, Invalid, NotFound, NotifyService
+from .db import iso, new_id, now_iso, utcnow
+from .webpush_crypto import generate_vapid_keys
+from .core import Client, Conflict, Invalid, NotFound, NotifyService, external_base
 from .models import NotificationIn, ScheduleUpdate, Scope, Severity
 from .providers import REGISTRY
 from .configops import commit_config
@@ -37,6 +39,7 @@ router = APIRouter(prefix="/admin", include_in_schema=False)
 COOKIE = "notify_admin"
 UI_CLIENT = Client("admin-ui", frozenset({Scope.admin}), via_session=True)
 MIN_PASSWORD = 10
+ENROLLMENT_HOURS = 24
 
 
 class Throttle:
@@ -288,8 +291,37 @@ async def put_provider(name: str, body: ProviderIn, request: Request, _: Client 
                 v = str(v).strip()
             if v not in (None, ""):
                 new[key] = v
+        if body.type == "webpush":  # the key pair is server-managed: regenerating it would orphan every browser
+            same = old.get("type") == body.type and old.get("vapid_private_key") and old.get("vapid_public_key")
+            new["vapid_private_key"], new["vapid_public_key"] = (
+                (old["vapid_private_key"], old["vapid_public_key"]) if same else generate_vapid_keys())
         data["providers"][name] = new
     return _commit(request, mutate)
+
+
+class EnrollmentIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    owner: str = Field(min_length=1, max_length=100)
+
+
+@router.post("/api/providers/{name}/enrollments")
+async def create_enrollment(name: str, body: EnrollmentIn, request: Request,
+                            _: Client = Depends(admin)) -> dict[str, Any]:
+    """A single-use link that enrolls one browser as a device of `owner`."""
+    cfg = request.app.state.config
+    if cfg.providers.get(name) is None or cfg.providers[name].type != "webpush":
+        raise HTTPException(404, f"{name} is not a browser push provider")
+    if body.owner not in cfg.users:
+        raise HTTPException(422, f"unknown person {body.owner!r}")
+    base = external_base(cfg)
+    if not base or not base.startswith("https://"):
+        raise HTTPException(409, "browser push needs an https external URL: set 'Address of this service' first")
+    code = secrets.token_urlsafe(24)
+    expires = iso(utcnow() + timedelta(hours=ENROLLMENT_HOURS))
+    with _svc(request).db.tx() as c:
+        c.execute("INSERT INTO enrollments(id, provider, owner, code_sha256, created_at, expires_at)"
+                  " VALUES (?,?,?,?,?,?)", (new_id("enr"), name, body.owner, hash_token(code), now_iso(), expires))
+    return {"url": f"{base}/push/enroll?c={code}", "expires_at": expires}
 
 
 @router.post("/api/providers/{name}/test")

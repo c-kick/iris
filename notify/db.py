@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -141,6 +141,18 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 CREATE INDEX IF NOT EXISTS ix_webhook_due ON webhook_deliveries(state, next_attempt_at);
 
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS enrollments (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    owner TEXT NOT NULL,
+    code_sha256 TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    device TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_enrollments_code ON enrollments(code_sha256);
 
 CREATE TABLE IF NOT EXISTS registrations (
     id TEXT PRIMARY KEY,
