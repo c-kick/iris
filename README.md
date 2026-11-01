@@ -449,6 +449,11 @@ notification is released (payload gains `scheduled: true`), followed by the usua
 Subscribers to `*` or `notification.*` therefore start receiving `notification.scheduled`,
 `notification.updated` and `notification.missed`.
 
+### Upgrading to 0.11.1
+
+- Bounds the browser push origin-miss warnings (at most 32 distinct misses are remembered and logged, values truncated),
+  so spoofed `Host` headers cannot grow memory or flood the log. No configuration or schema change.
+
 ### Upgrading to 0.11.0
 
 - Adds the per-device `direct_only` setting (see *Direct-only devices*). It defaults to off, so routing is unchanged

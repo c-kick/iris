@@ -36,6 +36,7 @@ _REPORT_PER_MINUTE = 120
 _reports: dict[str, list[float]] = {}
 _reports_lock = threading.Lock()
 _warned: set[tuple[str | None, str]] = set()  # one warning per distinct origin miss
+_WARN_MAX = 32  # Host and X-Forwarded-Proto are client-controlled: bound memory and log volume
 CSP = ("default-src 'self'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; "
        "frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 
@@ -55,8 +56,8 @@ def host_guard(request: Request) -> None:
     scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
     host = request.headers.get("host") or ""
     if not base or _origin(base) is None or _origin(f"{scheme}://{host}") != _origin(base):
-        seen = f"{scheme}://{host}"
-        if (base, seen) not in _warned:
+        seen = f"{scheme}://{host}"[:200]
+        if len(_warned) < _WARN_MAX and (base, seen) not in _warned:
             _warned.add((base, seen))
             log.warning(f"push request refused: expected {base}, received {seen}; the reverse proxy must pass the "
                         "original Host and X-Forwarded-Proto", extra={"expected": base, "received": seen})

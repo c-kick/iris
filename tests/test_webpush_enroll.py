@@ -200,6 +200,19 @@ def test_host_guard_miss_is_logged(wp, caplog):
     assert any("expected" in r.getMessage() and "notify.example.org" in r.getMessage() for r in caplog.records)
 
 
+def test_host_guard_warnings_are_bounded(wp, caplog, monkeypatch):
+    import logging
+    from notify import webpush_routes
+    monkeypatch.setattr(webpush_routes, "_warned", set())
+    with caplog.at_level(logging.WARNING, logger="notify.webpush"):
+        for i in range(webpush_routes._WARN_MAX + 20):
+            httpx.get(wp.url + "/push/sw.js", headers={"Host": f"h{i}-" + "x" * 500})
+    assert len(webpush_routes._warned) == webpush_routes._WARN_MAX
+    misses = [r for r in caplog.records if "push request refused" in r.getMessage()]
+    assert len(misses) == webpush_routes._WARN_MAX
+    assert all(len(r.getMessage()) < 600 for r in misses)
+
+
 def test_key_is_html_escaped_in_page(wp):
     code = link(wp)
     wp.service.config.providers["browser"].__pydantic_extra__["vapid_public_key"] = '"><script>x</script>'
