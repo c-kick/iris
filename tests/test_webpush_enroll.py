@@ -17,7 +17,7 @@ from tests.test_webpush_lifecycle import delivery
 EXTERNAL = "https://notify.example.org:8931"
 HEADERS = {"Host": "notify.example.org:8931", "X-Forwarded-Proto": "https"}
 UA_PUBLIC = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
-AUTH = "BTBZMqHH6r4Tts7J_aSIgg"
+AUTH = "BTBZMqHH6r4Tts7J_aSIgg"  # ggignore: RFC 8291 appendix A test vector, not a secret
 SUB = {"endpoint": "https://fcm.googleapis.com/fcm/send/xyz", "keys": {"p256dh": UA_PUBLIC, "auth": AUTH}}
 EDGE = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36 Edg/120.0"
 

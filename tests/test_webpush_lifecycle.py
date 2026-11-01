@@ -26,7 +26,7 @@ def webpush_config() -> NotifyConfig:
     d["providers"]["browser"] = {"type": "webpush", "vapid_private_key": PRIV, "vapid_public_key": PUB,
                                  "contact": "mailto:alex@example.org"}
     d["devices"]["alex-browser"] = {"provider": "browser", "owner": "alex", "address": {
-        "endpoint": "https://fcm.googleapis.com/fcm/send/abc", "p256dh": UA_PUBLIC, "auth": "BTBZMqHH6r4Tts7J_aSIgg"}}
+        "endpoint": "https://fcm.googleapis.com/fcm/send/abc", "p256dh": UA_PUBLIC, "auth": "BTBZMqHH6r4Tts7J_aSIgg"}}  # ggignore: RFC 8291 test vector
     d["users"]["alex"]["devices"] = ["alex-browser"]
     return NotifyConfig.model_validate(d)
 

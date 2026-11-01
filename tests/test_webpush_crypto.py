@@ -12,8 +12,8 @@ from notify.webpush_crypto import b64u, encrypt, generate_vapid_keys, unb64u, va
 
 # RFC 8291 section 5 / appendix A
 UA_PUBLIC = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
-AUTH_SECRET = "BTBZMqHH6r4Tts7J_aSIgg"
-AS_PRIVATE = "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"
+AUTH_SECRET = "BTBZMqHH6r4Tts7J_aSIgg"  # ggignore: RFC 8291 appendix A test vector, not a secret
+AS_PRIVATE = "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw"  # ggignore: RFC 8291 appendix A test vector, not a secret
 SALT = "DGv6ra1nlYgDCS1FRnbzlw"
 BODY = (
     "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27ml"

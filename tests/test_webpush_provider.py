@@ -15,7 +15,7 @@ from notify.webpush_crypto import generate_vapid_keys
 from tests.conftest import FakePushover
 
 UA_PUBLIC = "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
-AUTH = "BTBZMqHH6r4Tts7J_aSIgg"
+AUTH = "BTBZMqHH6r4Tts7J_aSIgg"  # ggignore: RFC 8291 appendix A test vector, not a secret
 ADDRESS = {"endpoint": "https://fcm.googleapis.com/fcm/send/abc123", "p256dh": UA_PUBLIC, "auth": AUTH}
 PRIV, PUB = generate_vapid_keys()
 
