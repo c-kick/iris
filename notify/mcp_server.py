@@ -26,6 +26,11 @@ are opt-in: a notification reaches them only when send_notification lists
 kinds=["email"] (email only) or kinds=["push", "email"] (both); without kinds
 it goes to push devices only. list_targets shows each device's kind.
 
+Direct-only devices (direct_only in list_targets) never receive through
+user:NAME, even with a matching kind: name them as device:NAME, or reach them
+through a group or channel that lists them. To send to a user's usual devices
+and a direct-only one, list both targets, e.g. ["user:alex", "device:alex-mail2"].
+
 attachments: send files with a notification, preferably by url (only from hosts
 an admin allowed; hnl-notify fetches them once) or inline as base64 (at most
 256 KiB over MCP). Up to 10 files, 10 MiB in total. Email carries every file;
@@ -175,7 +180,7 @@ def build_mcp(get_service: Any) -> FastMCP:
         severity: min (silent) | low (quiet) | normal | high (bypasses quiet hours) |
         critical (emergency: repeats until acknowledged — real emergencies only).
         kinds: which delivery kinds to use; omitted = the default devices (push). email devices only
-        receive when 'email' is listed.
+        receive when 'email' is listed. direct_only devices only receive when named as device:NAME.
         attachments: up to 10 files, 10 MiB in total: {"url": ..., "filename"?: ...} (preferred; only from
         hosts an admin allowed) or {"filename": ..., "content_type"?: ..., "data_base64": ...} (inline,
         at most 256 KiB per notification over MCP).
@@ -266,7 +271,8 @@ def build_mcp(get_service: Any) -> FastMCP:
         """Users, devices, groups and channels you can address, with each device's capabilities
         (delivery receipts, acknowledgement, actions, links, cancel, TTL, attachment limits) and
         readiness. Each device has a kind (push or email) and opt_in: opt-in devices (email by default)
-        only receive when send_notification asks for their kind via kinds."""
+        only receive when send_notification asks for their kind via kinds. direct_only devices are
+        never reached through user:NAME; target them as device:NAME (or via a group/channel listing them)."""
         client = _client(ctx)
         _need(client, Scope.read)
         return svc().targets()

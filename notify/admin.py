@@ -219,7 +219,8 @@ def _state(request: Request) -> dict[str, Any]:
         "devices": {d["target"].split(":", 1)[1]: {"ready": d["ready"], "problems": d["problems"],
                                                     "capabilities": d["capabilities"],
                                                     "kind": cfg.device_kind(d["target"].split(":", 1)[1]),
-                                                    "opt_in": cfg.device_opt_in(d["target"].split(":", 1)[1])}
+                                                    "opt_in": cfg.device_opt_in(d["target"].split(":", 1)[1]),
+                                                    "direct_only": d["direct_only"]}
                     for d in targets["devices"]},
         "providers": {name: {"type": p.type, "kind": p.kind, **p.health()} for name, p in svc.providers.items()},
         "provider_types": {t: {"label": cls.label or t, "kind": cls.kind, "settings": cls.settings_schema,
@@ -376,6 +377,7 @@ class DeviceIn(BaseModel):
     enabled: bool = True
     min_severity: Severity = Severity.min
     opt_in: bool | None = None  # full replace: omitted = kind default
+    direct_only: bool = False
     address: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -398,6 +400,8 @@ async def put_device(name: str, body: DeviceIn, request: Request, _: Client = De
                                  "address": address, "capabilities": old.get("capabilities", {})}
         if body.opt_in is not None:
             data["devices"][name]["opt_in"] = body.opt_in
+        if body.direct_only:
+            data["devices"][name]["direct_only"] = True
         for uname, u in data["users"].items():
             if uname != owner and name in u["devices"] and old.get("owner") == uname:
                 u["devices"].remove(name)  # moved to another owner

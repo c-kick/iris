@@ -217,6 +217,10 @@ def test_email_device_opt_in_and_server_attachment_settings(fresh):
     assert st["devices"]["alex-email"]["opt_in"] is False and st["devices"]["alex-email"]["kind"] == "email"
     st = b.put("/admin/api/devices/alex-email", json=body, headers=H).json()
     assert st["devices"]["alex-email"]["opt_in"] is True
+    assert st["devices"]["alex-email"]["direct_only"] is False
+    st = b.put("/admin/api/devices/alex-email", json={**body, "direct_only": True}, headers=H).json()
+    assert st["devices"]["alex-email"]["direct_only"] is True
+    assert st["config"]["devices"]["alex-email"]["direct_only"] is True
     st = b.put("/admin/api/server", json={"attachment_url_hosts": ["ha.lan:8123"], "attachment_retention_days": 3},
                headers=H).json()
     assert st["config"]["server"]["attachment_url_hosts"] == ["ha.lan:8123"]

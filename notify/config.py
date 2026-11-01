@@ -120,6 +120,7 @@ class DeviceConfig(_Strict):
     description: str | None = None
     enabled: bool = True
     opt_in: bool | None = Field(default=None, description="True = only reached when its kind is requested (or targeted directly); default per kind")
+    direct_only: bool = Field(default=False, description="True = never reached through a user, only when named as device:NAME (directly or as a group/channel member)")
     min_severity: Severity = Severity.min
     address: dict[str, Any] = Field(default_factory=dict)
     capabilities: dict[str, Any] = Field(default_factory=dict, description="Narrow/override provider capabilities for this device")

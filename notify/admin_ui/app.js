@@ -556,7 +556,7 @@ const VIEWS = {
         const info = state.devices[n] || {};
         return `<div class="row"><span class="lamp ${d.enabled ? (info.ready ? "ok" : "bad") : ""}"></span>
           <div class="grow"><div class="title">${esc(d.description || n)}</div>
-            <div class="sub">device:${esc(n)} via ${esc(d.provider)}${info.opt_in ? `, only when an app asks for ${esc(info.kind)}` : ""}${d.owner ? `, belongs to ${esc(c.users[d.owner]?.display_name || d.owner)}` : ""}${d.enabled ? "" : ", turned off"}${d.min_severity !== "min" ? `, only ${esc(d.min_severity)} and above` : ""}</div>
+            <div class="sub">device:${esc(n)} via ${esc(d.provider)}${info.opt_in ? `, only when an app asks for ${esc(info.kind)}` : ""}${d.direct_only ? ", only when an app names this device" : ""}${d.owner ? `, belongs to ${esc(c.users[d.owner]?.display_name || d.owner)}` : ""}${d.enabled ? "" : ", turned off"}${d.min_severity !== "min" ? `, only ${esc(d.min_severity)} and above` : ""}</div>
             ${info.problems?.length ? `<div class="problem">${esc(info.problems.join("; "))}</div>` : ""}</div>
           <div class="actions"><button class="btn" data-edit="${esc(n)}">Edit</button><button class="btn danger" data-del="${esc(n)}">Remove</button></div></div>`;
       }).join("") : `<div class="empty">No devices yet.</div>`}</div>
@@ -862,6 +862,8 @@ function deviceForm(name, draft = null) {
     { name: "enabled", label: "Deliver to this device", kind: "check", value: pick("enabled", d ? d.enabled : true) },
     { name: "opt_in", label: "Only when an app asks for this kind explicitly", kind: "check", value: optIn,
       help: "Email devices are opt-in by default so existing apps keep sending push only." },
+    { name: "direct_only", label: "Only when an app names this device", kind: "check", value: pick("direct_only", d?.direct_only ?? false),
+      help: `Skipped when an app sends to its owner; reached only as device:${name || "NAME"} or through a group or channel that lists it.` },
   ];
   openForm({
     title: d ? `Edit ${d.description || name}` : "Add device",
@@ -895,7 +897,7 @@ function deviceForm(name, draft = null) {
       const address = {};
       for (const k of Object.keys(schema)) address[k] = v[`addr_${k}`];
       return mutate("PUT", `/devices/${v.name}`, { provider: pname, owner: v.owner || null, description: v.description,
-        enabled: v.enabled, min_severity: v.min_severity, opt_in: v.opt_in, address }, d ? "Device saved" : "Device added");
+        enabled: v.enabled, min_severity: v.min_severity, opt_in: v.opt_in, direct_only: v.direct_only, address }, d ? "Device saved" : "Device added");
     },
   });
 }

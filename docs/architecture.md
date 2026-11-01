@@ -71,6 +71,12 @@ suppression reason reflects the first rule that applied:
   not requested"); a requested kind that a top-level target has no device for is
   suppressed with "no email device" (unless a channel floor already cut that
   target). `routing_json` records the `kinds`.
+- **`direct_only`** (default false): checked after kind and opt-in filtering.
+  A direct-only device reached by expanding a user (`user:alex`, also a user
+  inside a group or channel) is skipped and suppressed with "direct-only
+  device: name it as device:NAME". Named as a top-level target or as a
+  `device:` member of a group or channel, it is included. If the same request
+  also reaches it by name, the suppression entry is dropped.
 
 Configuration is managed in the **admin UI** (`/admin`) and stored in the
 same SQLite database (`settings` table). Fields each provider adapter declares
@@ -519,7 +525,7 @@ image sets `MALLOC_MMAP_THRESHOLD_` so freed buffers return to the OS.
 | `POST /v1/notifications/{id}/replies/claim?waiter=…&wait=…` | Long-poll for the oldest waiting reply of the conversation: 200 with the reply, 204 when none came in time (`read`; own notification or `admin`) |
 | `GET /v1/notifications/{id}/replies` | Replies of the conversation with state; subject, text and attachments only for claimed replies (all for `admin`) |
 | `GET /v1/replies/{id}/attachments/{idx}` | Download an attachment of a claimed reply |
-| `GET /v1/targets` | Users, devices (with `kind`, `opt_in`), groups, channels + effective capabilities |
+| `GET /v1/targets` | Users, devices (with `kind`, `opt_in`, `direct_only`), groups, channels + effective capabilities |
 | `GET /v1/providers` | Provider capabilities, health, quota |
 | `GET /v1/events`, `GET /v1/events/stream` | Event history by cursor; Server-Sent Events |
 | `POST/GET/DELETE /v1/subscriptions` | Webhook subscriptions |

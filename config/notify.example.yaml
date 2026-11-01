@@ -62,6 +62,7 @@ devices:
       to: alex@example.org
     # opt_in: true   # default for email: only used when a sender asks for kinds ["email"]
                      # or names device:alex-email directly
+    # direct_only: true   # never via user:alex; only as device:alex-email or a group/channel member
 
 users:
   alex:

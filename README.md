@@ -61,7 +61,10 @@ admin password. Then, in the admin UI:
    second device (e.g. `alex-email`), pick the email provider and enter the
    address. By default an email device is used only when a sender asks for it
    (`kinds`, below) or names it directly; untick *Only when an app asks for
-   this kind explicitly* to include it in normal sends too.
+   this kind explicitly* to include it in normal sends too. Tick *Only when an
+   app names this device* to opt a device out of sends to its owner: it is then
+   skipped for `user:alex` and only reached when a sender names it (see
+   *Direct-only devices* below).
 4. **API access → Create token**: one per sender (Home Assistant, Node-RED,
    agents…), or let senders request access themselves (see below). A token is
    shown once, with ready-to-paste snippets.
@@ -125,6 +128,17 @@ Add `kinds` to choose the path: `["email"]`, `["push"]` or `["push", "email"]`.
 A person without a device of a requested kind shows up under `suppressed` in
 the response. Naming an email device (`device:alex-email`) as a target also
 works without `kinds`.
+
+**Direct-only devices.** A device with `direct_only: true` is never reached
+through its owner (`user:alex`), even when its kind is requested. A sender
+reaches it only by naming it, as a target (`device:alex-mail2`) or through a
+group or channel that lists `device:alex-mail2` as a member. With two email
+devices where only `alex-mail2` is direct-only:
+`["user:alex"]` + `kinds: ["email"]` mails `alex-email`,
+`["device:alex-mail2"]` mails `alex-mail2`, and
+`["user:alex", "device:alex-mail2"]` mails both. Which device means what is
+up to the sender. `GET /v1/targets` and MCP `list_targets` show `direct_only` per device,
+and a direct-only device skipped this way is listed under `suppressed`.
 
 ```sh
 # email only, with an inline attachment (base64, up to 10 MiB in total)
@@ -434,6 +448,11 @@ notification is never purged; its attachments are kept until its send time plus
 notification is released (payload gains `scheduled: true`), followed by the usual `delivery.queued`.
 Subscribers to `*` or `notification.*` therefore start receiving `notification.scheduled`,
 `notification.updated` and `notification.missed`.
+
+### Upgrading to 0.11.0
+
+- Adds the per-device `direct_only` setting (see *Direct-only devices*). It defaults to off, so routing is unchanged
+  until you tick it. No schema change; `GET /v1/targets`, MCP `list_targets` and the admin API gain `direct_only`.
 
 ### Upgrading to 0.10.0
 

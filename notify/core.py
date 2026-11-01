@@ -1129,6 +1129,7 @@ class NotifyService:
             problems = p.config_problems() + p.device_problems(d.address) + self.rejected_problems(name, p, d.address)
             return {"target": f"device:{name}", "description": d.description, "owner": d.owner,
                     "provider": d.provider, "kind": cfg.device_kind(name), "opt_in": cfg.device_opt_in(name),
+                    "direct_only": d.direct_only,
                     "enabled": d.enabled, "min_severity": d.min_severity.value,
                     "ready": not problems, "problems": problems, "capabilities": caps}
 

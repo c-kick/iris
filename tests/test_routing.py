@@ -93,6 +93,44 @@ def test_opt_in_override():
     assert devs(r.resolve(["user:alex"], Severity.normal)) == {"alex-email"}
 
 
+DIRECT_NOTE = {"target": "device:alex-email", "via": "user:alex",
+               "reason": "direct-only device: name it as device:alex-email"}
+
+
+def test_direct_only_skipped_via_user():
+    plan = router(alex_email={"direct_only": True}).resolve(["user:alex"], Severity.normal, ["email"])
+    assert plan.devices == {}
+    assert plan.suppressed == [DIRECT_NOTE]
+
+
+def test_direct_only_silent_when_kind_not_requested():
+    plan = router(alex_email={"direct_only": True}).resolve(["user:alex"], Severity.normal)
+    assert devs(plan) == {"alex-phone"}
+    assert plan.suppressed == []
+
+
+def test_direct_only_reached_when_named():
+    r = router(alex_email={"direct_only": True})
+    assert devs(r.resolve(["device:alex-email"], Severity.normal, ["email"])) == {"alex-email"}
+    plan = r.resolve(["user:alex", "device:alex-email"], Severity.normal, ["push", "email"])
+    assert devs(plan) == {"alex-phone", "alex-email"}
+    assert not any(s["reason"].startswith("direct-only") for s in plan.suppressed)
+
+
+def test_direct_only_reached_as_group_member_not_via_user_member():
+    r = router(alex_email={"direct_only": True}, sam_phone={"direct_only": True})
+    plan = r.resolve(["group:household"], Severity.normal, ["push", "email"])
+    assert devs(plan) == {"alex-phone", "alex-email"}
+    assert plan.suppressed == [{"target": "device:sam-phone", "via": "group:household",
+                                "reason": "direct-only device: name it as device:sam-phone"}]
+
+
+def test_direct_only_push_device_via_user():
+    plan = router(alex_phone={"direct_only": True}).resolve(["user:alex"], Severity.normal)
+    assert plan.devices == {}
+    assert [s["reason"] for s in plan.suppressed] == ["direct-only device: name it as device:alex-phone"]
+
+
 def test_kinds_validation():
     with pytest.raises(ValidationError):
         NotificationIn(targets=["x"], message="m", kinds=[])
@@ -133,6 +171,7 @@ def test_targets_show_kind_and_opt_in(mail_live):
         devices = {d["target"]: d for d in c.get("/v1/targets").json()["devices"]}
         assert (devices["device:alex-phone"]["kind"], devices["device:alex-phone"]["opt_in"]) == ("push", False)
         assert (devices["device:alex-email"]["kind"], devices["device:alex-email"]["opt_in"]) == ("email", True)
+        assert devices["device:alex-email"]["direct_only"] is False
 
 
 def test_arr_kinds_param(mail_live):
