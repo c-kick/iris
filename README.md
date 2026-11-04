@@ -438,6 +438,12 @@ now and ignores the lateness limit (not an already passed `expires_at`: 409). `/
 `checks.scheduler` as not ready while something is overdue, and `/metrics` has `notify_scheduled_next_seconds`
 (absent when nothing is scheduled) and `notify_scheduled_overdue`.
 
+**History.** The history (`GET /v1/notifications`, MCP `list_notifications`, the admin *Overview* and *Activity*) shows
+what was sent at the moment it was sent, scheduled or not: it is ordered by `sent_at`, which `since` and `before` also
+use. What still waits, or was cancelled while waiting, is left out; `status=scheduled` and `status=cancelled` still
+list those. A scheduled notification that was missed or could not be released stays in, with `sent_at` at the moment
+that happened.
+
 **Retention.** History retention, the attachment purge and the timestamp the provider shows all count from the
 moment a notification went out (`released_at`, else `send_at`), not from when it was submitted. A scheduled
 notification is never purged; its attachments are kept until its send time plus
@@ -448,6 +454,12 @@ notification is never purged; its attachments are kept until its send time plus
 notification is released (payload gains `scheduled: true`), followed by the usual `delivery.queued`.
 Subscribers to `*` or `notification.*` therefore start receiving `notification.scheduled`,
 `notification.updated` and `notification.missed`.
+
+### Upgrading to 0.11.2
+
+- The history now shows what was sent, at the moment it was sent (see *History*). It no longer lists notifications that
+  still wait or were cancelled while waiting, unless you ask for them with `status`. `since` and `before` go by the send
+  time, and notifications gain `sent_at`. No configuration or schema change.
 
 ### Upgrading to 0.11.1
 

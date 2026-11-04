@@ -1215,7 +1215,7 @@ async function loadRecent(el, limit, attentionEl) {
     <div class="row" style="align-items:flex-start"><span class="lamp ${lampFor(n.status)}" style="margin-top:.45rem"></span>
       <div class="grow">
         <div class="title">${esc(n.title || n.message.slice(0, 60))}</div>
-        <div class="sub">${n.status === "scheduled" ? `scheduled for ${esc(zoneWhen(n.send_at, data.timezone))} (${esc(data.timezone)})` : esc(when(n.created_at))} from ${esc(n.source)} to ${esc(n.targets.join(", "))}, ${esc(n.severity)}</div>
+        <div class="sub">${esc(when(n.sent_at))} from ${esc(n.source)} to ${esc(n.targets.join(", "))}, ${esc(n.severity)}</div>
         <div class="sub"><span class="status">${esc(n.status)}</span>${n.suppressed.length ? `: ${esc(n.suppressed[0].reason)}` : ""}</div>
         ${n.attachments?.length ? `<dl class="kv"><dt>Attachments</dt><dd>${n.attachments.map((a) =>
           `${esc(a.filename)} (${esc(a.content_type)}, ${esc(fmtSize(a.size))})${a.purged ? ` <span class="chip">purged</span>` : ""}`).join("<br>")}</dd></dl>` : ""}

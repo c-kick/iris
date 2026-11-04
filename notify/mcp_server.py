@@ -113,7 +113,8 @@ def _compact(n: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": n["id"], "status": n["status"], "severity": n["severity"], "title": n["title"],
         "message": n["message"], "targets": n["targets"], "source": n["source"], "tags": n["tags"],
-        "created_at": n["created_at"], "expires_at": n["expires_at"], "suppressed": n.get("suppressed", []),
+        "created_at": n["created_at"], "sent_at": n["sent_at"], "expires_at": n["expires_at"],
+        "suppressed": n.get("suppressed", []),
         "deliveries": [{
             "id": d["id"], "device": d["device"], "state": d["state"], "final": d["final"],
             "observable_states": d["observable_states"], "capability_gaps": d["capability_gaps"],
@@ -249,7 +250,8 @@ def build_mcp(get_service: Any) -> FastMCP:
     @mcp.tool()
     async def list_notifications(ctx: Context, status: str | None = None, source: str | None = None,
                                  tag: str | None = None, since: str | None = None, limit: int = 20) -> list[dict[str, Any]]:
-        """Notification history, newest first. status may be a comma list of: pending, dispatched,
+        """Notification history: what was sent, newest send time first. Without status it leaves out
+        what still waits for its send time or was cancelled while waiting. status may be a comma list of: pending, dispatched,
         delivered, acknowledged, partial, failed, expired, cancelled, suppressed, scheduled.
         status='scheduled' lists all scheduled ones by send time, oldest first. since is ISO-8601 UTC."""
         client = _client(ctx)

@@ -59,6 +59,7 @@ def test_mcp_tools_end_to_end(live, fake):
     got, listed, attention, cancel, res = run_session(live, "agent", inspect)
     assert got["status"] == "dispatched" and got["deliveries"][0]["attempt_log"][0]["outcome"] == "success"
     assert json.loads(listed.content[0].text)["id"] == nid
+    assert json.loads(listed.content[0].text)["sent_at"] == got["created_at"]
     assert attention["failed"] == []
     assert cancel.isError and "cannot recall" in cancel.content[0].text
     assert json.loads(res.contents[0].text)["id"] == nid

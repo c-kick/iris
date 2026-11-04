@@ -997,6 +997,7 @@ class NotifyService:
             "require_ack": bool(n["require_ack"]),
             "idempotency_key": None if self._has_handle(n) else n["idempotency_key"],
             "created_at": n["created_at"], "updated_at": n["updated_at"], "expires_at": n["expires_at"],
+            "sent_at": None if n["status"] == "scheduled" else self._went_out(n),
             "suppressed": routing.get("suppressed", []), "delivery_counts": counts, "deliveries": deliveries,
             **self._attachments_out(n["id"]),
             **({"send_at": n["send_at"], "max_late_seconds": n["max_late_seconds"], "deliver_by": n["deliver_by"],
@@ -1053,6 +1054,9 @@ class NotifyService:
             statuses = [s.strip() for s in status.split(",") if s.strip()]
             sql += f" AND status IN ({','.join('?' * len(statuses))})"
             params += statuses
+        else:  # the history is what was sent: not what still waits, nor what was cancelled while waiting
+            sql += (" AND status != 'scheduled' AND NOT (status = 'cancelled' AND send_at IS NOT NULL"
+                    " AND NOT EXISTS (SELECT 1 FROM deliveries WHERE notification_id = notifications.id))")
         if source:
             sql += " AND source=?"
             params.append(source)
@@ -1060,14 +1064,15 @@ class NotifyService:
             sql += " AND EXISTS (SELECT 1 FROM json_each(tags_json) WHERE value=?)"
             params.append(tag)
         if since:
-            sql += " AND created_at >= ?"
+            sql += f" AND {schedule.EFFECTIVE_SQL} >= ?"
             params.append(since)
         # the scheduled listing is the whole queue by send time, with no cursor and no page cap
         queue = status is not None and status.strip() == "scheduled"
         if before and not queue:
-            sql += " AND id < ?"
+            sql += (f" AND ({schedule.EFFECTIVE_SQL}, id) <"
+                    f" (SELECT {schedule.EFFECTIVE_SQL}, id FROM notifications WHERE id = ?)")
             params.append(before)
-        sql += " ORDER BY send_at, id LIMIT ?" if queue else " ORDER BY id DESC LIMIT ?"
+        sql += " ORDER BY send_at, id LIMIT ?" if queue else f" ORDER BY {schedule.EFFECTIVE_SQL} DESC, id DESC LIMIT ?"
         params.append(1000 if queue else max(1, min(limit, 200)))
         out = []
         for n in self.db.query(sql, params):

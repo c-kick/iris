@@ -92,7 +92,7 @@ async def submit(body: NotificationIn, response: Response, request: Request,
 @_errors
 async def list_notifications(request: Request, status: str | None = None, source: str | None = None,
                              tag: str | None = None, since: str | None = None,
-                             before: str | None = Query(default=None, description="id cursor: only older than this"),
+                             before: str | None = Query(default=None, description="id cursor: only sent before this one"),
                              limit: int = Query(default=50, ge=1, le=200),
                              client: Client = Depends(require(Scope.read))) -> dict[str, Any]:
     items = service(request).list(client, status=status, source=source, tag=tag, since=since, before=before, limit=limit)

@@ -518,7 +518,7 @@ image sets `MALLOC_MMAP_THRESHOLD_` so freed buffers return to the OS.
 | Method & path | Purpose |
 |---|---|
 | `POST /v1/notifications` | Submit (optional `kinds`, `attachments`, `reply`, `in_reply_to`, `send_at` / `delay`, `max_late_seconds`). 202; 200 on idempotent replay; `dry_run: true` returns the routing plan only; 413 above 15 MiB |
-| `GET /v1/notifications` | History; filter by status/source/tag/since. `status=scheduled` lists all of the caller's scheduled ones by `send_at`, no cursor |
+| `GET /v1/notifications` | History: what was sent, ordered by `sent_at`, newest first; filter by status/source/tag/since (`since` and the `before` cursor also go by `sent_at`). Without `status` it leaves out what is still scheduled or was cancelled while scheduled. `status=scheduled` lists all of the caller's scheduled ones by `send_at`, no cursor |
 | `PATCH /v1/notifications/{id}` | Reschedule, edit or `send_now` while `scheduled` (`send`; own or `admin`); 409 once released |
 | `GET /v1/notifications/{id}` | Full status: deliveries, attempts, events, attachment metadata |
 | `POST /v1/notifications/{id}/cancel`, `/retry` | Where meaningful; 409 with reason otherwise. Cancel needs only `send` for one's own `scheduled` notification, else `manage` |
