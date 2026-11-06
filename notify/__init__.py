@@ -1,3 +1,3 @@
 """hnl-notify: unified notification service."""
 
-__version__ = "0.11.2"
+__version__ = "0.12.0"

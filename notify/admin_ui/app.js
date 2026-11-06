@@ -657,12 +657,13 @@ const VIEWS = {
 
   activity(main) {
     main.innerHTML = `
-      <div class="section-head"><h2>Activity</h2><p>The latest notifications from every service, with what each device reported back.</p></div>
+      <div class="section-head"><h2>Activity</h2><p>Everything sent and received, newest first, with what each device reported back.</p></div>
       <div class="block" id="attention"></div>
-      <div class="block" id="replies"></div>
-      <div class="rows" id="recent"><div class="empty">Loading…</div></div>`;
-    loadRecent(main.querySelector("#recent"), 50, main.querySelector("#attention"));
-    loadReplies(main.querySelector("#replies"));
+      <div class="tl-controls" id="tl-controls"></div>
+      <div id="tl-inbound"></div>
+      <div class="rows" id="tl-list"><div class="empty">Loading…</div></div>
+      <div class="tl-pager" id="tl-pager" hidden></div>`;
+    activityList(main);
   },
 
   requests(main) {
@@ -1158,58 +1159,99 @@ function editScheduled(n) {
 
 // ---------------------------------------------------------------- activity list
 
-async function loadRecent(el, limit, attentionEl) {
+function attachmentList(n) {
+  return n.attachments?.length ? `<dl class="kv"><dt>Attachments</dt><dd>${n.attachments.map((a) =>
+    `${esc(a.filename)} (${esc(a.content_type)}, ${esc(fmtSize(a.size))})${a.purged ? ` <span class="chip">purged</span>` : ""}`).join("<br>")}</dd></dl>` : "";
+}
+
+function deliveryDetails(n) {
+  return n.deliveries.map((d) => `
+    <details class="delivery"><summary>${esc(cfg().devices[d.device]?.description || d.device)}: ${esc(d.state)}${d.final ? "" : " (may still change)"}</summary>
+      <dl class="kv">
+        ${d.timestamps.dispatched ? `<dt>Accepted by ${esc(d.provider)}</dt><dd>${esc(when(d.timestamps.dispatched))}</dd>` : ""}
+        ${d.timestamps.delivered ? `<dt>Delivered</dt><dd>${esc(when(d.timestamps.delivered))}</dd>` : ""}
+        ${d.timestamps.acknowledged ? `<dt>Acknowledged</dt><dd>${esc(when(d.timestamps.acknowledged))}${d.acknowledged_by ? ` on ${esc(d.acknowledged_by)}` : ""}</dd>` : ""}
+        <dt>Can report</dt><dd>${esc(d.observable_states.filter((s) => ["dispatched", "delivered", "acknowledged"].includes(s)).join(", "))}</dd>
+        <dt>Attempts</dt><dd>${d.attempts}</dd>
+        ${d.last_error ? `<dt>Last error</dt><dd class="problem">${esc(d.last_error)}</dd>` : ""}
+        ${d.capability_gaps.length ? `<dt>Not supported</dt><dd>${d.capability_gaps.map(esc).join("<br>")}</dd>` : ""}
+      </dl></details>`).join("");
+}
+
+function notificationActions(n) {
+  return `<div class="actions">
+    ${["failed", "partial"].includes(n.status) ? `<button class="btn" data-retry="${esc(n.id)}">Retry</button>` : ""}
+    ${n.status === "pending" || n.deliveries.some((d) => !d.final && d.tracking === "receipt") ? `<button class="btn" data-cancel="${esc(n.id)}">Cancel</button>` : ""}
+  </div>`;
+}
+
+function bindNotificationActions(el, reload) {
+  el.querySelectorAll("[data-retry]").forEach((b) => (b.onclick = async () => {
+    try { await api("POST", `/notifications/${b.dataset.retry}/retry`); toast("Queued again"); reload(); }
+    catch (ex) { toast(ex.message); }
+  }));
+  el.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = async () => {
+    try { await api("POST", `/notifications/${b.dataset.cancel}/cancel`); toast("Cancelled"); reload(); }
+    catch (ex) { toast(ex.message); }
+  }));
+}
+
+async function loadAttention(attentionEl, reload) {
+  let data;
+  try { data = await api("GET", "/activity?limit=1"); }
+  catch (ex) { attentionEl.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  const a = data.attention;
+  const groups = new Map(); // one row per notification and kind, listing its devices
+  for (const [kind, list] of [["failed", a.failed], ["expired", a.expired], ["stuck", a.stuck], ["retrying", a.retrying]]) {
+    for (const x of list) {
+      const key = `${kind}:${x.notification_id}`;
+      const g = groups.get(key) || { kind, x, devices: [], at: x.at };
+      g.devices.push(x.device);
+      if (x.at > g.at) { g.at = x.at; g.x = x; } // attempts and error from the latest delivery
+      groups.set(key, g);
+    }
+  }
+  const items = [...groups.values()].sort((p, q) => (q.at || "").localeCompare(p.at || ""));
+  const rp = a.release_problems || [];
+  attentionEl.innerHTML = items.length || a.awaiting_acknowledgement.length || rp.length ? `
+    <h3>Needs attention</h3><div class="rows">
+    ${rp.map((x) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
+      <div class="sub">Scheduled for ${esc(zoneWhen(x.send_at, data.timezone))} (${esc(data.timezone)}) · ${esc(x.status)}</div>
+      <div class="sub">${esc(x.reason || "")}</div></div>
+      <div class="actions">${x.status === "scheduled"
+        ? `<button class="btn" data-relnow="${esc(x.notification_id)}">Send now</button>`
+        : `<button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button>
+      <button class="btn" data-relretry="${esc(x.notification_id)}">Retry</button>`}</div></div>`).join("")}
+    ${a.awaiting_acknowledgement.map((x) => `<div class="row"><span class="lamp warn"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">Critical alert on ${esc(x.device)} not acknowledged yet</div></div></div>`).join("")}
+    ${items.map(({ kind, x, devices, at }) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
+      <div class="sub">${kind === "failed" || kind === "expired" ? "" : "last change "}${esc(when(at))} (${esc(ago(at))})</div>
+      <div class="sub">${esc(kind)} on ${esc(devices.join(", "))} after ${x.attempts} attempts: ${esc(x.last_error || "")}</div></div>
+      ${kind === "failed" || kind === "expired" ? `<div class="actions"><button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button></div>` : ""}</div>`).join("")}
+    </div>` : "";
+  attentionEl.querySelectorAll("[data-relnow]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try { await api("POST", `/notifications/${b.dataset.relnow}/send-now`); toast("Sending now"); }
+    catch (ex) { toast(ex.status === 409 ? "Already sent" : ex.message); }
+    reload();
+  }));
+  attentionEl.querySelectorAll("[data-relretry]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try { await api("POST", `/notifications/${b.dataset.relretry}/retry`); toast("Sending now"); }
+    catch (ex) { toast(ex.message); }
+    reload();
+  }));
+  attentionEl.querySelectorAll("[data-dismiss]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try { await api("POST", `/notifications/${b.dataset.dismiss}/dismiss`); toast("Dismissed"); }
+    catch (ex) { toast(ex.message); }
+    reload(); // also after a 409: another tab may have dismissed it already
+  }));
+}
+
+async function loadRecent(el, limit) {
   let data;
   try { data = await api("GET", `/activity?limit=${limit}`); }
   catch (ex) { el.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
-  if (attentionEl) {
-    const a = data.attention;
-    const groups = new Map(); // one row per notification and kind, listing its devices
-    for (const [kind, list] of [["failed", a.failed], ["expired", a.expired], ["stuck", a.stuck], ["retrying", a.retrying]]) {
-      for (const x of list) {
-        const key = `${kind}:${x.notification_id}`;
-        const g = groups.get(key) || { kind, x, devices: [], at: x.at };
-        g.devices.push(x.device);
-        if (x.at > g.at) { g.at = x.at; g.x = x; } // attempts and error from the latest delivery
-        groups.set(key, g);
-      }
-    }
-    const items = [...groups.values()].sort((p, q) => (q.at || "").localeCompare(p.at || ""));
-    const rp = a.release_problems || [];
-    attentionEl.innerHTML = items.length || a.awaiting_acknowledgement.length || rp.length ? `
-      <h3>Needs attention</h3><div class="rows">
-      ${rp.map((x) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
-        <div class="sub">Scheduled for ${esc(zoneWhen(x.send_at, data.timezone))} (${esc(data.timezone)}) · ${esc(x.status)}</div>
-        <div class="sub">${esc(x.reason || "")}</div></div>
-        <div class="actions">${x.status === "scheduled"
-          ? `<button class="btn" data-relnow="${esc(x.notification_id)}">Send now</button>`
-          : `<button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button>
-        <button class="btn" data-relretry="${esc(x.notification_id)}">Retry</button>`}</div></div>`).join("")}
-      ${a.awaiting_acknowledgement.map((x) => `<div class="row"><span class="lamp warn"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div><div class="sub">Critical alert on ${esc(x.device)} not acknowledged yet</div></div></div>`).join("")}
-      ${items.map(({ kind, x, devices, at }) => `<div class="row"><span class="lamp bad"></span><div class="grow"><div class="title">${esc(x.title || "(no title)")}</div>
-        <div class="sub">${kind === "failed" || kind === "expired" ? "" : "last change "}${esc(when(at))} (${esc(ago(at))})</div>
-        <div class="sub">${esc(kind)} on ${esc(devices.join(", "))} after ${x.attempts} attempts: ${esc(x.last_error || "")}</div></div>
-        ${kind === "failed" || kind === "expired" ? `<div class="actions"><button class="btn" data-dismiss="${esc(x.notification_id)}">Dismiss</button></div>` : ""}</div>`).join("")}
-      </div>` : "";
-    attentionEl.querySelectorAll("[data-relnow]").forEach((b) => (b.onclick = async () => {
-      b.disabled = true;
-      try { await api("POST", `/notifications/${b.dataset.relnow}/send-now`); toast("Sending now"); }
-      catch (ex) { toast(ex.status === 409 ? "Already sent" : ex.message); }
-      loadRecent(el, limit, attentionEl);
-    }));
-    attentionEl.querySelectorAll("[data-relretry]").forEach((b) => (b.onclick = async () => {
-      b.disabled = true;
-      try { await api("POST", `/notifications/${b.dataset.relretry}/retry`); toast("Sending now"); }
-      catch (ex) { toast(ex.message); }
-      loadRecent(el, limit, attentionEl);
-    }));
-    attentionEl.querySelectorAll("[data-dismiss]").forEach((b) => (b.onclick = async () => {
-      b.disabled = true;
-      try { await api("POST", `/notifications/${b.dataset.dismiss}/dismiss`); toast("Dismissed"); }
-      catch (ex) { toast(ex.message); }
-      loadRecent(el, limit, attentionEl); // also after a 409: another tab may have dismissed it already
-    }));
-  }
   if (!data.notifications.length) { el.innerHTML = `<div class="empty">Nothing sent yet.</div>`; return; }
   el.innerHTML = data.notifications.map((n) => `
     <div class="row" style="align-items:flex-start"><span class="lamp ${lampFor(n.status)}" style="margin-top:.45rem"></span>
@@ -1217,51 +1259,188 @@ async function loadRecent(el, limit, attentionEl) {
         <div class="title">${esc(n.title || n.message.slice(0, 60))}</div>
         <div class="sub">${esc(when(n.sent_at))} from ${esc(n.source)} to ${esc(n.targets.join(", "))}, ${esc(n.severity)}</div>
         <div class="sub"><span class="status">${esc(n.status)}</span>${n.suppressed.length ? `: ${esc(n.suppressed[0].reason)}` : ""}</div>
-        ${n.attachments?.length ? `<dl class="kv"><dt>Attachments</dt><dd>${n.attachments.map((a) =>
-          `${esc(a.filename)} (${esc(a.content_type)}, ${esc(fmtSize(a.size))})${a.purged ? ` <span class="chip">purged</span>` : ""}`).join("<br>")}</dd></dl>` : ""}
-        ${n.deliveries.map((d) => `
-          <details class="delivery"><summary>${esc(cfg().devices[d.device]?.description || d.device)}: ${esc(d.state)}${d.final ? "" : " (may still change)"}</summary>
-            <dl class="kv">
-              ${d.timestamps.dispatched ? `<dt>Accepted by ${esc(d.provider)}</dt><dd>${esc(when(d.timestamps.dispatched))}</dd>` : ""}
-              ${d.timestamps.delivered ? `<dt>Delivered</dt><dd>${esc(when(d.timestamps.delivered))}</dd>` : ""}
-              ${d.timestamps.acknowledged ? `<dt>Acknowledged</dt><dd>${esc(when(d.timestamps.acknowledged))}${d.acknowledged_by ? ` on ${esc(d.acknowledged_by)}` : ""}</dd>` : ""}
-              <dt>Can report</dt><dd>${esc(d.observable_states.filter((s) => ["dispatched", "delivered", "acknowledged"].includes(s)).join(", "))}</dd>
-              <dt>Attempts</dt><dd>${d.attempts}</dd>
-              ${d.last_error ? `<dt>Last error</dt><dd class="problem">${esc(d.last_error)}</dd>` : ""}
-              ${d.capability_gaps.length ? `<dt>Not supported</dt><dd>${d.capability_gaps.map(esc).join("<br>")}</dd>` : ""}
-            </dl></details>`).join("")}
+        ${attachmentList(n)}
+        ${deliveryDetails(n)}
       </div>
-      <div class="actions">
-        ${["failed", "partial"].includes(n.status) ? `<button class="btn" data-retry="${esc(n.id)}">Retry</button>` : ""}
-        ${n.status === "pending" || n.deliveries.some((d) => !d.final && d.tracking === "receipt") ? `<button class="btn" data-cancel="${esc(n.id)}">Cancel</button>` : ""}
-      </div></div>`).join("");
-  el.querySelectorAll("[data-retry]").forEach((b) => (b.onclick = async () => {
-    try { await api("POST", `/notifications/${b.dataset.retry}/retry`); toast("Queued again"); loadRecent(el, limit, attentionEl); }
-    catch (ex) { toast(ex.message); }
-  }));
-  el.querySelectorAll("[data-cancel]").forEach((b) => (b.onclick = async () => {
-    try { await api("POST", `/notifications/${b.dataset.cancel}/cancel`); toast("Cancelled"); loadRecent(el, limit, attentionEl); }
-    catch (ex) { toast(ex.message); }
-  }));
+      ${notificationActions(n)}</div>`).join("");
+  bindNotificationActions(el, () => loadRecent(el, limit));
 }
 
-async function loadReplies(el) {
-  let data;
-  try { data = await api("GET", "/replies?limit=10"); }
-  catch (ex) { el.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
-  const status = Object.entries(data.inbound).map(([name, s]) => `<div class="sub">${esc(name)}: ${s.last_error
-    ? `<span class="problem">${esc(s.last_error)}</span>` : s.last_success ? `checked ${esc(when(s.last_success))}` : "not checked yet"}</div>`).join("");
-  if (!data.replies.length && !data.quarantine.length && !status) { el.innerHTML = ""; return; }
-  el.innerHTML = `<h3>Replies</h3>${status}<div class="rows">
-    ${data.replies.map((r) => `<div class="row"><span class="lamp ${r.state === "unclaimed" ? "warn" : "ok"}"></span><div class="grow">
-      <div class="title">${esc(r.notification_title || r.subject || "(no title)")}</div>
-      <div class="sub">${esc(when(r.received_at))} from ${esc(r.from)}: ${esc(r.state)}${r.claimed_by ? ` by ${esc(r.claimed_by)}` : ""}${r.autoreply_notification_id ? ", autoreply sent" : ""}</div>
-      <div class="sub">${esc((r.text || "").slice(0, 200))}</div>
-      ${r.attachments.length ? `<div class="sub">${r.attachments.map((a) => esc(a.filename)).join(", ")}</div>` : ""}</div></div>`).join("")}
-    ${data.quarantine.map((q) => `<div class="row"><span class="lamp bad"></span><div class="grow">
-      <div class="title">Rejected: ${esc(q.subject || "(no subject)")}</div>
-      <div class="sub">${esc(when(q.received_at))} from ${esc(q.from_address || "?")}: ${esc(q.reason)}</div></div></div>`).join("")}
-  </div>`;
+// ---------------------------------------------------------------- everything sent and received (Activity tab)
+
+const DIRECTION_ICONS = {
+  sent: `<span class="dir sent" role="img" aria-label="Sent" title="Sent"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M4 12 12 4M6 4h6v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`,
+  received: `<span class="dir received" role="img" aria-label="Received" title="Received"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path d="M12 4 4 12M10 12H4V6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span>`,
+};
+
+// Always plain text: a body can come from anyone who can mail us, and a sent message may be HTML for the provider.
+function bodyBlock(text) {
+  if (!text) return "";
+  return `<div class="body" data-body>${esc(text)}</div>
+    <button type="button" class="btn quiet more" data-more aria-expanded="false" hidden>Show more</button>`;
+}
+
+function idLine(id, extra = "") {
+  return `<div class="ids"><code>${esc(id)}</code>
+    <button type="button" class="btn quiet" data-copy="${esc(id)}" aria-label="Copy ID ${esc(id)}">Copy</button>${extra}</div>`;
+}
+
+function timelineRow(i) {
+  if (i.kind === "rejected") {
+    return `<div class="row">${DIRECTION_ICONS.received}<span class="lamp bad"></span><div class="grow">
+      <div class="title">Rejected: ${esc(i.subject || "(no subject)")}</div>
+      <div class="sub">${esc(when(i.at))} from ${esc(i.from_address || "?")}: ${esc(i.reason)}</div></div></div>`;
+  }
+  if (i.kind === "reply") {
+    return `<div class="row">${DIRECTION_ICONS.received}<span class="lamp ${i.state === "unclaimed" ? "warn" : "ok"}"></span><div class="grow">
+      <div class="title">${esc(i.notification_title || i.subject || "(no title)")}</div>
+      <div class="sub">${esc(when(i.at))} from ${esc(i.from)}: ${esc(i.state)}${i.claimed_by ? ` by ${esc(i.claimed_by)}` : ""}${i.autoreply_notification_id ? ", autoreply sent" : ""}</div>
+      ${bodyBlock(i.text)}
+      ${i.truncated ? `<div class="sub">The stored text was cut off at the size limit.</div>` : ""}
+      ${i.attachments.length ? `<div class="sub">${i.attachments.map((a) => esc(a.filename)).join(", ")}</div>` : ""}
+      ${idLine(i.id, ` <span class="sub">answers <button type="button" class="btn quiet" data-find="${esc(i.notification_id)}">${esc(i.notification_id)}</button></span>`)}
+    </div></div>`;
+  }
+  const line = !i.unsent ? `${esc(when(i.sent_at))} from ${esc(i.source)} to ${esc(i.targets.join(", "))}, ${esc(i.severity)}`
+    : i.status === "scheduled" ? `Not sent yet: scheduled for ${esc(when(i.send_at))}, from ${esc(i.source)} to ${esc(i.targets.join(", "))}`
+    : `Not sent: cancelled while waiting, from ${esc(i.source)} to ${esc(i.targets.join(", "))}`;
+  return `<div class="row">${DIRECTION_ICONS.sent}<span class="lamp ${lampFor(i.status)}"></span><div class="grow">
+      <div class="title">${esc(i.title || "(no title)")}</div>
+      <div class="sub">${line}</div>
+      <div class="sub"><span class="status">${esc(i.status)}</span>${i.suppressed.length ? `: ${esc(i.suppressed[0].reason)}` : ""}</div>
+      ${bodyBlock(i.message)}
+      ${attachmentList(i)}
+      ${idLine(i.id)}
+      ${deliveryDetails(i)}
+    </div>${notificationActions(i)}</div>`;
+}
+
+async function copyText(text, shownIn) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true; }
+  } catch { /* refused: fall through */ }
+  // the admin page usually runs on plain HTTP, where browsers withhold the clipboard API
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.append(area);
+  area.select();
+  let copied = false;
+  try { copied = document.execCommand("copy"); } catch { /* reported below */ }
+  area.remove();
+  if (!copied && shownIn) { // leave it selected, so the keyboard can finish the job
+    const range = document.createRange();
+    range.selectNodeContents(shownIn);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  return copied;
+}
+
+function activityList(main) {
+  const els = {
+    controls: main.querySelector("#tl-controls"), inbound: main.querySelector("#tl-inbound"),
+    list: main.querySelector("#tl-list"), pager: main.querySelector("#tl-pager"),
+  };
+  const state = { direction: "all", source: "", find: "", before: null, after: null, request: 0 };
+  const firstPage = () => { state.before = null; state.after = null; };
+
+  els.controls.innerHTML = `
+    <div class="seg" role="group" aria-label="Show">
+      ${[["all", "All"], ["sent", "Sent"], ["received", "Received"]].map(([v, label]) =>
+        `<button type="button" class="btn" data-direction="${v}" aria-pressed="${v === "all"}">${label}</button>`).join("")}
+    </div>
+    <label class="tl-source">Sender <select id="tl-source"><option value="">Everyone</option></select></label>
+    <form id="tl-find" class="tl-find">
+      <input type="text" name="find" aria-label="Find by ID" placeholder="Find by ID: ntf_… or rpl_…" autocomplete="off" spellcheck="false">
+      <button type="submit" class="btn">Find</button>
+      <button type="button" class="btn quiet" id="tl-clear" hidden>Show all</button>
+    </form>`;
+  const sourceEl = els.controls.querySelector("#tl-source");
+  const findForm = els.controls.querySelector("#tl-find");
+  const clearEl = els.controls.querySelector("#tl-clear");
+
+  const search = (needle) => {
+    state.find = needle.trim();
+    findForm.elements.find.value = state.find;
+    firstPage();
+    load();
+  };
+  els.controls.querySelectorAll("[data-direction]").forEach((b) => (b.onclick = () => {
+    state.direction = b.dataset.direction;
+    els.controls.querySelectorAll("[data-direction]").forEach((o) => o.setAttribute("aria-pressed", String(o === b)));
+    firstPage();
+    load();
+  }));
+  sourceEl.onchange = () => { state.source = sourceEl.value; firstPage(); load(); };
+  findForm.onsubmit = (e) => { e.preventDefault(); search(findForm.elements.find.value); };
+  clearEl.onclick = () => search("");
+
+  function renderBodies() {
+    els.list.querySelectorAll("[data-body]").forEach((body) => {
+      const more = body.nextElementSibling;
+      more.hidden = body.scrollHeight <= body.clientHeight + 1;
+      more.onclick = () => {
+        const open = body.classList.toggle("open");
+        more.textContent = open ? "Show less" : "Show more";
+        more.setAttribute("aria-expanded", String(open));
+      };
+    });
+  }
+
+  async function load({ scroll = false } = {}) {
+    const request = ++state.request; // a slow answer must not overwrite a newer choice
+    const q = new URLSearchParams({ limit: "25" });
+    if (state.find) q.set("find", state.find);
+    else {
+      if (state.direction !== "all") q.set("direction", state.direction);
+      if (state.source) q.set("source", state.source);
+      if (state.before) q.set("before", state.before);
+      if (state.after) q.set("after", state.after);
+    }
+    let data;
+    try { data = await api("GET", `/timeline?${q}`); }
+    catch (ex) {
+      if (request === state.request) { els.list.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; els.pager.hidden = true; }
+      return;
+    }
+    if (request !== state.request) return;
+    if (!data.items.length && (state.before || state.after)) { firstPage(); load(); return; } // that page was purged
+
+    els.inbound.innerHTML = Object.entries(data.inbound).map(([name, s]) => `<div class="sub">${esc(name)}: ${s.last_error
+      ? `<span class="problem">${esc(s.last_error)}</span>` : s.last_success ? `checked ${esc(when(s.last_success))}` : "not checked yet"}</div>`).join("");
+    const known = [...new Set([...data.sources, ...(state.source ? [state.source] : [])])].sort();
+    sourceEl.innerHTML = `<option value="">Everyone</option>${known.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}`;
+    sourceEl.value = state.source;
+    clearEl.hidden = !state.find;
+    els.controls.querySelectorAll("[data-direction]").forEach((b) => (b.disabled = Boolean(state.find)));
+    sourceEl.disabled = Boolean(state.find);
+
+    els.list.innerHTML = data.items.length ? data.items.map(timelineRow).join("")
+      : `<div class="empty">${state.find ? "Nothing with exactly that ID. It may have passed the retention period."
+        : state.direction === "all" && !state.source ? "Nothing sent or received yet." : "Nothing matches these filters."}</div>`;
+    renderBodies();
+    bindNotificationActions(els.list, () => reloadAll());
+    els.list.querySelectorAll("[data-find]").forEach((b) => (b.onclick = () => search(b.dataset.find)));
+    els.list.querySelectorAll("[data-copy]").forEach((b) => (b.onclick = async () => {
+      toast(await copyText(b.dataset.copy, b.previousElementSibling) ? "ID copied" : "Could not copy: press Ctrl+C or Cmd+C");
+    }));
+
+    els.pager.hidden = !data.older && !data.newer;
+    els.pager.innerHTML = `
+      <button type="button" class="btn" data-page="newer" ${data.newer ? "" : "disabled"}>Newer</button>
+      <button type="button" class="btn" data-page="older" ${data.older ? "" : "disabled"}>Older</button>`;
+    els.pager.querySelector("[data-page=newer]").onclick = () => { state.before = null; state.after = data.newer; load({ scroll: true }); };
+    els.pager.querySelector("[data-page=older]").onclick = () => { state.after = null; state.before = data.older; load({ scroll: true }); };
+    if (scroll) els.controls.scrollIntoView({ block: "start" });
+  }
+
+  const attentionEl = main.querySelector("#attention");
+  const reloadAll = () => { loadAttention(attentionEl, reloadAll); load(); };
+  reloadAll();
 }
 
 // ---------------------------------------------------------------- reply mailbox (GET /admin/api/mailbox)

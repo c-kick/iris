@@ -306,7 +306,7 @@ signed-in admin page. A bearer token with the `admin` scope gets states, times a
 with an admin token stop getting it.
 
 **Quarantine.** Mail that fails a check is moved to the `Quarantine` folder and
-listed (reason, sender, subject) under *Activity → Replies*; its content is not
+listed (reason, sender, subject) in the admin *Activity* list; its content is not
 stored and agents never see it. Reasons: `automatic` (auto-replies, bulk,
 bounces), `no_thread` (not a reply to our mail), `not_reply_enabled`,
 `sender_mismatch` (not from the address the mail was sent to), `dkim_fail`,
@@ -444,6 +444,15 @@ use. What still waits, or was cancelled while waiting, is left out; `status=sche
 list those. A scheduled notification that was missed or could not be released stays in, with `sent_at` at the moment
 that happened.
 
+**Admin Activity list.** *Activity* shows everything in one list, newest first, 25 to a page (Newer / Older): what was
+sent (at its send time, as above), replies and rejected mail, each marked as sent or received. Bodies are shown as plain
+text, never rendered, with *Show more* for long ones. It filters on All / Sent / Received and on sender; a reply counts
+under the service whose message it answers, and rejected mail only shows without a sender filter, because the
+notification it names comes from the unverified mail. *Find by ID* takes an exact `ntf_…` or `rpl_…` and also shows a
+notification that was never sent, marked as such. The list comes from `GET /admin/api/timeline` (`limit`, `before`,
+`after`, `direction`, `source`, `find`); as with `GET /admin/api/replies`, a bearer admin token gets states and times but
+no reply text, sender or subject.
+
 **Retention.** History retention, the attachment purge and the timestamp the provider shows all count from the
 moment a notification went out (`released_at`, else `send_at`), not from when it was submitted. A scheduled
 notification is never purged; its attachments are kept until its send time plus
@@ -454,6 +463,12 @@ notification is never purged; its attachments are kept until its send time plus
 notification is released (payload gains `scheduled: true`), followed by the usual `delivery.queued`.
 Subscribers to `*` or `notification.*` therefore start receiving `notification.scheduled`,
 `notification.updated` and `notification.missed`.
+
+### Upgrading to 0.12.0
+
+- The admin *Activity* tab is now one paged list of everything sent and received, with message bodies, filters and find
+  by ID (see *Admin Activity list*); the separate Replies section is gone. Adds `GET /admin/api/timeline`;
+  `GET /admin/api/activity` and `GET /admin/api/replies` are unchanged. No configuration or schema change.
 
 ### Upgrading to 0.11.2
 

@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import __version__
+from . import __version__, timeline
 from .auth import hash_token, new_token
 from .config import ConfigError, MailboxCleanupConfig
 from .db import iso, new_id, now_iso, utcnow
@@ -717,16 +717,47 @@ async def edit_scheduled(nid: str, body: ScheduleUpdate, request: Request,
         raise HTTPException(404, str(e)) from e
 
 
+def _hide_reply_content(reply: dict[str, Any]) -> None:
+    """A bearer admin sees states and counts, never what people wrote."""
+    reply.update({"from": None, "subject": None, "text": None, "attachments": [], "dropped_attachments": []})
+
+
+def _hide_rejected_content(rejected: dict[str, Any]) -> None:
+    rejected.update(from_address=None, subject=None, message_id=None)
+
+
 @router.get("/api/replies")
 async def replies_view(request: Request, limit: int = 25, client: Client = Depends(admin)) -> dict[str, Any]:
     svc = _svc(request)
     replies, quarantine = svc.replies.recent(limit), svc.replies.quarantined(limit)
-    if not client.via_session:  # a bearer admin sees states and counts, never what people wrote
+    if not client.via_session:
         for r in replies:
-            r.update({"from": None, "subject": None, "text": None, "attachments": [], "dropped_attachments": []})
+            _hide_reply_content(r)
         for q in quarantine:
-            q.update(from_address=None, subject=None, message_id=None)
+            _hide_rejected_content(q)
     return {"inbound": svc.inbound_status, "replies": replies, "quarantine": quarantine}
+
+
+@router.get("/api/timeline")
+async def timeline_view(request: Request, limit: int = 25, before: str | None = None, after: str | None = None,
+                        direction: Literal["all", "sent", "received"] = "all", source: str | None = None,
+                        find: str | None = None, client: Client = Depends(admin)) -> dict[str, Any]:
+    """Everything sent and received, newest first. `find` is one entry by exact id and ignores the rest."""
+    svc = _svc(request)
+    admin_view = Client(client.id, frozenset({Scope.admin}))
+    try:
+        out = (timeline.find(svc, admin_view, find) if find is not None else
+               timeline.page(svc, admin_view, limit=limit, before=before, after=after, direction=direction,
+                             source=source or None))
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+    if not client.via_session:
+        for item in out["items"]:
+            if item["kind"] == "reply":
+                _hide_reply_content(item)
+            elif item["kind"] == "rejected":
+                _hide_rejected_content(item)
+    return {**out, "sources": timeline.sources(svc), "inbound": svc.inbound_status, "timezone": local_zone().key}
 
 
 # ------------------------------------------------------------------ reply mailbox cleanup

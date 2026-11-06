@@ -25,6 +25,9 @@ OVERDUE_SECONDS = 60
 UI_CLIENT_ID = "admin-ui"    # the admin page's client (admin.UI_CLIENT; a test keeps them equal)
 # the moment a notification actually went out, wherever a list or a window needs it
 EFFECTIVE_SQL = "COALESCE(released_at, send_at, created_at)"
+# the history is what was sent: not what still waits, nor what was cancelled while waiting
+IN_HISTORY_SQL = ("status != 'scheduled' AND NOT (status = 'cancelled' AND send_at IS NOT NULL"
+                  " AND NOT EXISTS (SELECT 1 FROM deliveries WHERE notification_id = notifications.id))")
 
 _DURATION = re.compile(r"^(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$", re.IGNORECASE)
 

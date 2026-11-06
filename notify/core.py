@@ -1054,9 +1054,8 @@ class NotifyService:
             statuses = [s.strip() for s in status.split(",") if s.strip()]
             sql += f" AND status IN ({','.join('?' * len(statuses))})"
             params += statuses
-        else:  # the history is what was sent: not what still waits, nor what was cancelled while waiting
-            sql += (" AND status != 'scheduled' AND NOT (status = 'cancelled' AND send_at IS NOT NULL"
-                    " AND NOT EXISTS (SELECT 1 FROM deliveries WHERE notification_id = notifications.id))")
+        else:
+            sql += f" AND {schedule.IN_HISTORY_SQL}"
         if source:
             sql += " AND source=?"
             params.append(source)

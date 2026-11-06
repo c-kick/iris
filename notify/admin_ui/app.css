@@ -155,6 +155,37 @@ code, .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; 
 .problem { color: var(--bad); font-size: .9rem; }
 .hint { color: var(--muted); font-size: .9rem; }
 
+/* ---------- activity list ---------- */
+.tl-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem; margin-bottom: .75rem; scroll-margin-top: 1rem; }
+.seg { display: inline-flex; }
+.seg .btn { border-radius: 0; margin-left: -1px; }
+.seg .btn:first-child { border-radius: var(--radius-s) 0 0 var(--radius-s); margin-left: 0; }
+.seg .btn:last-child { border-radius: 0 var(--radius-s) var(--radius-s) 0; }
+.seg .btn[aria-pressed="true"] { background: var(--action); border-color: var(--action); color: var(--action-ink); font-weight: 700; position: relative; }
+.tl-source { display: inline-flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .9rem; }
+.tl-source select, .tl-find input {
+  font: inherit; color: var(--ink); background: var(--surface); min-height: 40px;
+  border: 1px solid var(--line); border-radius: var(--radius-s); padding: .35rem .6rem; max-width: 100%;
+}
+.tl-source select { max-width: 14rem; }
+.tl-find { display: flex; flex: 1 1 18rem; gap: .4rem; min-width: 0; }
+.tl-find input { flex: 1; min-width: 0; }
+#tl-inbound { margin-bottom: .6rem; }
+.tl-pager { display: flex; justify-content: space-between; gap: .6rem; margin-top: .75rem; }
+.tl-pager[hidden] { display: none; }
+.row > .dir { flex: none; align-self: flex-start; margin-top: .25rem; display: inline-flex; color: var(--muted); }
+.row > .dir.received { color: var(--action); }
+.row .body {
+  white-space: pre-wrap; overflow-wrap: anywhere; margin-top: .4rem; line-height: 1.45;
+  max-height: calc(1.45em * 4); overflow: hidden;
+}
+.row .body.open { max-height: none; }
+.row button.btn.more { min-height: 32px; padding-block: .1rem; padding-inline: 0; }
+.row button.btn.more[hidden] { display: none; }
+.row .ids { display: flex; flex-wrap: wrap; align-items: center; gap: 0 .4rem; margin-top: .3rem; color: var(--muted); font-size: .85rem; }
+.row .ids code { overflow-wrap: anywhere; }
+.row .ids .btn { min-height: 32px; padding-block: .1rem; font-size: .85rem; }
+
 /* ---------- buttons & forms ---------- */
 button.btn, a.btn {
   font: inherit; cursor: pointer; text-decoration: none;

@@ -26,6 +26,7 @@ from notify.app import create_app  # noqa: E402
 from notify.auth import hash_token  # noqa: E402
 from notify.config import NotifyConfig  # noqa: E402
 from notify.core import Client  # noqa: E402
+from notify.db import now_iso  # noqa: E402
 from notify.models import Scope  # noqa: E402
 
 FAKE_TOKEN = "a" * 30
@@ -81,8 +82,31 @@ async def seed_history(url: str) -> None:
              "severity": "critical"},
             {"targets": ["user:alex"], "title": "Backup", "message": "fail: NAS backup", "severity": "low"},
             {"targets": ["channel:infra"], "title": "Disk 71%", "message": "Below the channel floor"},
+            {"targets": ["user:alex"], "title": "Weekly report", "severity": "low",
+             "message": "\n".join(f"Line {i} of the weekly report, which is long enough to need Show more."
+                                  for i in range(1, 13))},
+            *({"targets": ["user:alex"], "title": f"Sensor check {i}", "message": f"Reading {i} is fine",
+               "severity": "low", "source": "sensors"} for i in range(1, 31)),
         ]:
             await c.post("/v1/notifications", json=body)
+
+
+def seed_inbound(app) -> None:
+    """Replies and rejected mail, so the Activity list has received rows; a hostile body shows they stay text."""
+    svc = app.state.service
+    n = svc.db.one("SELECT id FROM notifications WHERE title='Washing machine'")
+    d = svc.db.one("SELECT id FROM deliveries WHERE notification_id=?", (n["id"],))
+    now = now_iso()
+    with svc.db.tx() as c:
+        for i, text in enumerate(["Thanks, I'll get it.", "<img src=x onerror=\"document.title='hacked'\"><b>bold?</b>"]):
+            c.execute("INSERT INTO replies(id, conversation_id, notification_id, delivery_id, message_id, from_address,"
+                      " subject, received_at, text, stripped, truncated, dropped_attachments_json, state)"
+                      " VALUES (?,?,?,?,?,?,?,?,?,1,0,'[]','claimed')",
+                      (f"rpl_dev{i}", n["id"], n["id"], d["id"], f"<dev{i}@example.org>", "alex@example.org",
+                       "Re: Washing machine", now, text))
+        c.execute("INSERT INTO reply_quarantine(received_at, from_address, subject, message_id, reason)"
+                  " VALUES (?,?,?,?,?)", (now, "mallory@example.org", "Re: Washing machine", "<evil@example.org>",
+                                          "sender_mismatch"))
 
 
 def main() -> None:
@@ -107,6 +131,7 @@ def main() -> None:
             await asyncio.sleep(0.05)
         if args.demo and not app.state.service.list(Client("dev", frozenset({Scope.admin})), limit=1):
             await seed_history(f"http://127.0.0.1:{args.port}")
+            seed_inbound(app)
         print(f"hnl-notify dev server on http://127.0.0.1:{args.port}/admin", flush=True)
         await task
 
