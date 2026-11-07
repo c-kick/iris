@@ -1636,6 +1636,11 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 const chats = { groups: [], selected: null, lastId: null, timer: null, composeDraft: "", showClosed: false };
 const chatUnread = () => chats.groups.reduce((n, g) => n + (g.unread || 0), 0);
 const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
+const CHAT_ACTIVE_MS = 10 * 60 * 1000; // the owner counts as watching this long after the last input
+let chatLastInput = Date.now();
+["mousemove", "keydown", "scroll", "touchstart", "click"].forEach((t) =>
+  document.addEventListener(t, () => { chatLastInput = Date.now(); }, { passive: true, capture: true }));
+const chatWatchingNow = () => document.visibilityState === "visible" && Date.now() - chatLastInput < CHAT_ACTIVE_MS;
 const CHAT_LIVE_SECONDS = 180; // matches the server's stale sweep
 
 function chatPresent(g) {
@@ -1722,7 +1727,9 @@ async function chatOpen(el, id, keep = false) {
   const g = data.group;
   pane.innerHTML = `
     <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back">All groups</button>
-      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span></div></div>
+      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span>
+        <span class="hint chat-watch" id="chat-watch" hidden>You're watching: no auto-pause</span></div>
+      <button type="button" class="btn" id="chat-pausebtn" hidden></button></div>
     <div class="chat-paused" id="chat-paused" hidden></div>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
     <form class="chat-compose" id="chat-compose" hidden>
@@ -1732,6 +1739,13 @@ async function chatOpen(el, id, keep = false) {
       <div class="form-error" role="alert"></div>
     </form>
     <div class="chat-readonly hint" id="chat-readonly" hidden>This group is closed. It is read-only.</div>`;
+  pane.querySelector("#chat-pausebtn").onclick = async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try { await api("POST", `/chats/${encodeURIComponent(id)}/${btn.dataset.act}`); await chatTick(el); }
+    catch (ex) { toast(ex.message); }
+    finally { btn.disabled = false; }
+  };
   pane.querySelector("#chat-back").onclick = () => { chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
   const box = pane.querySelector("#chat-msgs");
   box.innerHTML = data.messages.map(chatMessageHtml).join("") || `<div class="empty">No messages yet.</div>`;
@@ -1767,7 +1781,11 @@ function chatHeader(el, g) {
   el.querySelector("#chat-sub").textContent = ` ${g.host} · ${chatMembersText(g)}`;
   const p = el.querySelector("#chat-paused");
   p.hidden = !(g.paused && g.state === "open");
-  p.textContent = "Paused after too many agent messages. Post here to let them continue.";
+  p.textContent = "Paused. Post here or press Resume to let the agents continue.";
+  const pb = el.querySelector("#chat-pausebtn");
+  pb.hidden = g.state !== "open";
+  pb.dataset.act = g.paused ? "resume" : "pause";
+  pb.textContent = g.paused ? "Resume" : "Pause now";
   el.querySelector("#chat-compose").hidden = g.state !== "open";
   el.querySelector("#chat-readonly").hidden = g.state === "open";
 }
@@ -1779,6 +1797,12 @@ async function chatTick(el) {
     await chatsLoadList(el);
     const id = chats.selected;
     if (!id) return;
+    const watch = el.querySelector("#chat-watch");
+    const open = chats.groups.find((x) => x.id === id)?.state === "open";
+    if (open && chatWatchingNow()) {
+      try { await api("POST", `/chats/${encodeURIComponent(id)}/watching`); if (watch) watch.hidden = false; }
+      catch { if (watch) watch.hidden = true; }
+    } else if (watch) watch.hidden = true;
     const path = `/chats/${encodeURIComponent(id)}/messages${chats.lastId ? `?after=${encodeURIComponent(chats.lastId)}` : ""}`;
     const data = await api("GET", path);
     if (chats.selected !== id) return;

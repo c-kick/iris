@@ -109,7 +109,8 @@ def test_last_leave_closes(svc):
     svc.chat.leave(b["member_handle"])
     g = svc.db.one("SELECT * FROM chat_groups WHERE id=?", (a["group_id"],))
     assert g["state"] == "closed" and g["closed_at"]
-    assert svc.db.scalar("SELECT text FROM chat_messages WHERE group_id=? AND author='system'", (g["id"],)) == "closed"
+    assert svc.db.scalar("SELECT text FROM chat_messages WHERE group_id=? AND author='system' ORDER BY rowid DESC LIMIT 1",
+                        (g["id"],)) == "closed"
     assert svc.db.scalar("SELECT COUNT(*) FROM events WHERE type='group.closed'") == 1
     assert svc.db.scalar("SELECT COUNT(*) FROM events WHERE type='group.member_left'") == 2
     assert join(svc, "s3")["group_id"] != a["group_id"]
@@ -151,7 +152,7 @@ def test_message_reaching_cap_is_stored_but_its_wakes_are_skipped(tmp_path):
     r3 = s.chat.post(a["member_handle"], "3")
     assert r3["paused"] and r3["woken"] == []
     assert wakes(s, r3["message_id"]) == {b["member_id"]: ("skipped", "paused")}
-    assert "paused" in s.db.scalar("SELECT text FROM chat_messages WHERE author='system'")
+    assert "paused" in s.db.scalar("SELECT text FROM chat_messages WHERE author='system' AND text LIKE 'paused%'")
     rows = s.db.query("SELECT * FROM notifications")
     assert len(rows) == 1 and rows[0]["source"] == "hnl-notify" and "group-chat" in rows[0]["tags_json"]
     assert s.db.scalar("SELECT COUNT(*) FROM events WHERE type='group.paused'") == 1
@@ -254,8 +255,9 @@ def test_read_since(svc):
     m1 = svc.chat.post(a["member_handle"], "one")["message_id"]
     m2 = svc.chat.post(b["member_handle"], "two")["message_id"]
     allm = svc.chat.read(b["member_handle"])
-    assert [m["id"] for m in allm["messages"]] == [m1, m2]
-    assert "| one" in allm["messages"][0]["text"]
+    talk = [m for m in allm["messages"] if m["author"] != "system"]  # join lines are system messages
+    assert [m["id"] for m in talk] == [m1, m2]
+    assert "| one" in talk[0]["text"]
     got = svc.chat.read(b["member_handle"], since=m1)
     assert [m["id"] for m in got["messages"]] == [m2]
     assert [m["member_id"] for m in got["members"]] == [a["member_id"], b["member_id"]]
@@ -295,7 +297,8 @@ def test_hostile_folder_cannot_forge_header(tmp_path):
     a = join(s, "s1", folder=evil)
     join(s, "s2", folder=evil)
     r = s.chat.post(a["member_handle"], "hi")
-    for text in (s.chat.read(a["member_handle"])["messages"][0]["text"], s.chat.framed_text(r["message_id"])):
+    said = [m for m in s.chat.read(a["member_handle"])["messages"] if m["author"] != "system"][0]["text"]
+    for text in (said, s.chat.framed_text(r["message_id"])):
         heads = [ln for ln in text.split("\n") if ln.startswith("[hnl-notify")]
         assert len(heads) == 1 and heads[0].count("[") == 1 and heads[0].endswith("]")
         # the folder's words stay as inert text after the real "from claude"; no second header, no owner label

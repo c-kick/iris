@@ -100,7 +100,7 @@ def test_mcp_post_from_other_token(chatlive):
 
     posted, read, tools = run_session(chatlive, "bot", flow)
     assert {"group_post", "group_read", "group_leave"} <= tools
-    assert posted["message_id"] and [m["id"] for m in read["messages"]] == [posted["message_id"]]
+    assert posted["message_id"] and [m["id"] for m in read["messages"] if m["author"] != "system"] == [posted["message_id"]]
 
     async def leave(s):
         return payload(await s.call_tool("group_leave", {"member_handle": j["member_handle"]}))
@@ -118,7 +118,7 @@ def test_mcp_post_wrong_handle(chatlive):
 
     for r in run_session(chatlive, "bot", flow):
         assert r.isError and r.content[0].text.endswith(": " + MEMBER_GONE)
-    assert chatlive.service.db.scalar("SELECT COUNT(*) FROM chat_messages") == 0
+    assert chatlive.service.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE author<>'system'") == 0
 
     chatlive.client("hosta").post("/v1/chat/leave", headers={"X-Member-Handle": j["member_handle"]})
 

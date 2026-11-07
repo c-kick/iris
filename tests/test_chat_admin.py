@@ -101,7 +101,7 @@ def test_messages_raw_text_and_wake_summary(ctx):
         cx.execute("UPDATE chat_wakes SET state='claimed' WHERE message_id=? AND member_id=?", (first, d["member_id"]))
     second = chat.post_owner(a["group_id"], "ok")["message_id"]
     gid = a["group_id"]
-    msgs = b.get(f"/admin/api/chats/{gid}/messages").json()["messages"]
+    msgs = [m for m in b.get(f"/admin/api/chats/{gid}/messages").json()["messages"] if m["author"] != "system"]
     assert [m["id"] for m in msgs] == [first, second]
     assert msgs[0]["text"] == "<b>raw</b> text" and "hnl-notify group chat" not in msgs[0]["text"]
     assert msgs[0]["wakes"] == {"delivered": 1, "skipped": 0, "pending": 1}  # claimed counts as pending
@@ -121,7 +121,7 @@ def test_bearer_admin_reads_without_text(ctx):
     srv.service.chat.post(a["member_handle"], "private words")
     r = httpx.get(f"{srv.url}/admin/api/chats/{a['group_id']}/messages", headers=bearer)
     assert r.status_code == 200
-    m = r.json()["messages"][0]
+    m = [x for x in r.json()["messages"] if x["author"] != "system"][0]
     assert "text" not in m and m["author"] == "claude" and m["created_at"] and m["wakes"]
     g = httpx.get(f"{srv.url}/admin/api/chats", headers=bearer).json()["groups"][0]
     assert g["last_message"]["text_preview"] is None and g["last_message"]["author"] == "claude"
@@ -139,3 +139,23 @@ def test_client_update_keeps_or_clears_chat_host(ctx):
     assert cl() == "host-a"
     b.put("/admin/api/clients/agent-a", json={"scopes": ["chat"], "chat_host": ""}, headers=H)
     assert cl() is None  # empty = clear
+
+
+def test_watching_pause_resume_need_session(ctx):
+    srv, b, bearer = ctx
+    j = _join(srv, "host-a", "/srv/one", "s1")
+    base = f"/admin/api/chats/{j['group_id']}"
+    for act in ("watching", "pause", "resume"):
+        assert httpx.post(f"{srv.url}{base}/{act}", headers={**bearer, **H}).status_code == 403
+        assert b.post(f"{base}/{act}").status_code == 403
+    db = srv.service.db
+    assert b.post(f"{base}/watching", headers=H).status_code == 204
+    assert db.scalar("SELECT owner_watch_until FROM chat_groups") is not None
+    assert b.post(f"{base}/pause", headers=H).status_code == 204
+    assert db.scalar("SELECT paused FROM chat_groups") == 1
+    assert b.post(f"{base}/resume", headers=H).status_code == 204
+    assert db.scalar("SELECT paused FROM chat_groups") == 0
+    assert b.post("/admin/api/chats/grp_nope/pause", headers=H).status_code == 404
+    srv.service.chat.leave(j["member_handle"])
+    for act in ("watching", "pause", "resume"):
+        assert b.post(f"{base}/{act}", headers=H).status_code == 409

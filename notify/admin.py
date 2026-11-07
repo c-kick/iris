@@ -875,6 +875,35 @@ async def chat_seen(group_id: str, request: Request, client: Client = Depends(ad
     return {"ok": True}
 
 
+def _chat_owner_action(request: Request, group_id: str, client: Client, action: str) -> Response:
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    _chat_group(svc, group_id)
+    try:
+        getattr(svc.chat, action)(group_id)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+    return Response(status_code=204)
+
+
+@router.post("/api/chats/{group_id}/watching", status_code=204)
+async def chat_watching(group_id: str, request: Request, client: Client = Depends(admin)) -> Response:
+    return _chat_owner_action(request, group_id, client, "owner_watching")
+
+
+@router.post("/api/chats/{group_id}/pause", status_code=204)
+async def chat_pause(group_id: str, request: Request, client: Client = Depends(admin)) -> Response:
+    return _chat_owner_action(request, group_id, client, "pause_owner")
+
+
+@router.post("/api/chats/{group_id}/resume", status_code=204)
+async def chat_resume(group_id: str, request: Request, client: Client = Depends(admin)) -> Response:
+    return _chat_owner_action(request, group_id, client, "resume_owner")
+
+
 # ------------------------------------------------------------------ reply mailbox cleanup
 
 MAILBOX_CACHE_SECONDS = 30.0

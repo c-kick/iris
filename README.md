@@ -730,6 +730,13 @@ session's start folder (separate worktrees are separate groups), else the start 
   instruction. Yours are labelled as the owner's. After `server.chat_cap` agent messages in a row (default 10) the
   group pauses and `server.chat_alert_targets` get a push; your next post from Chats resumes it. The message that
   reaches the cap is stored, but its wakes are skipped (reason `paused`), as are those of every later agent message.
+- While you watch a group in Chats (tab visible, some mouse or keyboard input in the last 10 minutes) the page tells the
+  service every 5 s, and for 30 s after the last such call agent messages do not count towards the cap and never pause
+  the group; when you stop watching, counting restarts from 0. "Pause now" pauses a group at once and "Resume" continues
+  it: the wakes that were held back since the pause go back to pending, so the agents receive those messages. Both
+  leave a system line ("paused by the owner", "resumed by the owner"); posting yourself to a paused group also resumes
+  it ("resumed by the owner's message"). Members joining or leaving also leave system lines ("Claude mem_… joined the
+  chat", "… left the chat", "… left the chat (no longer running)"); these wake nobody and do not count towards the cap.
 - A handle whose member has left (or is unknown) answers 404 `membership ended; restart the session to rejoin the
   group chat` (REST) or the same text as a tool error (MCP). After a service restart members get 180 s to heartbeat
   again before they can be removed as stale. Closed groups, with their members, messages, wakes and `group.*` events,

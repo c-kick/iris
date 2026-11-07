@@ -16,7 +16,7 @@ import unicodedata
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from .core import SYSTEM_CLIENT, Client, Forbidden, Invalid, NotFound
+from .core import SYSTEM_CLIENT, Client, Conflict, Forbidden, Invalid, NotFound
 from .db import dumps, iso, new_id, now_iso, parse_iso, utcnow
 from .handles import handle_matches, new_handle, parse_handle
 from .models import NotificationIn
@@ -33,6 +33,7 @@ KINDS = ("claude", "codex")
 LEAVE_REASONS = ("ended", "stale", "left")
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 MAX_WAKE_ATTEMPTS = 5
+WATCH_SECONDS = 30  # the owner watching a thread suspends the cap for this long
 STALE_SECONDS = 180  # no liveness heartbeat for this long: the member is gone
 CLAIM_TIMEOUT_SECONDS = 120  # a claimed wake not confirmed in this time goes back to pending
 
@@ -179,6 +180,7 @@ class Chat:
                           (member_id, group_id, kind, session_id, pid, pid_start, client.id, sha, now, now))
                 self._event(c, "group.member_joined", client.id,
                             {"group_id": group_id, "member_id": member_id, "kind": kind})
+                self._add_message(c, group_id, "system", None, f"{kind.capitalize()} {member_id} joined the chat")
             members = self._members(c, group_id)
         self.svc._after_commit()
         return {"group_id": group_id, "member_id": member_id, "member_handle": handle, "members": members}
@@ -202,6 +204,8 @@ class Chat:
             c.execute("UPDATE chat_wakes SET state='skipped', reason='member gone', finished_at=?"
                       " WHERE member_id=? AND state IN ('pending', 'claimed')", (now, member_id))
             self._event(c, "group.member_left", by, {"group_id": gid, "member_id": member_id, "reason": reason})
+            self._add_message(c, gid, "system", None, f"{m['kind'].capitalize()} {member_id} left the chat"
+                              + (" (no longer running)" if reason == "stale" else ""))
             if c.execute("SELECT 1 FROM chat_members WHERE group_id=? AND left_at IS NULL", (gid,)).fetchone() is None:
                 c.execute("UPDATE chat_groups SET state='closed', closed_at=? WHERE id=?", (now, gid))
                 self._add_message(c, gid, "system", None, "closed")
@@ -237,16 +241,18 @@ class Chat:
                 raise MemberGone()
             paused = bool(g["paused"])
             streak = g["agent_streak"]
+            watching = bool(g["owner_watch_until"]) and g["owner_watch_until"] > now
             if owner:
                 if paused:
+                    self._add_message(c, group_id, "system", None, "resumed by the owner's message")
                     self._event(c, "group.unpaused", "hnl-notify", {"group_id": group_id})
                 paused, streak = False, 0
-            elif not paused:
+            elif not paused and not watching:
                 streak += 1
             msg_id = self._add_message(c, group_id, author, member_id, text)
             self._event(c, "group.message", "hnl-notify",
                         {"group_id": group_id, "message_id": msg_id, "author": author, "member_id": member_id})
-            newly_paused = not owner and not paused and streak >= g["cap"]
+            newly_paused = not owner and not paused and not watching and streak >= g["cap"]
             skip = paused or newly_paused
             woken: list[str] = []
             for r in c.execute("SELECT id FROM chat_members WHERE group_id=? AND left_at IS NULL AND id IS NOT ?"
@@ -264,12 +270,55 @@ class Chat:
                                   f"paused after {streak} agent messages; waiting for the owner")
                 self._event(c, "group.paused", "hnl-notify", {"group_id": group_id, "streak": streak})
                 pause_note = (g["host"], g["folder"], streak, msg_id)
+                c.execute("UPDATE chat_groups SET paused_at=(SELECT created_at FROM chat_messages WHERE id=?)"
+                          " WHERE id=?", (msg_id, group_id))
             c.execute("UPDATE chat_groups SET paused=?, agent_streak=?, owner_seen_at=COALESCE(?, owner_seen_at)"
                       " WHERE id=?", (1 if paused else 0, streak, now if owner else None, group_id))
         self.svc._after_commit()
         if pause_note:
             self._push_pause(group_id, *pause_note)
         return {"message_id": msg_id, "woken": woken, "paused": paused}
+
+    def _open_group(self, c: sqlite3.Connection, group_id: str) -> sqlite3.Row:
+        g = c.execute("SELECT * FROM chat_groups WHERE id=?", (group_id,)).fetchone()
+        if g is None:
+            raise NotFound("group not found")
+        if g["state"] != "open":
+            raise Conflict("group is closed")
+        return g
+
+    def owner_watching(self, group_id: str) -> None:
+        """The owner has the thread open: for 30 s agent messages neither count towards the cap nor pause."""
+        with self.db.tx() as c:
+            self._open_group(c, group_id)
+            c.execute("UPDATE chat_groups SET owner_watch_until=?, agent_streak=0 WHERE id=?",
+                      (iso(self.now() + timedelta(seconds=WATCH_SECONDS)), group_id))
+
+    def pause_owner(self, group_id: str) -> None:
+        with self.db.tx() as c:
+            g = self._open_group(c, group_id)
+            if g["paused"]:
+                return
+            mid = self._add_message(c, group_id, "system", None, "paused by the owner")
+            self._event(c, "group.paused", "hnl-notify", {"group_id": group_id, "by": "owner"})
+            c.execute("UPDATE chat_groups SET paused=1, paused_at=(SELECT created_at FROM chat_messages WHERE id=?)"
+                      " WHERE id=?", (mid, group_id))
+
+    def resume_owner(self, group_id: str) -> None:
+        with self.db.tx() as c:
+            g = self._open_group(c, group_id)
+            if not g["paused"]:
+                return
+            self._add_message(c, group_id, "system", None, "resumed by the owner")
+            self._event(c, "group.unpaused", "hnl-notify", {"group_id": group_id, "by": "owner"})
+            c.execute("UPDATE chat_groups SET paused=0, agent_streak=0 WHERE id=?", (group_id,))
+            if g["paused_at"]:
+                c.execute("UPDATE chat_wakes SET state='pending', finished_at=NULL, retry_after=NULL"
+                          " WHERE state='skipped' AND reason='paused' AND member_id IN"
+                          " (SELECT id FROM chat_members WHERE group_id=?) AND message_id IN"
+                          " (SELECT id FROM chat_messages WHERE group_id=? AND created_at >= ?)",
+                          (group_id, group_id, g["paused_at"]))
+        self.svc._after_commit()
 
     def _push_pause(self, group_id: str, host: str, folder: str, streak: int, msg_id: str) -> None:
         targets = list(self.svc.config.server.chat_alert_targets)

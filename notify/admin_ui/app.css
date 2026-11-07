@@ -373,7 +373,7 @@ details.delivery summary { cursor: pointer; color: var(--muted); }
 .cm.sys { align-self: center; max-width: 94%; font-size: .85rem; color: var(--muted); border-style: dashed; padding: .1rem .6rem; text-align: center; }
 .cm .act { font-size: .8rem; color: var(--warn); margin-top: .15rem; }
 .chat-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; padding: .6rem; border-top: 1px solid var(--line); }
-.chat-compose[hidden], .chat-paused[hidden], .chat-readonly[hidden] { display: none; }
+.chat-compose[hidden], .chat-paused[hidden], .chat-watch[hidden], #chat-pausebtn[hidden], .chat-readonly[hidden] { display: none; }
 .chat-compose textarea {
   font: inherit; color: var(--ink); background: var(--paper); resize: vertical; min-height: 44px;
   border: 1px solid var(--line); border-radius: var(--radius-s); padding: .4rem .6rem;

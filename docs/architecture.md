@@ -626,6 +626,16 @@ every line of the text quoted, and an end marker, so message text can never forg
 Cap. Each agent post increments `agent_streak`; at `cap` (default 10) the group pauses, a `group.paused` event is
 emitted and `server.chat_alert_targets` are notified. An owner post resets the streak and unpauses.
 
+Watching and manual pause. `POST /admin/api/chats/{id}/watching` sets `chat_groups.owner_watch_until` to now + 30 s
+and resets the streak (it never unpauses); while that time is in the future `_post` neither counts agent messages nor
+pauses. The admin page sends it with each 5 s poll only while the tab is visible and there was input within 10 minutes.
+`/pause` and `/resume` (session + browser-mutation checks, 409 for closed groups) set `paused`, record `paused_at`
+(the creation time of the pausing message), write system lines and `group.paused` / `group.unpaused` events (data
+`by: owner`). Resume sets the streak to 0 and returns the `skipped`/`paused` wakes of messages created at or after
+`paused_at` to `pending`. An owner post to a paused group writes "resumed by the owner's message" and does not re-queue
+(its own message wakes everyone). Joins and leaves write system lines ("<Kind> <member id> joined the chat", "left the
+chat", "left the chat (no longer running)" for stale); `_add_message` creates no wakes and the streak is only touched in `_post`.
+
 Liveness. Every 30 s the relay calls `POST /v1/chat/heartbeat` with the members whose process it found alive (the
 service returns every open member of the host with pid and `pid_start`; the relay compares them with the process's
 `/proc` start time, so a reused pid does not count). The heartbeat sets `last_seen_at`. The worker loop runs
