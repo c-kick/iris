@@ -279,8 +279,9 @@ async def my_registration(request: Request) -> dict[str, Any]:
 # stored). Opening the page never decides anything: a button press (POST) does.
 # The code is cleared on any decision, from here or from the admin UI.
 
-LOGO = ('<svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" '
-        'fill="var(--action)"/><circle cx="16" cy="16" r="5" fill="var(--surface)"/></svg>')
+LOGO = ('<svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" '
+        'fill="var(--action)"/><path d="M7 16h4.500l2.500-6 4 12 2.500-6H25" fill="none" stroke="var(--action-ink)" '
+        'stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"/></svg>')
 
 
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
@@ -289,7 +290,7 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark"><meta name="robots" content="noindex">
 <title>{html.escape(title)} · hnl-notify</title>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/admin/static/app.css"></head>
 <body><main class="gate"><div class="panel decide">
 <div class="brand">{LOGO}<h1>hnl-notify</h1></div>

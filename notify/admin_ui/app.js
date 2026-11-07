@@ -11,17 +11,38 @@ if (section === "delivery") section = "providers"; // renamed page; old bookmark
 
 const SECTIONS = [
   ["overview", "Overview"],
-  ["providers", "Providers"],
+  ["activity", "Activity"],
+  ["scheduled", "Scheduled"],
+  ["chats", "Chats"],
   ["devices", "Devices"],
   ["people", "People & groups"],
   ["channels", "Channels"],
+  ["providers", "Providers"],
   ["access", "API access"],
   ["requests", "Access requests"],
-  ["scheduled", "Scheduled"],
-  ["activity", "Activity"],
-  ["chats", "Chats"],
   ["settings", "Settings"],
 ];
+
+// The menu is grouped by what you are doing: watching, choosing who is reached, or connecting things.
+const NAV_GROUPS = [
+  ["Watch", ["overview", "activity", "scheduled", "chats"]],
+  ["Reach", ["devices", "people", "channels"]],
+  ["Connect", ["providers", "access", "requests", "settings"]],
+];
+const ICONS = {
+  overview: '<circle cx="3" cy="8" r="1.6"/><circle cx="13" cy="8" r="1.6"/><path d="M4.6 8h6.8"/>',
+  activity: '<path d="M2 8h2.5l1.8-4.5 3 9L11 8h3"/>',
+  scheduled: '<circle cx="8" cy="8" r="5.5"/><path d="M8 4.8V8l2.2 1.4"/>',
+  chats: '<path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/>',
+  devices: '<rect x="4.5" y="1.8" width="7" height="12.4" rx="1.6"/><path d="M7 12h2"/>',
+  people: '<circle cx="6" cy="5.5" r="2.3"/><path d="M1.8 13c.3-2.4 2-3.7 4.2-3.7s3.9 1.300 4.200 3.700"/><path d="M10.5 3.600a2.200 2.200 0 0 1 0 3.800M12 9.600c1.200.5 2 1.600 2.200 3.400"/>',
+  channels: '<path d="M2 5.500h12M2 10.500h12M6 2.500l-1 11M11 2.500l-1 11"/>',
+  providers: '<path d="M2.500 10.500a3.500 3.500 0 0 1 .8-6.800 4.500 4.500 0 0 1 8.600 1A3 3 0 0 1 12.500 10.500z"/>',
+  access: '<circle cx="5.500" cy="8" r="2.800"/><path d="M8.300 8H14M12 8v2.200M10.200 8v1.500"/>',
+  requests: '<path d="M2.500 9.500l2-6h7l2 6v3h-11z"/><path d="M2.500 9.500h3.200l.8 1.500h3l.8-1.500h3.200"/>',
+  settings: '<path d="M2.500 4.500h6M11.500 4.500h2M2.500 11.500h2M7.500 11.500h6"/><circle cx="10" cy="4.500" r="1.500"/><circle cx="6" cy="11.500" r="1.500"/>',
+};
+const icon = (k) => `<svg viewBox="0 0 16 16" aria-hidden="true">${ICONS[k] || ""}</svg>`;
 
 // Pages without a menu entry of their own, reached from their parent (and by link): page -> parent
 const SUBPAGES = { mailbox: "providers" };
@@ -173,7 +194,7 @@ function until(iso) {
 }
 // ---- end zone helpers ----
 
-const logo = `<svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12" fill="var(--action)"/><circle cx="16" cy="16" r="5" fill="var(--surface)"/></svg>`;
+const logo = `<svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--action)"/><path d="M7 16h4.500l2.500-6 4 12 2.500-6H25" fill="none" stroke="var(--action-ink)" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 function fmtSize(bytes) {
   if (bytes < 1024) return `${bytes} bytes`;
@@ -355,13 +376,15 @@ function render() {
     return n ? ` <span class="badge" aria-label="${n} ${k === "scheduled" ? "scheduled" : k === "chats" ? "unread" : "waiting"}">${n}</span>` : "";
   };
   const current = SUBPAGES[section] || section; // a sub-page keeps its parent highlighted
-  const nav = SECTIONS.map(([k, l]) => `<button data-nav="${k}" ${k === current ? 'aria-current="page"' : ""}>${esc(l)}${badge(k)}</button>`).join("");
+  const label = Object.fromEntries(SECTIONS);
+  const nav = NAV_GROUPS.map(([g, keys]) => `<div class="nav-group" role="group" aria-label="${esc(g)}"><div class="nav-label" aria-hidden="true">${esc(g)}</div>${keys.map((k) =>
+    `<button data-nav="${k}" ${k === current ? 'aria-current="page"' : ""}>${icon(k)}<span>${esc(label[k])}</span>${badge(k)}</button>`).join("")}</div>`).join("");
   root.innerHTML = `
     <div class="shell">
       <aside class="side">
-        <div class="top"><div class="brand">${logo}<h1>hnl-notify</h1></div><button class="btn quiet signout" data-signout>Sign out</button></div>
+        <div class="top"><div class="brand">${logo}<div><h1>hnl-notify</h1><span class="sub">notification desk</span></div></div><button class="btn quiet signout" data-signout>Sign out</button></div>
         <nav class="nav" aria-label="Sections">${nav}</nav>
-        <div class="foot"><span>Version ${esc(state.version)}</span><button class="btn quiet" style="align-self:flex-start;padding-inline:0" data-signout>Sign out</button></div>
+        <div class="foot"><span>v${esc(state.version)}</span><button class="btn quiet" data-signout>Sign out</button></div>
       </aside>
       <main class="main" id="main"></main>
     </div>`;
@@ -370,6 +393,37 @@ function render() {
   root.querySelector('.nav [aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "center" });
   const main = document.getElementById("main");
   VIEWS[section](main);
+  addScope(main);
+}
+
+// The scope line under the page title: the exact slice of the system this page shows, in numbers.
+function scopeLine() {
+  const c = cfg();
+  const n = (obj) => Object.keys(obj || {}).length;
+  const b = (v, one, many) => `<b>${v}</b> ${v === 1 ? one : many}`;
+  const ready = Object.keys(c.devices).filter((d) => c.devices[d].enabled && state.devices[d]?.ready).length;
+  const parts = {
+    overview: [b(n(c.clients), "sender", "senders"), b(n(c.providers), "provider", "providers"), b(ready, "device ready", "devices ready")],
+    providers: [b(n(c.providers), "provider", "providers"), b(Object.keys(c.providers).filter((p) => state.providers[p]?.configured).length, "configured", "configured")],
+    mailbox: [`reply mailbox`],
+    devices: [b(n(c.devices), "device", "devices"), b(ready, "ready", "ready")],
+    people: [b(n(c.users), "person", "people"), b(n(c.groups), "group", "groups")],
+    channels: [b(n(c.channels), "channel", "channels")],
+    access: [b(n(c.clients), "token", "tokens")],
+    requests: [b(state.pending_registrations || 0, "waiting", "waiting")],
+    scheduled: [b(state.scheduled_count || 0, "waiting to send", "waiting to send")],
+    activity: ["newest first"],
+    chats: ["agent group chats"],
+    settings: [`version <b>${esc(state.version)}</b>`],
+  }[section] || [];
+  return parts.join(" · ");
+}
+
+function addScope(main) {
+  const h = main.querySelector(".section-head h2");
+  if (!h) return;
+  const line = scopeLine();
+  if (line) h.insertAdjacentHTML("afterend", `<div class="scope">${line}</div>`);
 }
 
 // Mutations return the new state; re-render with it.
@@ -435,8 +489,8 @@ const VIEWS = {
         <div class="grow"><div class="title">${state.pending_registrations === 1 ? "An app is" : `${state.pending_registrations} apps are`} waiting for access</div>
         <div class="sub">Approve or deny it before it can send notifications.</div></div>
         <div class="actions"><button class="btn primary" data-go="requests">Review</button></div></div></div>` : ""}
-      <div class="section-head"><h2>Delivery path</h2><p>Where a notification goes after a service sends it.</p></div>
-      <div class="path">
+      <div class="section-head"><h2>Overview</h2><p>Where a notification goes after a service sends it, and how much has gone through.</p></div>
+      <div class="path" role="group" aria-label="Delivery path">
         <div class="hop" style="${wire(senderLamp)}"><div class="kind">Senders</div>
           <div class="name"><span class="lamp ${senderLamp}"></span><span class="label">${clients.length} API ${clients.length === 1 ? "client" : "clients"}</span></div>
           <div class="note">${clients.length ? esc(clients.slice(0, 3).join(", ")) + (clients.length > 3 ? "…" : "") : `<button class="btn quiet" style="padding:0" data-go="access">Create a token</button>`}</div></div>
@@ -453,6 +507,13 @@ const VIEWS = {
             const ok = d.enabled && state.devices[n]?.ready;
             return `<div class="name"><span class="lamp ${ok ? "ok" : d.enabled ? "bad" : ""}"></span><span class="label">${esc(d.description || n)}</span></div>`;
           }).join("") : `<div class="name"><span class="lamp ${devLamp}"></span><span class="label">None yet</span></div><div class="note"><button class="btn quiet" style="padding:0" data-go="devices">Add a device</button></div>`}</div></div>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi ${pending ? "go" : ""}"><div class="v">${pending + (state.stats.deliveries_by_state.sending || 0)}</div><div class="l">in the queue now</div></div>
+        <div class="kpi"><div class="v">${["dispatched", "delivered", "acknowledged"].reduce((a, k) => a + (state.stats.deliveries_by_state[k] || 0), 0).toLocaleString()}</div><div class="l">accepted or delivered, all time</div></div>
+        <div class="kpi ${(state.stats.deliveries_by_state.failed || 0) + (state.stats.deliveries_by_state.expired || 0) ? "bad" : ""}"><div class="v">${((state.stats.deliveries_by_state.failed || 0) + (state.stats.deliveries_by_state.expired || 0)).toLocaleString()}</div><div class="l">failed or expired, all time</div></div>
+        <div class="kpi ${state.scheduled_count ? "warn" : ""}"><div class="v">${state.scheduled_count || 0}</div><div class="l">scheduled to send</div></div>
       </div>
 
       <div class="block">
