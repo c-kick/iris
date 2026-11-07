@@ -971,6 +971,19 @@ async def chat_history_deny(rid: str, request: Request, client: Client = Depends
     return _history_decision(request, rid, client, False)
 
 
+@router.post("/api/chats/messages/{message_id}/release", status_code=204)
+async def chat_release_claim(message_id: str, request: Request, client: Client = Depends(admin)) -> Response:
+    require_session(client)
+    _check_browser_mutation(request)
+    try:
+        _svc(request).chat.release_claim_owner(message_id)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Invalid as e:
+        raise HTTPException(409, str(e)) from e
+    return Response(status_code=204)
+
+
 @router.post("/api/chats/{group_id}/watching", status_code=204)
 async def chat_watching(group_id: str, request: Request, client: Client = Depends(admin)) -> Response:
     return _chat_owner_action(request, group_id, client, "owner_watching")

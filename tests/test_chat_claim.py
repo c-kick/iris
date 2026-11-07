@@ -139,3 +139,32 @@ def test_admin_shows_claimed_by_to_session_and_bearer(ctx):  # noqa: F811
     sess = {m["id"]: m for m in b.get(url).json()["messages"]}[req]
     bear = {m["id"]: m for m in httpx.get(f"{srv.url}{url}", headers=bearer).json()["messages"]}[req]
     assert sess["claimed_by"] == by and bear["claimed_by"] == by and "text" not in bear
+
+
+def test_owner_release_clears_claim_and_others_can_claim(svc):
+    a, b, c, req = setup(svc)
+    svc.chat.claim(b["member_handle"], req)
+    assert svc.chat.release_claim_owner(req) == {"released": True}
+    assert sysnotes(svc, a["group_id"])[-1] == f"{req} released by the owner"
+    assert svc.chat.release_claim_owner(req) == {"released": False}  # no-op, no extra line
+    assert sysnotes(svc, a["group_id"]).count(f"{req} released by the owner") == 1
+    assert svc.chat.claim(c["member_handle"], req)["claimed"] is True
+
+
+def test_owner_release_route(ctx):  # noqa: F811
+    import httpx
+    srv, b, bearer = ctx
+    j = _join(srv, "host-a", "/srv/one", "s1")
+    j2 = _join(srv, "host-a", "/srv/one", "s2")
+    req = srv.service.chat.post_owner(j["group_id"], "task")["message_id"]
+    srv.service.chat.claim(j2["member_handle"], req)
+    url = f"/admin/api/chats/messages/{req}/release"
+    assert httpx.post(f"{srv.url}{url}", headers={**bearer, **H}).status_code == 403
+    assert b.post(url).status_code == 403  # no browser header
+    assert b.post("/admin/api/chats/messages/msg_nope/release", headers=H).status_code == 404
+    assert b.post(url, headers=H).status_code == 204
+    sess = {m["id"]: m for m in b.get(f"/admin/api/chats/{j['group_id']}/messages").json()["messages"]}[req]
+    assert "claimed_by" not in sess
+    srv.service.chat.leave(j["member_handle"], "ended")
+    srv.service.chat.leave(j2["member_handle"], "ended")
+    assert b.post(url, headers=H).status_code == 409

@@ -142,3 +142,24 @@ def test_undeliverable_older_wake_stays_readable(svc):
         c.execute("UPDATE chat_wakes SET state='claimed', waiter_id='w' WHERE id=?", (w["id"],))
     svc.chat.confirm(AGENT, w["id"], "w")
     assert [m["id"] for m in said(svc.chat.read(x["member_handle"]))][0] == old
+
+
+def test_old_skipped_wake_does_not_freeze_the_mark(svc):
+    x, y = join(svc, "s1"), join(svc, "s2")
+    old = svc.chat.post(y["member_handle"], "old")["message_id"]
+    with svc.db.tx() as c:
+        c.execute("UPDATE chat_wakes SET state='skipped', reason='undeliverable' WHERE message_id=? AND member_id=?",
+                  (old, x["member_id"]))
+    assert [m["id"] for m in said(svc.chat.read(x["member_handle"]))] == [old]  # the mark moves past it
+    news = [svc.chat.post(y["member_handle"], f"new{i}")["message_id"] for i in (1, 2)]
+    got = []
+    while len(got) < 2:
+        g = asyncio.run(svc.chat.claim_host(AGENT, f"c{len(got)}", 0))
+        assert g is not None
+        if g["member_id"] == x["member_id"]:
+            svc.chat.confirm(AGENT, g["wake_id"], f"c{len(got)}")
+            got.append(g["message_id"])
+        else:  # y is not woken by its own posts; this branch only guards the claim order
+            raise AssertionError("unexpected wake")
+    assert got == news
+    assert svc.chat.read(x["member_handle"])["messages"] == []

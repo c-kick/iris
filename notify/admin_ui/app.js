@@ -1692,7 +1692,7 @@ function chatMessageHtml(m, canReply = false) {
   if (w.pending) notes.push(`waiting for ${w.pending}`);
   return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${esc(CHAT_WHO[m.author] || m.author)} <small>${esc(when(m.created_at))}</small></div>
     ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
-    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}</div>` : ""}${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}</div>`;
+    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}</div>`;
 }
 
 // an earlier session of the folder: one bar (expandable), or one small line when nobody said anything
@@ -1797,6 +1797,13 @@ async function chatOpen(el, key, keep = false) {
   };
   replying.querySelector("#chat-reply-cancel").onclick = () => { setReply(null); pane.querySelector("#chat-text").focus(); };
   box.onclick = async (e) => {
+    const rel = e.target.closest("[data-release]");
+    if (rel) {
+      rel.disabled = true;
+      try { await api("POST", `/chats/messages/${encodeURIComponent(rel.dataset.release)}/release`); await chatTick(el); }
+      catch (ex) { toast(ex.message); rel.disabled = false; }
+      return;
+    }
     const rb = e.target.closest("[data-reply]");
     if (rb) { setReply(rb.dataset.reply); pane.querySelector("#chat-text").focus(); return; }
     const bar = e.target.closest(".chat-earlier-bar");

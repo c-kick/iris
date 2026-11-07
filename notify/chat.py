@@ -277,6 +277,8 @@ class Chat:
         member = self.member_from_handle(member_handle)
         label = f"{member['kind'].capitalize()} {member['id']}"
         with self.db.tx() as c:
+            if c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL", (member["id"],)).fetchone() is None:
+                raise MemberGone()
             msg = c.execute("SELECT * FROM chat_messages WHERE id=? AND group_id=?",
                             (message_id, member["group_id"])).fetchone() if isinstance(message_id, str) else None
             if (msg is None or msg["author"] == "system" or msg["author_member_id"] == member["id"]):
@@ -297,6 +299,8 @@ class Chat:
     def unclaim(self, member_handle: str, message_id: str) -> dict[str, Any]:
         member = self.member_from_handle(member_handle)
         with self.db.tx() as c:
+            if c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL", (member["id"],)).fetchone() is None:
+                raise MemberGone()
             cur = c.execute("UPDATE chat_messages SET claimed_by_member_id=NULL, claimed_at=NULL WHERE id=? AND group_id=?"
                             " AND claimed_by_member_id=?", (message_id if isinstance(message_id, str) else "",
                                                             member["group_id"], member["id"]))
@@ -305,6 +309,22 @@ class Chat:
             self._add_message(c, member["group_id"], "system", None,
                               f"{member['kind'].capitalize()} {member['id']} released {message_id}")
         return {"released": True, "message_id": message_id}
+
+    def release_claim_owner(self, message_id: str) -> dict[str, Any]:
+        """The owner clears any claim on a message (no-op when unclaimed)."""
+        with self.db.tx() as c:
+            msg = c.execute("SELECT m.*, g.state AS gstate FROM chat_messages m JOIN chat_groups g ON g.id=m.group_id"
+                            " WHERE m.id=?", (message_id,)).fetchone()
+            if msg is None:
+                raise NotFound("message not found")
+            if msg["gstate"] != "open":
+                raise Invalid("group is closed")
+            if msg["claimed_by_member_id"]:
+                c.execute("UPDATE chat_messages SET claimed_by_member_id=NULL, claimed_at=NULL WHERE id=?",
+                          (message_id,))
+                self._add_message(c, msg["group_id"], "system", None, f"{message_id} released by the owner")
+                return {"released": True}
+        return {"released": False}
 
     # ------------------------------------------------------------------ post / read
     def post(self, member_handle: str, text: str, in_reply_to: str | None = None) -> dict[str, Any]:
@@ -695,8 +715,9 @@ class Chat:
             w2 = c.execute("SELECT w.member_id, (SELECT rowid FROM chat_messages WHERE id=w.message_id) AS rid"
                            " FROM chat_wakes w WHERE w.id=?", (wake_id,)).fetchone()
             low = c.execute("SELECT MIN(m.rowid) FROM chat_wakes w JOIN chat_messages m ON m.id=w.message_id"
-                            " WHERE w.member_id=? AND w.state IN ('pending','claimed','skipped')",
-                            (w2["member_id"],)).fetchone()[0]
+                            " WHERE w.member_id=? AND w.state IN ('pending','claimed','skipped')"
+                            " AND m.rowid > COALESCE((SELECT last_read_rowid FROM chat_members WHERE id=?), 0)",
+                            (w2["member_id"], w2["member_id"])).fetchone()[0]
             upto = w2["rid"] if low is None else min(w2["rid"], low - 1)
             c.execute("UPDATE chat_members SET last_read_rowid=MAX(COALESCE(last_read_rowid, 0), ?) WHERE id=?",
                       (upto, w2["member_id"]))

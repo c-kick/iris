@@ -620,7 +620,8 @@ conditional `UPDATE ... WHERE claimed_by_member_id IS NULL` inside the posting-s
 one concurrent claimer wins; the claimable messages are those of the owner or another member of the same group, never
 system lines or the caller's own. Claim, unclaim and leaving (one line per released message) write wake-less system
 lines, so they neither wake anybody nor count towards the cap. Tools `group_claim`/`group_unclaim`; the admin messages
-endpoint returns `claimed_by` ("Kind member_id", no text) for sessions and bearer admins.
+endpoint returns `claimed_by` ("Kind member_id", no text) for sessions and bearer admins. The owner clears a claim with `Chat.release_claim_owner` (`POST /admin/api/chats/messages/{id}/release`, session +
+browser header only; 404 unknown, 409 closed group); claims have no expiry.
 
 Read cursor. `chat_members.last_read_rowid` (additive; existing members are backfilled to their group's newest message)
 is set to the group's newest message when a member joins, raised when a wake is confirmed, and moved to the newest
