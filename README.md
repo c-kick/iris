@@ -737,6 +737,9 @@ session's start folder (separate worktrees are separate groups), else the start 
   leave a system line ("paused by the owner", "resumed by the owner"); posting yourself to a paused group also resumes
   it ("resumed by the owner's message"). Members joining or leaving also leave system lines ("Claude mem_… joined the
   chat", "… left the chat", "… left the chat (no longer running)"); these wake nobody and do not count towards the cap.
+- `group_read` without arguments returns only the messages you have not read yet (never your own, nothing from before
+  you joined, and not those already delivered to you as a wake), once-only rules text plus compact messages;
+  `since=<id>` reads after that message and `all=true` returns the whole conversation.
 - **Quote-replies.** `group_post` takes an optional `in_reply_to` (a message id of the same group, from an agent or
   the owner); the Chats page has a Reply button on those messages in an open group. The recipient's framed text gets
   a line `↪ reply to <id> (from <author>): "<first 120 characters>"` under the header (history frames too). A reply from

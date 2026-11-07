@@ -615,6 +615,12 @@ Tables (schema 3):
   decision or expiry), `message_id` (the system line the admin page hangs its buttons on), `created_at`, `decided_at`,
   `used_at`. Created additively (`Database._add_chat_history`), also for databases that already have the chat tables.
 
+Read cursor. `chat_members.last_read_rowid` (additive; existing members are backfilled to their group's newest message)
+is set to the group's newest message when a member joins, raised when a wake is confirmed, and moved to the newest
+message by every `read()`. `read()` returns messages after it, minus the member's own, in a compact form: the agent
+rules once at top level and per message only the header, reply lines and quoted body (`frame(..., rules=False)`); wake
+delivery still uses the full frame. `since` and `all` override the cursor.
+
 Replies. `chat_messages.in_reply_to` (nullable, added by `_add_missing_columns`, schema stays 3) holds the id of a
 message of the same group written by claude, codex or the owner; `_post` validates it inside the posting transaction
 (`Invalid("in_reply_to must be a message in your group")`). An owner reply to an agent's message creates a wake only for

@@ -314,7 +314,11 @@ class Database:
         self._add_chat_history()
         self._add_missing_columns({"chat_wakes": {"attempts": "INTEGER NOT NULL DEFAULT 0", "retry_after": "TEXT"},
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT"},
-                                  "chat_messages": {"in_reply_to": "TEXT"}})
+                                  "chat_messages": {"in_reply_to": "TEXT"},
+                                  "chat_members": {"last_read_rowid": "INTEGER"}})
+        # members from before 0.13.0's read cursor owe nothing: start them at their group's newest message
+        self.conn.execute("UPDATE chat_members SET last_read_rowid=(SELECT COALESCE(MAX(rowid), 0) FROM chat_messages"
+                          " WHERE group_id=chat_members.group_id) WHERE last_read_rowid IS NULL")
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_scheduled ON notifications(status, send_at)")

@@ -91,17 +91,19 @@ def reply_line(quoted_id: str, quoted_desc: str, quoted_text: str) -> str:
     return f"\u21aa reply to {quoted_id} (from {_clean_desc(quoted_desc)}):\n{QUOTE}{reply_excerpt(quoted_text)}"
 
 
-def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, reply: str | None = None) -> str:
+def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, reply: str | None = None,
+          rules: bool = True) -> str:
     """The text a recipient sees. Every line of the author's text is quoted, so it can never contain a header."""
     mid = msg["id"]
     author = msg["author"]
-    rules = OWNER_RULES if author == "owner" else SYSTEM_RULES if author == "system" else AGENT_RULES
+    rules_text = OWNER_RULES if author == "owner" else SYSTEM_RULES if author == "system" else AGENT_RULES
     desc = _clean(author_desc, keep_newlines=False)
     body = _clean(msg["text"], keep_newlines=True).split("\n")
     lines = [f"[hnl-notify group chat · {mid} · {sent_at} · from {desc}]"]
     if reply:
         lines.append(reply)
-    lines.append(rules)
+    if rules:
+        lines.append(rules_text)
     lines += [QUOTE + line for line in body]
     lines.append(f"[end {mid}]")
     return "\n".join(lines)
@@ -224,6 +226,9 @@ class Chat:
                 self._event(c, "group.member_joined", client.id,
                             {"group_id": group_id, "member_id": member_id, "kind": kind})
                 self._add_message(c, group_id, "system", None, f"{kind.capitalize()} {member_id} joined the chat")
+                # a new member owes nothing older than its own join notice
+                c.execute("UPDATE chat_members SET last_read_rowid=(SELECT MAX(rowid) FROM chat_messages"
+                          " WHERE group_id=?) WHERE id=?", (group_id, member_id))
             members = self._members(c, group_id)
         self.svc._after_commit()
         return {"group_id": group_id, "member_id": member_id, "member_handle": handle, "members": members}
@@ -552,22 +557,37 @@ class Chat:
             raise NotFound("message not found")
         return frame(msg, self.author_desc(msg), msg["created_at"], self.reply_line_for(msg))
 
-    def read(self, member_handle: str, since: str | None = None) -> dict[str, Any]:
+    def read(self, member_handle: str, since: str | None = None, all: bool = False) -> dict[str, Any]:  # noqa: A002
+        """group_read. Default: the messages of others you have not read yet (a new member owes nothing from before
+        it joined; a delivered wake counts as read). since=<id>: those after that message. all: the whole group,
+        including your own. Every call moves the read mark to the newest message."""
         member = self.member_from_handle(member_handle)
         gid = member["group_id"]
-        sql = "SELECT * FROM chat_messages WHERE group_id=?"
-        params: list[Any] = [gid]
-        if since:
-            sql += " AND rowid > COALESCE((SELECT rowid FROM chat_messages WHERE id=? AND group_id=?), 0)"
-            params += [since, gid]
-        rows = self.db.query(sql + " ORDER BY rowid", params)
-        with self.db._lock:
-            members = self._members(self.db.conn, gid)
-        return {"messages": [{"id": r["id"], "author": r["author"], "author_desc": self.author_desc(r),
-                              "created_at": r["created_at"], "text": frame(r, self.author_desc(r), r["created_at"],
-                                            self.reply_line_for(r))}
-                             for r in rows],
-                "members": members}
+        with self.db.tx() as c:
+            cur = c.execute("SELECT last_read_rowid FROM chat_members WHERE id=?", (member["id"],)).fetchone()
+            sql = "SELECT rowid AS rid, * FROM chat_messages WHERE group_id=?"
+            params: list[Any] = [gid]
+            if all:
+                pass
+            else:
+                if since:
+                    sql += " AND rowid > COALESCE((SELECT rowid FROM chat_messages WHERE id=? AND group_id=?), 0)"
+                    params += [since, gid]
+                else:
+                    sql += " AND rowid > ?"
+                    params.append((cur["last_read_rowid"] if cur else 0) or 0)
+                sql += " AND author_member_id IS NOT ?"
+                params.append(member["id"])
+            rows = c.execute(sql + " ORDER BY rowid", params).fetchall()
+            c.execute("UPDATE chat_members SET last_read_rowid=MAX(COALESCE(last_read_rowid, 0),"
+                      " (SELECT COALESCE(MAX(rowid), 0) FROM chat_messages WHERE group_id=?)) WHERE id=?",
+                      (gid, member["id"]))
+            members = self._members(c, gid)
+            msgs = [{"id": r["id"], "author": r["author"], "author_desc": self.author_desc(r),
+                     "created_at": r["created_at"], "in_reply_to": r["in_reply_to"],
+                     "text": frame(r, self.author_desc(r), r["created_at"], self.reply_line_for(r), rules=False)}
+                    for r in rows]
+        return {"rules": AGENT_RULES, "messages": msgs, "members": members, "unread_only": not all}
 
     # ------------------------------------------------------------------ waking (host relay)
     def _host(self, client: Client) -> str:
@@ -627,6 +647,10 @@ class Chat:
                 raise NotFound("wake not found")
             c.execute("UPDATE chat_wakes SET state='delivered', finished_at=? WHERE id=?",
                       (iso(self.now()), wake_id))
+            # a message delivered as a wake counts as read
+            c.execute("UPDATE chat_members SET last_read_rowid=MAX(COALESCE(last_read_rowid, 0),"
+                      " COALESCE((SELECT rowid FROM chat_messages WHERE id=(SELECT message_id FROM chat_wakes"
+                      " WHERE id=?)), 0)) WHERE id=(SELECT member_id FROM chat_wakes WHERE id=?)", (wake_id, wake_id))
         self.svc._after_commit()
 
     def release(self, client: Client, wake_id: str, waiter: str) -> None:

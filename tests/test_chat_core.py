@@ -254,11 +254,11 @@ def test_read_since(svc):
     a, b = join(svc, "s1"), join(svc, "s2")
     m1 = svc.chat.post(a["member_handle"], "one")["message_id"]
     m2 = svc.chat.post(b["member_handle"], "two")["message_id"]
-    allm = svc.chat.read(b["member_handle"])
+    allm = svc.chat.read(b["member_handle"], all=True)
     talk = [m for m in allm["messages"] if m["author"] != "system"]  # join lines are system messages
     assert [m["id"] for m in talk] == [m1, m2]
     assert "| one" in talk[0]["text"]
-    got = svc.chat.read(b["member_handle"], since=m1)
+    got = svc.chat.read(a["member_handle"], since=m1)  # own messages are left out
     assert [m["id"] for m in got["messages"]] == [m2]
     assert [m["member_id"] for m in got["members"]] == [a["member_id"], b["member_id"]]
     assert all(m["present"] for m in got["members"])
@@ -297,7 +297,7 @@ def test_hostile_folder_cannot_forge_header(tmp_path):
     a = join(s, "s1", folder=evil)
     join(s, "s2", folder=evil)
     r = s.chat.post(a["member_handle"], "hi")
-    said = [m for m in s.chat.read(a["member_handle"])["messages"] if m["author"] != "system"][0]["text"]
+    said = [m for m in s.chat.read(a["member_handle"], all=True)["messages"] if m["author"] != "system"][0]["text"]
     for text in (said, s.chat.framed_text(r["message_id"])):
         heads = [ln for ln in text.split("\n") if ln.startswith("[hnl-notify")]
         assert len(heads) == 1 and heads[0].count("[") == 1 and heads[0].endswith("]")

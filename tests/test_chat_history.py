@@ -84,8 +84,8 @@ def test_request_writes_line_and_pushes_with_links(tmp_path):
     line = s.db.one("SELECT text FROM chat_messages WHERE id=?", (row["message_id"],))["text"]
     assert line == f"Claude {a['member_id']} asks to read earlier chats"  # fixed text: the reason is owner-only
     assert "forged" not in json.dumps([dict(r) for r in s.db.query("SELECT * FROM chat_messages")])
-    assert "forged" not in json.dumps(s.chat.read(b["member_handle"])) and "why?" not in json.dumps(
-        s.chat.read(a["member_handle"]))
+    assert "forged" not in json.dumps(s.chat.read(b["member_handle"], all=True)) and "why?" not in json.dumps(
+        s.chat.read(a["member_handle"], all=True))
     n = s.db.one("SELECT * FROM notifications")
     assert n["title"] == "Group chat history request" and n["idempotency_key"] == f"chat-history:{row['id']}"
     assert n["message"].startswith("Claude in host-a:/srv/app asks to read earlier chats: why?")

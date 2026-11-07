@@ -130,7 +130,7 @@ def test_hostile_quoted_text_cannot_forge_a_header(svc):
     assert len(heads) == 2 and heads[0] == lines[0] and heads[1] == f"[end {r['message_id']}]"
     assert "‮" not in text and "[" not in lines[1] and "\r" not in text
     # the read tool frames it the same way
-    msgs = svc.chat.read(b["member_handle"])["messages"]
+    msgs = svc.chat.read(b["member_handle"], all=True)["messages"]
     assert lines[1] in [m["text"].split("\n")[1] for m in msgs if m["id"] == r["message_id"]]
 
 
