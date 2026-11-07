@@ -20,6 +20,7 @@ from . import __version__
 from .admin import router as admin_router
 from .api import router
 from .auth import Authenticator
+from .chat_api import router as chat_router
 from .bodylimit import BodyLimit
 from .config import NotifyConfig
 from .core import NotifyService
@@ -132,6 +133,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
     app.include_router(admin_router)
     app.include_router(registration_router)
     app.include_router(webpush_router)
+    app.include_router(chat_router)
     app.mount("/admin/static", StaticFiles(directory=ADMIN_UI), name="admin-static")
     for route in mcp.streamable_http_app().routes:
         app.router.routes.append(route)
