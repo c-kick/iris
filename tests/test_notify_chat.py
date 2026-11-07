@@ -138,7 +138,7 @@ def test_start_writes_state_0600_and_context(chatlive, tmp_path, plain):
 def test_end_leaves_and_removes_state(chatlive, tmp_path):
     e = Env(tmp_path, chatlive)
     h = hook(tmp_path)
-    assert e.run("start", "claude", h).returncode == 0
+    assert e.run("start", "claude", h, CLAUDE_PID=str(os.getpid())).returncode == 0
     assert live_count(chatlive) == 1
     p = e.run("end", "claude", h)
     assert p.returncode == 0 and p.stderr == ""
@@ -149,7 +149,7 @@ def test_end_leaves_and_removes_state(chatlive, tmp_path):
 def test_end_fast(chatlive, tmp_path):
     e = Env(tmp_path, chatlive)
     h = hook(tmp_path)
-    e.run("start", "claude", h)
+    e.run("start", "claude", h, CLAUDE_PID=str(os.getpid()))
     e.url = "http://127.0.0.1:9"
     p = e.run("end", "claude", h)
     assert p.returncode == 0 and p.elapsed < 1.5 and "notify-chat" in p.stderr
@@ -159,7 +159,7 @@ def test_end_fast(chatlive, tmp_path):
 def test_start_unreachable_exits_0(chatlive, tmp_path):
     e = Env(tmp_path, chatlive)
     e.url = "http://127.0.0.1:9"
-    p = e.run("start", "claude", hook(tmp_path))
+    p = e.run("start", "claude", hook(tmp_path), CLAUDE_PID=str(os.getpid()))
     assert p.returncode == 0 and p.stdout == "" and p.stderr.count("\n") == 1
 
 
@@ -199,9 +199,35 @@ def test_skip_codex_exec(chatlive, tmp_path):
 def test_token_never_printed(chatlive, tmp_path):
     e = Env(tmp_path, chatlive)
     h = hook(tmp_path)
-    outs = [e.run("start", "claude", h), e.run("end", "claude", h)]
+    pid = str(os.getpid())
+    outs = [e.run("start", "claude", h, CLAUDE_PID=pid), e.run("end", "claude", h)]
     e.tf.write_text("wrong-token-xyz\n")
-    outs += [e.run("start", "claude", h, ), ]
+    outs += [e.run("start", "claude", h, CLAUDE_PID=pid)]
     assert "wrong-token-xyz" not in outs[-1].stdout + outs[-1].stderr and outs[-1].stderr
     for p in outs[:2]:
         assert CHAT_TOKENS["hosta"] not in p.stdout + p.stderr
+
+
+def _skipped(p, e, srv):
+    assert p.returncode == 0 and p.stdout == "" and "session process not found" in p.stderr
+    assert p.stderr.count("\n") == 1 and live_count(srv) == 0 and not e.state.exists()
+
+
+def test_start_claude_without_pid_skips(chatlive, tmp_path):
+    e = Env(tmp_path, chatlive)
+    _skipped(e.run("start", "claude", hook(tmp_path)), e, chatlive)
+    _skipped(e.run("start", "claude", hook(tmp_path), CLAUDE_PID="notanumber"), e, chatlive)
+    _skipped(e.run("start", "claude", hook(tmp_path), CLAUDE_PID="999999999"), e, chatlive)
+
+
+def test_start_codex_without_ancestor_skips(chatlive, tmp_path):
+    e = Env(tmp_path, chatlive)
+    _skipped(e.run("start", "codex", hook(tmp_path)), e, chatlive)
+
+
+def test_ignores_http_proxy(chatlive, tmp_path):
+    e = Env(tmp_path, chatlive)
+    p = e.run("start", "claude", hook(tmp_path), CLAUDE_PID=str(os.getpid()),
+              http_proxy="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9", no_proxy="")
+    assert p.returncode == 0 and p.stderr == "", p.stderr
+    assert live_count(chatlive) == 1

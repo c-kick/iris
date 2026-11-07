@@ -37,7 +37,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # the bearer token never follows a redirect
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)  # never via a proxy
 
 
 def group_folder(cwd: str) -> str:
@@ -192,14 +192,13 @@ def do_start(args: argparse.Namespace, hook: dict[str, Any]) -> int:
         pid = codex_pid(os.getppid())
         if transcript_is_exec(hook.get("transcript_path")) or codex_is_exec(pid):
             return 0
+    start = pid_start(pid) if pid else None
+    if not pid or not start:
+        print("notify-chat: session process not found; not joining the group chat", file=sys.stderr)
+        return 0
     folder = group_folder(str(hook.get("cwd") or os.getcwd()))
     base, token = settings(args.url, args.token_file)
-    body: dict[str, Any] = {"kind": agent, "session_id": sid, "folder": folder}
-    if pid:
-        body["pid"] = pid
-        start = pid_start(pid)
-        if start:
-            body["pid_start"] = start
+    body: dict[str, Any] = {"kind": agent, "session_id": sid, "folder": folder, "pid": pid, "pid_start": start}
     status, res = post(base, token, "/v1/chat/join", body, START_TIMEOUT)
     if status != 201 or not isinstance(res, dict) or not res.get("member_handle"):
         raise Fatal(f"join failed: HTTP {status}")
