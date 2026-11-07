@@ -68,7 +68,10 @@ def demo_config() -> NotifyConfig:
         "clients": {n: {"token_sha256": hash_token(f"dev-{n}"), "scopes": s, "description": d} for n, s, d in [
             ("home-assistant", ["send", "read"], "Automations and rest_command"),
             ("node-red", ["send"], None),
-            ("agents", ["send", "read", "manage"], "Claude Code and Codex via MCP")]},
+            ("agents", ["send", "read", "manage"], "Claude Code and Codex via MCP")]}
+        | {"agent-a": {"token_sha256": hash_token("dev-agent-a"), "scopes": ["chat"], "chat_host": "host-a",
+                       "description": "Agent sessions on host-a"},
+           "agent-b": {"token_sha256": hash_token("dev-agent-b"), "scopes": ["chat"], "chat_host": "host-b"}},
     })
 
 
@@ -109,6 +112,45 @@ def seed_inbound(app) -> None:
                                           "sender_mismatch"))
 
 
+def seed_chats(app) -> None:
+    """Three group chats: an open one with Claude and Codex (incl. a notice line), a paused open one, a closed one."""
+    chat = app.state.service.chat
+    a, b = Client("agent-a", frozenset({Scope.chat})), Client("agent-b", frozenset({Scope.chat}))
+
+    def join(client, kind, sid, folder):
+        return chat.join(client, kind=kind, session_id=sid, folder=folder, pid=None, pid_start=None)
+
+    cl = join(a, "claude", "demo-claude", "/srv/app")
+    cx = join(a, "codex", "demo-codex", "/srv/app")
+    chat.post(cx["member_handle"], "Heads-up: the API renames `reply_handle` to `thread_key`. Your client reads the old name.")
+    chat.post(cl["member_handle"], "I have the client open, I'll take it.\nCodex, are you fine with that?")
+    chat.post(cx["member_handle"], "Yes, go ahead. <b>Not bold</b>: this stays text.")
+    with chat.db.tx() as c:
+        chat._add_message(c, cl["group_id"], "system", None, "Codex reconnected")
+    chat.post(cl["member_handle"], "Done: the client reads both names, tests pass.")
+    chat.post_owner(cl["group_id"], "Thanks. Commit it, don't deploy.")
+    # a paused group: the agents hit the cap, the last message went to nobody
+    p1 = join(b, "claude", "demo-claude-2", "/srv/tools")
+    p2 = join(b, "codex", "demo-codex-2", "/srv/tools")
+    chat.post(p1["member_handle"], "Should we split the importer?")
+    with chat.db.tx() as c:
+        c.execute("UPDATE chat_groups SET paused=1 WHERE id=?", (p1["group_id"],))
+        chat._add_message(c, p1["group_id"], "system", None, "paused after 10 agent messages; waiting for the owner")
+    chat.post(p2["member_handle"], "Yes, but not before the release.")
+    # a closed group
+    c1 = join(a, "claude", "demo-claude-3", "/srv/old-project")
+    chat.post(c1["member_handle"], "Nothing left to do here.")
+    chat.leave(c1["member_handle"], "ended")
+
+
+async def keep_demo_chats_alive(app) -> None:
+    """The worker marks members without a heartbeat as stale after 3 minutes; the demo has no relay."""
+    while True:
+        await asyncio.sleep(30)
+        with app.state.service.db.tx() as c:
+            c.execute("UPDATE chat_members SET last_seen_at=? WHERE left_at IS NULL", (now_iso(),))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", required=True)
@@ -132,6 +174,9 @@ def main() -> None:
         if args.demo and not app.state.service.list(Client("dev", frozenset({Scope.admin})), limit=1):
             await seed_history(f"http://127.0.0.1:{args.port}")
             seed_inbound(app)
+            seed_chats(app)
+        if args.demo:
+            asyncio.create_task(keep_demo_chats_alive(app))
         print(f"hnl-notify dev server on http://127.0.0.1:{args.port}/admin", flush=True)
         await task
 

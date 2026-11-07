@@ -19,6 +19,7 @@ const SECTIONS = [
   ["requests", "Access requests"],
   ["scheduled", "Scheduled"],
   ["activity", "Activity"],
+  ["chats", "Chats"],
   ["settings", "Settings"],
 ];
 
@@ -350,8 +351,8 @@ async function refresh() {
 function render() {
   if (!VIEWS[section]) section = "overview";
   const badge = (k) => {
-    const n = k === "requests" ? state.pending_registrations : k === "scheduled" ? state.scheduled_count : 0;
-    return n ? ` <span class="badge" aria-label="${n} ${k === "scheduled" ? "scheduled" : "waiting"}">${n}</span>` : "";
+    const n = k === "requests" ? state.pending_registrations : k === "scheduled" ? state.scheduled_count : k === "chats" ? chatUnread() : 0;
+    return n ? ` <span class="badge" aria-label="${n} ${k === "scheduled" ? "scheduled" : k === "chats" ? "unread" : "waiting"}">${n}</span>` : "";
   };
   const current = SUBPAGES[section] || section; // a sub-page keeps its parent highlighted
   const nav = SECTIONS.map(([k, l]) => `<button data-nav="${k}" ${k === current ? 'aria-current="page"' : ""}>${esc(l)}${badge(k)}</button>`).join("");
@@ -667,6 +668,10 @@ const VIEWS = {
     activityList(main);
   },
 
+  chats(main) {
+    chatsPage(main);
+  },
+
   requests(main) {
     main.innerHTML = `
       <div class="section-head"><h2>Access requests</h2>
@@ -961,12 +966,16 @@ function clientForm(name) {
       { name: "description", label: "Description", kind: "text", value: cl?.description || "" },
       { name: "scopes", label: "Allowed to", kind: "checks", value: cl?.scopes || ["send", "read"],
         options: state.scopes.map((s) => [s, `${SCOPE_HELP[s]}`]) },
+      { name: "chat_host", label: "Chat host", kind: "text", value: cl?.chat_host || "",
+        help: "host name for agent group chats, e.g. host-a; leave empty for none" },
     ],
     submit: cl ? "Save" : "Create token",
     onSubmit: async (v) => {
       if (!v.scopes.length) throw new Error("Choose at least one permission.");
-      if (cl) return mutate("PUT", `/clients/${v.name}`, { description: v.description, scopes: v.scopes }, "Token saved");
-      const res = await mutate("POST", `/clients/${v.name}`, { description: v.description, scopes: v.scopes });
+      const body = { description: v.description, scopes: v.scopes };
+      if ("chat_host" in v) body.chat_host = v.chat_host; // the field starts with the stored value; empty clears it
+      if (cl) return mutate("PUT", `/clients/${v.name}`, body, "Token saved");
+      const res = await mutate("POST", `/clients/${v.name}`, body);
       setTimeout(() => showToken("Token created", v.name, res.token), 0);
     },
   });
@@ -1614,3 +1623,171 @@ async function loadMailbox(el) {
 }
 
 boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><p class="problem">${esc(ex.message)}</p></div></main>`; });
+
+
+// ---------------------------------------------------------------- chats
+
+const chats = { groups: [], selected: null, lastId: null, timer: null, composeDraft: "", showClosed: false };
+const chatUnread = () => chats.groups.reduce((n, g) => n + (g.unread || 0), 0);
+const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
+const CHAT_LIVE_SECONDS = 180; // matches the server's stale sweep
+
+function chatPresent(g) {
+  return g.state === "open" && g.members.some((m) => !m.left_at);
+}
+
+function chatMembersText(g) {
+  const here = g.members.filter((m) => !m.left_at).map((m) => CHAT_WHO[m.kind] || m.kind);
+  if (g.state === "closed") return `Closed ${when(g.closed_at)}`;
+  return here.length ? `Here now: ${here.join(", ")}` : "Nobody here";
+}
+
+function chatGroupRow(g) {
+  const lm = g.last_message;
+  const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${lm.text_preview ?? ""}` : "No messages yet";
+  return `<button type="button" class="chat-row${g.id === chats.selected ? " on" : ""}" data-group="${esc(g.id)}">
+    <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
+      ${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span>
+    <span class="p">${esc(g.host)}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}</span>
+    <span class="p">${esc(preview)}</span></button>`;
+}
+
+function chatMessageHtml(m) {
+  if (m.author === "system") return `<div class="cm sys" data-id="${esc(m.id)}">${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}</div>`;
+  const w = m.wakes || {};
+  const notes = [];
+  if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
+  if (w.pending) notes.push(`waiting for ${w.pending}`);
+  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${esc(CHAT_WHO[m.author] || m.author)} <small>${esc(when(m.created_at))}</small></div>
+    <div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
+    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}</div>`;
+}
+
+async function chatsPage(main) {
+  clearInterval(chats.timer);
+  main.innerHTML = `
+    <div class="section-head"><h2>Chats</h2><p>Agent sessions in the same folder talk here. Read along, and post into an open group to steer it.</p></div>
+    <div class="chats${chats.selected ? " thread" : ""}" id="chats">
+      <div class="chat-list" id="chat-list"><div class="empty">Loading…</div></div>
+      <div class="chat-pane" id="chat-pane"></div>
+    </div>`;
+  const el = main.querySelector("#chats");
+  try { await chatsLoadList(el); } catch (ex) { el.querySelector("#chat-list").innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  if (chats.selected && chats.groups.some((g) => g.id === chats.selected)) await chatOpen(el, chats.selected, true);
+  else { chats.selected = null; el.classList.remove("thread"); chatPaneEmpty(el); }
+  chats.timer = setInterval(() => chatTick(el), 5000);
+}
+
+function chatPaneEmpty(el) {
+  el.querySelector("#chat-pane").innerHTML = `<div class="empty">${chats.groups.length ? "Pick a group on the left." : "No group chats yet. They appear when two agent sessions join in the same folder."}</div>`;
+}
+
+async function chatsLoadList(el) {
+  const data = await api("GET", "/chats");
+  chats.groups = data.groups;
+  chatsRenderList(el);
+}
+
+function chatsRenderList(el) {
+  const open = chats.groups.filter((g) => g.state === "open");
+  const closed = chats.groups.filter((g) => g.state !== "open");
+  const list = el.querySelector("#chat-list");
+  list.innerHTML = `${open.map(chatGroupRow).join("") || `<div class="empty">No open groups.</div>`}
+    ${closed.length ? `<details class="chat-closed" ${chats.showClosed ? "open" : ""}><summary>Closed (${closed.length})</summary>${closed.map(chatGroupRow).join("")}</details>` : ""}`;
+  list.querySelector("details")?.addEventListener("toggle", (e) => { chats.showClosed = e.target.open; });
+  list.querySelectorAll("[data-group]").forEach((b) => (b.onclick = () => chatOpen(el, b.dataset.group)));
+  const nav = document.querySelector('[data-nav="chats"]');
+  if (nav) nav.querySelector(".badge")?.remove();
+  const n = chatUnread();
+  if (nav && n) nav.insertAdjacentHTML("beforeend", ` <span class="badge" aria-label="${n} unread">${n}</span>`);
+}
+
+async function chatOpen(el, id, keep = false) {
+  chats.selected = id;
+  chats.lastId = null;
+  el.classList.add("thread");
+  chatsRenderList(el);
+  const pane = el.querySelector("#chat-pane");
+  pane.innerHTML = `<div class="empty">Loading…</div>`;
+  let data;
+  try { data = await api("GET", `/chats/${encodeURIComponent(id)}/messages`); }
+  catch (ex) { pane.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  if (chats.selected !== id) return;
+  const g = data.group;
+  pane.innerHTML = `
+    <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back">All groups</button>
+      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span></div></div>
+    <div class="chat-paused" id="chat-paused" hidden></div>
+    <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
+    <form class="chat-compose" id="chat-compose" hidden>
+      <label class="sr" for="chat-text">Message this group</label>
+      <textarea id="chat-text" rows="2" placeholder="Message this group…"></textarea>
+      <button type="submit" class="btn primary">Send</button>
+      <div class="form-error" role="alert"></div>
+    </form>
+    <div class="chat-readonly hint" id="chat-readonly" hidden>This group is closed. It is read-only.</div>`;
+  pane.querySelector("#chat-back").onclick = () => { chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
+  const box = pane.querySelector("#chat-msgs");
+  box.innerHTML = data.messages.map(chatMessageHtml).join("") || `<div class="empty">No messages yet.</div>`;
+  chats.lastId = data.messages.length ? data.messages[data.messages.length - 1].id : null;
+  chatHeader(el, g);
+  box.scrollTop = box.scrollHeight;
+  const form = pane.querySelector("#chat-compose");
+  const ta = form.querySelector("textarea");
+  ta.value = chats.composeDraft;
+  ta.oninput = () => { chats.composeDraft = ta.value; };
+  ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } };
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = ta.value.trim();
+    if (!text) return;
+    const err = form.querySelector(".form-error");
+    const btn = form.querySelector("button");
+    btn.disabled = true;
+    err.textContent = "";
+    try {
+      await api("POST", `/chats/${encodeURIComponent(id)}/messages`, { text });
+      ta.value = "";
+      chats.composeDraft = "";
+      await chatTick(el);
+    } catch (ex) { err.textContent = ex.message; }
+    finally { btn.disabled = false; ta.focus(); }
+  };
+  if (g.unread) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
+}
+
+function chatHeader(el, g) {
+  el.querySelector("#chat-title").textContent = `${g.folder}`;
+  el.querySelector("#chat-sub").textContent = ` ${g.host} · ${chatMembersText(g)}`;
+  const p = el.querySelector("#chat-paused");
+  p.hidden = !(g.paused && g.state === "open");
+  p.textContent = "Paused after too many agent messages. Post here to let them continue.";
+  el.querySelector("#chat-compose").hidden = g.state !== "open";
+  el.querySelector("#chat-readonly").hidden = g.state === "open";
+}
+
+async function chatTick(el) {
+  if (section !== "chats" || !el.isConnected) { clearInterval(chats.timer); return; }
+  if (document.visibilityState !== "visible") return;
+  try {
+    await chatsLoadList(el);
+    const id = chats.selected;
+    if (!id) return;
+    const path = `/chats/${encodeURIComponent(id)}/messages${chats.lastId ? `?after=${encodeURIComponent(chats.lastId)}` : ""}`;
+    const data = await api("GET", path);
+    if (chats.selected !== id) return;
+    chatHeader(el, data.group);
+    if (data.messages.length) {
+      const box = el.querySelector("#chat-msgs");
+      const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+      box.querySelector(".empty")?.remove();
+      for (const m of data.messages) {
+        const old = box.querySelector(`[data-id="${CSS.escape(m.id)}"]`);
+        if (old) old.outerHTML = chatMessageHtml(m); else box.insertAdjacentHTML("beforeend", chatMessageHtml(m));
+      }
+      chats.lastId = data.messages[data.messages.length - 1].id;
+      if (stick) box.scrollTop = box.scrollHeight;
+      if (data.group.unread) { await api("POST", `/chats/${encodeURIComponent(id)}/seen`); await chatsLoadList(el); }
+    }
+  } catch { /* a missed poll is retried in 5 s; sign-out is handled by api() */ }
+}

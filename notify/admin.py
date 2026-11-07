@@ -774,6 +774,107 @@ async def timeline_view(request: Request, limit: int = 25, before: str | None = 
     return {**out, "sources": timeline.sources(svc), "inbound": svc.inbound_status, "timezone": local_zone().key}
 
 
+# ------------------------------------------------------------------ agent group chats
+
+def _preview(text: str) -> str:
+    flat = " ".join(text.split())
+    return flat if len(flat) <= 120 else flat[:119] + "…"
+
+
+def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
+    gid = g["id"]
+    members = [{"kind": m["kind"], "joined_at": m["joined_at"], "last_seen_at": m["last_seen_at"],
+                "left_at": m["left_at"]}
+               for m in svc.db.query("SELECT kind, joined_at, last_seen_at, left_at FROM chat_members"
+                                     " WHERE group_id=? ORDER BY joined_at, rowid", (gid,))]
+    last = svc.db.one("SELECT author, text, created_at FROM chat_messages WHERE group_id=? ORDER BY rowid DESC LIMIT 1",
+                      (gid,))
+    unread = svc.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE group_id=? AND author IN ('claude', 'codex')"
+                           " AND (? IS NULL OR created_at > ?)", (gid, g["owner_seen_at"], g["owner_seen_at"])) or 0
+    return {"id": gid, "host": g["host"], "folder": g["folder"], "state": g["state"], "opened_at": g["opened_at"],
+            "closed_at": g["closed_at"], "paused": bool(g["paused"]), "members": members,
+            "last_message": ({"author": last["author"], "text_preview": _preview(last["text"]) if show_text else None,
+                              "created_at": last["created_at"]} if last else None),
+            "unread": unread}
+
+
+@router.get("/api/chats")
+async def chats_view(request: Request, host: str | None = None, folder: str | None = None,
+                     client: Client = Depends(admin)) -> dict[str, Any]:
+    """Every group, open ones first, then closed ones by closing time. Message text only for the signed-in page."""
+    svc = _svc(request)
+    sql, params = "SELECT * FROM chat_groups WHERE 1=1", []
+    if host:
+        sql, params = sql + " AND host=?", params + [host]
+    if folder:
+        sql, params = sql + " AND folder=?", params + [folder]
+    rows = svc.db.query(sql + " ORDER BY (state='open') DESC, CASE WHEN state='open' THEN opened_at END DESC,"
+                        " closed_at DESC, rowid DESC", params)
+    return {"groups": [_group_out(svc, g, client.via_session) for g in rows]}
+
+
+def _chat_group(svc: NotifyService, group_id: str) -> Any:
+    g = svc.db.one("SELECT * FROM chat_groups WHERE id=?", (group_id,))
+    if g is None:
+        raise HTTPException(404, "group not found")
+    return g
+
+
+@router.get("/api/chats/{group_id}/messages")
+async def chat_messages(group_id: str, request: Request, after: str | None = None,
+                        client: Client = Depends(admin)) -> dict[str, Any]:
+    svc = _svc(request)
+    g = _chat_group(svc, group_id)
+    sql = "SELECT * FROM chat_messages WHERE group_id=?"
+    params: list[Any] = [group_id]
+    if after:
+        sql += " AND rowid > COALESCE((SELECT rowid FROM chat_messages WHERE id=? AND group_id=?), 0)"
+        params += [after, group_id]
+    out = []
+    for r in svc.db.query(sql + " ORDER BY rowid", params):
+        wakes = {"delivered": 0, "skipped": 0, "pending": 0}
+        for w in svc.db.query("SELECT state, COUNT(*) AS n FROM chat_wakes WHERE message_id=? GROUP BY state",
+                              (r["id"],)):
+            wakes["pending" if w["state"] in ("pending", "claimed") else w["state"]] += w["n"]
+        m = {"id": r["id"], "author": r["author"], "created_at": r["created_at"], "wakes": wakes}
+        if client.via_session:  # like replies: a bearer admin sees states and times, never what people wrote
+            m["text"] = r["text"]
+        out.append(m)
+    return {"messages": out, "group": _group_out(svc, g, client.via_session)}
+
+
+class ChatPostIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str
+
+
+@router.post("/api/chats/{group_id}/messages", status_code=201)
+async def chat_post(group_id: str, body: ChatPostIn, request: Request,
+                    client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    if _chat_group(svc, group_id)["state"] != "open":
+        raise HTTPException(409, "group is closed")
+    try:
+        return svc.chat.post_owner(group_id, body.text)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Invalid as e:
+        raise HTTPException(409 if "closed" in str(e) else 422, str(e)) from e
+
+
+@router.post("/api/chats/{group_id}/seen")
+async def chat_seen(group_id: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    _chat_group(svc, group_id)
+    with svc.db.tx() as c:
+        c.execute("UPDATE chat_groups SET owner_seen_at=? WHERE id=?", (now_iso(), group_id))
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------ reply mailbox cleanup
 
 MAILBOX_CACHE_SECONDS = 30.0
