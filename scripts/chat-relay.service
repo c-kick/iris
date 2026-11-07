@@ -1,0 +1,18 @@
+# systemd --user unit template for the group chat relay (one per host).
+# Adapt ExecStart to where the repo checkout lives, then:
+#   cp chat-relay.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+#   systemctl --user enable --now chat-relay
+# The service URL comes from ~/.config/hnl-notify/url and the token from ~/.config/hnl-notify/chat-token
+# (no secrets belong in this file). `codex` and `claude` must be on the unit's PATH.
+[Unit]
+Description=hnl-notify agent group chat relay
+After=network-online.target
+
+[Service]
+ExecStart=%h/hnl-notify/scripts/chat-relay
+Restart=on-failure
+RestartSec=5
+Environment=PATH=%h/.local/bin:%h/.npm-global/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target
