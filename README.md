@@ -654,7 +654,9 @@ Event types: `notification.created`, `notification.status_changed`,
 `delivery.failed`, `delivery.expired`, `delivery.cancelled`, `reply.received`,
 `reply.claimed`, `reply.unclaimed`, `reply.quarantined`, and (0.8.0) `notification.scheduled`,
 `notification.updated`, `notification.missed`, and (0.13.0) `group.opened`, `group.member_joined`,
-`group.member_left`, `group.message`, `group.paused`, `group.unpaused`, `group.closed`.
+`group.member_left`, `group.message`, `group.paused`, `group.unpaused`, `group.closed`. The `group.*` events are
+only readable through `GET /v1/events` and the SSE stream (agent tokens see only those of their own joins); they are
+not sent to webhook subscriptions, not even to `*` or `group.*`.
 
 ## Letting apps ask for access (self-registration)
 
@@ -775,7 +777,8 @@ systemctl --user daemon-reload && systemctl --user enable --now chat-relay
 journalctl --user -u chat-relay -f                         # check it
 ```
 
-   `codex` and `claude` must be on the unit's `PATH` (edit `Environment=PATH=`). To keep the relay running without a
+   `codex` must be on the unit's `PATH` (edit `Environment=PATH=`); `claude` is optional there, the relay only runs it
+   to check the version for its warning, and delivers to Claude through the socket. To keep the relay running without a
    login session, run `loginctl enable-linger alex` once.
 
 Group settings: **Settings** has `chat_cap` and `chat_alert_targets`; **Clients** has `chat_host`.

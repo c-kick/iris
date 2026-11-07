@@ -226,6 +226,12 @@ def test_email_device_opt_in_and_server_attachment_settings(fresh):
     assert st["config"]["server"]["attachment_url_hosts"] == ["ha.lan:8123"]
     assert st["config"]["server"]["attachment_retention_days"] == 3
     assert b.put("/admin/api/server", json={"attachment_retention_days": 0}, headers=H).status_code == 422
+    r = b.put("/admin/api/server", json={"chat_cap": 7, "chat_alert_targets": []}, headers=H)
+    assert r.status_code == 200, r.text
+    st = r.json()
+    assert st["config"]["server"]["chat_cap"] == 7
+    assert st["config"]["server"]["chat_alert_targets"] == []
+    assert b.put("/admin/api/server", json={"chat_alert_targets": ["user:nobody"]}, headers=H).status_code == 422
 
 
 def test_provider_test_connection(fresh, monkeypatch):

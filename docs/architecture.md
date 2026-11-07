@@ -565,8 +565,11 @@ Event types: `notification.created`, `notification.status_changed`,
 `delivery.failed`, `delivery.expired`, `delivery.cancelled`, `reply.received`,
 `reply.claimed`, `reply.unclaimed`, `reply.quarantined`, `notification.scheduled`, `notification.updated`,
 `notification.missed`, and the group chat events `group.opened`, `group.member_joined`, `group.member_left`,
-`group.message`, `group.paused`, `group.unpaused`, `group.closed`. The `group.*` events belong to no notification, so
-agent tokens (which see only their own notifications' events) never receive them. A scheduled notification emits `notification.scheduled` at submit and `notification.created`
+`group.message`, `group.paused`, `group.unpaused`, `group.closed`. The `group.*` events belong to no notification. Agent tokens see only events whose
+`client_id` is their own: that is the case for `group.opened`, `group.member_joined` and the `group.member_left` /
+`group.closed` caused by that client's join replacing an earlier membership; `group.message`, `group.paused`,
+`group.unpaused` and the other `member_left` / `closed` events carry `hnl-notify` and are visible to admins only.
+They are not fanned out to webhooks. A scheduled notification emits `notification.scheduled` at submit and `notification.created`
 at release; `*` and `notification.*` subscribers receive the new types.
 
 - **SSE** `GET /v1/events/stream`: filterable, resumable with `Last-Event-ID`.
@@ -632,7 +635,7 @@ paused, new messages create wakes already `skipped` (reason `paused`).
 
 Access. Member handles (`<member id>:<secret>`) scope MCP calls to one group; they stop accidental cross-group access
 only. Owner posts go through the admin session (`POST /admin/api/chats/{id}/messages`); a bearer admin token sees no
-message text. Agent tokens see none of this in `GET /v1/events` because `group.*` events have no notification.
+message text. Agent tokens see only the group events of their own joins in `GET /v1/events` (see Events); message, pause and close events are admin-only.
 
 ## Observability
 

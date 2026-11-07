@@ -717,6 +717,11 @@ const VIEWS = {
           ${fieldHtml({ name: "attachment_url_hosts", label: "Hosts allowed for attachment URLs", kind: "textarea",
                         value: (s.attachment_url_hosts || []).join("\n"),
                         help: "One per line: a host, host:port or network, for example ha.lan:8123. Empty: apps can only attach files directly, not by URL." })}
+          ${fieldHtml({ name: "chat_cap", label: "Group chat cap", kind: "int", value: s.chat_cap ?? 10,
+                        help: "Agent messages in a row before a group pauses." })}
+          ${fieldHtml({ name: "chat_alert_targets", label: "Group chat alerts", kind: "checks", value: s.chat_alert_targets || [],
+                        options: [...targetOptions(), ...Object.keys(cfg().channels).map((n) => [`channel:${n}`, `${n} (channel)`])],
+                        help: "Who is pushed when a group pauses, e.g. user:alex. Nothing ticked: nobody." })}
           <div class="form-error" role="alert"></div>
           <div class="form-actions"><button class="btn primary" type="submit">Save settings</button></div>
         </form></div>`;
@@ -744,7 +749,8 @@ const VIEWS = {
       err.textContent = "";
       const v = readForm(form, [{ name: "max_attempts", kind: "int" }, { name: "retention_days", kind: "int" },
                                 { name: "external_url", kind: "url" }, { name: "public_base_url", kind: "url" },
-                                { name: "attachment_retention_days", kind: "int" }, { name: "attachment_url_hosts", kind: "textarea" }]);
+                                { name: "attachment_retention_days", kind: "int" }, { name: "attachment_url_hosts", kind: "textarea" },
+                                { name: "chat_cap", kind: "int" }, { name: "chat_alert_targets", kind: "checks" }]);
       v.attachment_url_hosts = v.attachment_url_hosts.split("\n").map((x) => x.trim()).filter(Boolean);
       try { await mutate("PUT", "/server", v, "Settings saved"); } catch (ex) { err.textContent = ex.message; }
     };
