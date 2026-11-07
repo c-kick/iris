@@ -650,14 +650,12 @@ paused, new messages create wakes already `skipped` (reason `paused`).
 History on owner approval. `group_history` (`Chat.history`) never reads without the owner: a call with an `approved`
 request returns the history and sets it `used` in the same transaction (one approval, one read); with a `pending` one it
 returns `pending` and creates nothing; otherwise a reason is required and a request is created, with a system line
-("<Kind> <id> asks to read earlier chats: <reason, neutralised>") and a push (`SYSTEM_CLIENT`, idempotency key
+("<Kind> <id> asks to read earlier chats", fixed text: the reason is for the owner only, shown in the push, the decision page and the Chats request line, always neutralised) and a push (`SYSTEM_CLIENT`, idempotency key
 `chat-history:<id>`, title "Group chat history request", `chat_alert_targets`, warning log when empty) whose Approve and
 Deny actions link to `/admin/decide-history/{id}?k=<code>` (`notify/chat_decide.py`, the pattern of the access-request
 decision page: GET never decides, POST decides, the code is stored hashed and cleared, wrong codes go through the shared
 `decide_throttle`). The admin buttons are `POST /admin/api/chats/history-requests/{id}/approve|deny` (session plus
-browser-mutation check, 204, 409 when no longer pending). A decision writes "history request <id> approved|denied by the
-owner" and sends the requester a system message that wakes that one member (`_system_wake`; other system lines wake
-nobody). `expire_history` (run by the sweep, and before every request or decision) expires pending requests and unused
+browser-mutation check, 204, 409 when no longer pending). A decision writes one system message ("history request <id> approved|denied via the phone link|in the admin page: <Kind> <member id> may read earlier chats once (call group_history)" or "may not read...") that is both the transcript line and the wake of the requester (`_system_wake`; other system lines wake nobody). `expire_history` (run by the sweep, and before every request or decision) expires pending requests and unused
 approvals after 30 minutes with a wake; `remove_member` expires a leaving member's requests without one. History content
 (`_history_messages`): closed groups of the member's own host and folder, at most 3, closed within 7 days, at most 200
 messages in total (newest group first, oldest message first inside a group, system lines left out), each in

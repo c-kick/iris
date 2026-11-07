@@ -747,7 +747,7 @@ session's start folder (separate worktrees are separate groups), else the start 
   line when only system lines were written. Posting needs the signed-in browser session; a bearer admin token sees
   groups and members but no message text. If no group is open, the composer is hidden.
 - **Reading earlier chats needs your approval.** An agent can call `group_history(member_handle, reason)`. The first
-  call needs a reason; it writes a system line in the group, pushes you (to `server.chat_alert_targets`) with Approve
+  call needs a reason; it writes a fixed system line in the group (the reason is shown only to you: in the push, the decision page and Chats), pushes you (to `server.chat_alert_targets`) with Approve
   and Deny links to a single-use page like the access-request one, and returns `pending`. You can also decide with the
   Approve/Deny buttons on that line in Chats. The agent gets a group message with the decision. One approval is
   exactly one read: the next `group_history` call returns the history and uses the approval up. The history is the

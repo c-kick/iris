@@ -411,7 +411,7 @@ class Chat:
             rid, code = new_id("rqh"), secrets.token_urlsafe(24)
             shown = _clean_desc(" ".join(reason.split()))
             mid = self._add_message(c, g["id"], "system", None,
-                                    f"{member['kind'].capitalize()} {member['id']} asks to read earlier chats: {shown}")
+                                    f"{member['kind'].capitalize()} {member['id']} asks to read earlier chats")
             c.execute("INSERT INTO chat_history_requests(id, group_id, member_id, reason, state, decision_sha256,"
                       " message_id, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
                       (rid, g["id"], member["id"], reason, hash_token(code), mid, iso(now)))
@@ -447,7 +447,7 @@ class Chat:
         except Exception:  # the request is stored and shows in Admin, Chats; a failed push must not undo it
             log.warning("could not push the history request %s", rid, exc_info=True)
 
-    def decide_history(self, request_id: str, approve: bool, by: str = "the owner") -> None:
+    def decide_history(self, request_id: str, approve: bool, by: str = "admin-ui") -> None:
         """Approve or deny a pending request (admin button or phone page). Conflict when it is no longer pending."""
         self.expire_history()
         verdict = "approved" if approve else "denied"
@@ -460,12 +460,16 @@ class Chat:
                 raise Conflict("history request is no longer pending")
             c.execute("UPDATE chat_history_requests SET state=?, decided_at=?, decision_sha256=NULL WHERE id=?",
                       (verdict, now, request_id))
-            self._add_message(c, r["group_id"], "system", None, f"history request {request_id} {verdict} by the owner")
             self._event(c, "group.history_decided", by, {"group_id": r["group_id"], "request_id": request_id,
                                                          "decision": verdict})
+            m = c.execute("SELECT kind FROM chat_members WHERE id=?", (r["member_id"],)).fetchone()
+            who = f"{m['kind'].capitalize()} {r['member_id']}"
+            how = {"phone link": "via the phone link", "admin-ui": "in the admin page"}.get(by, f"by {by}")
+            # one message: the transcript line and the wake of the requester (nobody else is woken)
             self._system_wake(c, r["group_id"], r["member_id"],
-                              "Your request to read earlier chats was approved: call group_history once more to read it."
-                              if approve else "Your request to read earlier chats was denied.")
+                              f"history request {request_id} approved {how}: {who} may read earlier chats once"
+                              " (call group_history)" if approve else
+                              f"history request {request_id} denied {how}: {who} may not read earlier chats")
         self.svc._after_commit()
 
     def expire_history(self, now: datetime | None = None) -> None:
@@ -476,11 +480,13 @@ class Chat:
                              " OR (state='approved' AND decided_at < ?) ORDER BY rowid", (cutoff, cutoff)).fetchall()
             for r in rows:
                 c.execute("UPDATE chat_history_requests SET state='expired', decision_sha256=NULL WHERE id=?", (r["id"],))
-                was = "without a decision" if r["state"] == "pending" else "unused"
-                self._add_message(c, r["group_id"], "system", None, f"history request {r['id']} expired {was}")
+                m = c.execute("SELECT kind FROM chat_members WHERE id=?", (r["member_id"],)).fetchone()
+                who = f"{m['kind'].capitalize()} {r['member_id']}"
                 self._system_wake(c, r["group_id"], r["member_id"],
-                                  f"Your request to read earlier chats expired {was}."
-                                  + ("" if r["state"] == "pending" else " Ask again if you still need it."))
+                                  f"history request {r['id']} expired without a decision: {who} was not given earlier chats"
+                                  if r["state"] == "pending" else
+                                  f"history request {r['id']} expired unused: {who} did not read earlier chats"
+                                  " (ask again if needed)")
         if rows:
             self.svc._after_commit()
 

@@ -210,6 +210,7 @@ def test_admin_folders_redacted_for_bearer(ctx):
     assert r.json()["folders"][0]["pending_history_requests"] == 1
     m = httpx.get(f"{srv.url}/admin/api/chats/{j['group_id']}/messages", headers=bearer)
     assert "private" not in m.text and all("text" not in x for x in m.json()["messages"])
+    assert all("reason" not in x.get("history_request", {}) for x in m.json()["messages"])
     assert "private" not in httpx.get(f"{srv.url}/admin/api/chats/folder",
                                       params={"host": "host-a", "folder": "/srv/one"}, headers=bearer).text
-    assert "private reason" in json.dumps(b.get("/admin/api/chats").json())
+    assert "private reason" in json.dumps(b.get(f"/admin/api/chats/{j['group_id']}/messages").json())

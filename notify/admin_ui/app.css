@@ -383,6 +383,7 @@ details.delivery summary { cursor: pointer; color: var(--muted); }
 .chat-earlier-body { display: flex; flex-direction: column; gap: .5rem; padding: .5rem 0 .5rem .6rem; border-left: 2px solid var(--line); margin: .3rem 0 .3rem .3rem; }
 .chat-earlier-body[hidden] { display: none; }
 .cm.sys.ask { padding: .4rem .6rem; }
+.cm .req-reason { display: block; color: var(--ink); margin-top: .2rem; }
 .cm .req-actions { display: flex; gap: .5rem; justify-content: center; margin-top: .3rem; }
 .cm .act { font-size: .8rem; color: var(--warn); margin-top: .15rem; }
 .chat-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; padding: .6rem; border-top: 1px solid var(--line); }

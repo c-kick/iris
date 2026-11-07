@@ -1671,7 +1671,7 @@ function chatMessageHtml(m) {
   if (m.author === "system") {
     const hr = m.history_request;
     const ask = hr && hr.state === "pending"
-      ? `<span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
+      ? `<span class="req-reason">Reason: ${esc(hr.reason ?? "hidden")}</span><span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
       : "";
     return `<div class="cm sys${ask ? " ask" : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
   }

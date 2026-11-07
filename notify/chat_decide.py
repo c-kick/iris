@@ -56,7 +56,7 @@ def _who(request: Request, r: Any) -> tuple[str, str, str]:
     row = request.app.state.service.db.one(
         "SELECT m.kind, g.host, g.folder FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE m.id=?",
         (r["member_id"],))
-    return row["kind"].capitalize(), _clean_desc(f"{row['host']}:{row['folder']}"), " ".join(r["reason"].split())
+    return row["kind"].capitalize(), _clean_desc(f"{row['host']}:{row['folder']}"), _clean_desc(" ".join(r["reason"].split()))
 
 
 @router.get("/admin/decide-history/{rid}", include_in_schema=False)

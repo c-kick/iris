@@ -32,6 +32,7 @@ from .cleanup_service import record_event
 from .device_check import clear_flag
 from .providers.email_inbound import run_locked
 from .schedule import local_zone
+from .chat import _clean_desc
 from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
@@ -874,9 +875,11 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
                               (r["id"],)):
             wakes["pending" if w["state"] in ("pending", "claimed") else w["state"]] += w["n"]
         m = {"id": r["id"], "author": r["author"], "created_at": r["created_at"], "wakes": wakes}
-        hr = svc.db.one("SELECT id, state FROM chat_history_requests WHERE message_id=?", (r["id"],))
+        hr = svc.db.one("SELECT id, state, reason FROM chat_history_requests WHERE message_id=?", (r["id"],))
         if hr is not None:
             m["history_request"] = {"id": hr["id"], "state": hr["state"]}
+            if client.via_session:  # the reason is for the owner only, neutralised like in the push
+                m["history_request"]["reason"] = _clean_desc(" ".join(hr["reason"].split()))
         if client.via_session:  # like replies: a bearer admin sees states and times, never what people wrote
             m["text"] = r["text"]
         out.append(m)
