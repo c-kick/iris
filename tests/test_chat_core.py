@@ -277,3 +277,9 @@ def test_rejoin_other_folder_moves(svc):
     c1, c2 = join(svc, "s5", folder="/srv/x"), join(svc, "s6", folder="/srv/x")
     join(svc, "s5", folder="/srv/y")
     assert svc.db.scalar("SELECT state FROM chat_groups WHERE id=?", (c2["group_id"],)) == "open"
+
+
+@pytest.mark.parametrize("sid", ["-x", "a b", "--thread=1", "a/b", "x" * 129, ""])
+def test_join_rejects_bad_session_id(svc, sid):
+    with pytest.raises(Invalid):
+        join(svc, sid)

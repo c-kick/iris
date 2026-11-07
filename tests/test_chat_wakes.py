@@ -55,7 +55,7 @@ def test_claim_host_all_kinds(svc):
     assert [g["kind"] for g in got[:1]] == ["codex"]
     assert {g["member_id"] for g in got} == {a["member_id"], b["member_id"], c["member_id"]}
     for g in got:
-        assert set(g) == {"wake_id", "message_id", "member_id", "kind", "session_id", "pid", "text"}
+        assert set(g) == {"wake_id", "message_id", "member_id", "kind", "session_id", "pid", "pid_start", "text"}
         assert g["pid"] == 100 and g["text"].startswith("[hnl-notify group chat")
     assert run(svc.chat.claim_host(AGENT, "w9", 0)) is None
     assert run(svc.chat.claim_host(OTHER_HOST, "w9", 0)) is None
@@ -179,3 +179,42 @@ def test_heartbeat_lists_members(svc):
     out = svc.chat.heartbeat(AGENT, [])
     assert [m["member_id"] for m in out["members"]] == [a["member_id"], b["member_id"]]
     assert set(out["members"][0]) == {"member_id", "kind", "session_id", "pid", "pid_start"}
+
+
+def test_release_backoff_and_give_up(svc):
+    from notify.chat import MAX_WAKE_ATTEMPTS
+    a, b = two(svc)
+    svc.chat.post(a["member_handle"], "hello")
+    other = join(svc, "s9")
+    delays = []
+    for n in range(1, MAX_WAKE_ATTEMPTS + 1):
+        g = run(svc.chat.claim_host(AGENT, "w", 0))
+        assert g is not None
+        svc.chat.release(AGENT, g["wake_id"], "w")
+        r = wake_state(svc, g["wake_id"])
+        assert r["attempts"] == n
+        if n < MAX_WAKE_ATTEMPTS:
+            assert r["state"] == "pending" and r["waiter_id"] is None
+            delays.append((datetime.fromisoformat(r["retry_after"].replace("Z", "+00:00")) - svc.chat.now()).total_seconds())
+            # not claimable until retry_after (other pending wakes are: the other member's wake)
+            first = run(svc.chat.claim_host(AGENT, "w", 0))
+            assert first is None or first["wake_id"] != g["wake_id"]
+            if first is not None:
+                svc.chat.release(AGENT, first["wake_id"], "w")
+            svc.chat.now.advance(delays[-1] + 1)
+    assert delays == pytest.approx([30, 60, 120, 240], abs=1)
+    assert r["state"] == "skipped" and r["reason"] == "undeliverable" and r["finished_at"]
+    assert other  # silence unused
+
+
+def test_release_wrong_waiter_or_host(svc):
+    a, b = two(svc)
+    svc.chat.post(a["member_handle"], "hello")
+    g = run(svc.chat.claim_host(AGENT, "w1", 0))
+    for client, waiter in ((AGENT, "w2"), (OTHER_HOST, "w1")):
+        with pytest.raises(NotFound):
+            svc.chat.release(client, g["wake_id"], waiter)
+    with pytest.raises(Forbidden):
+        svc.chat.release(NOHOST, g["wake_id"], "w1")
+    r = wake_state(svc, g["wake_id"])
+    assert r["state"] == "claimed" and r["attempts"] == 0

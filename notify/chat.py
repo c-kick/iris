@@ -9,6 +9,7 @@ delivering them is the waking layer's job.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 import time
 import unicodedata
@@ -30,6 +31,8 @@ QUOTE = "| "
 FOLDER_MAX = 1024
 KINDS = ("claude", "codex")
 LEAVE_REASONS = ("ended", "stale", "left")
+SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+MAX_WAKE_ATTEMPTS = 5
 STALE_SECONDS = 180  # no liveness heartbeat for this long: the member is gone
 CLAIM_TIMEOUT_SECONDS = 120  # a claimed wake not confirmed in this time goes back to pending
 
@@ -121,6 +124,8 @@ class Chat:
             raise Invalid("kind must be claude or codex")
         if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 200:
             raise Invalid("session_id is required")
+        if not SESSION_ID_RE.match(session_id):
+            raise Invalid("session_id may only hold letters, digits, '_' and '-' (max 128, no leading '-')")
         folder = normalise_folder(folder)
         # same session now in another folder: it leaves the old group first (host + folder is the ceiling)
         old = self.db.one("SELECT m.id FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
@@ -302,9 +307,9 @@ class Chat:
 
     @staticmethod
     def _wake_out(c: sqlite3.Connection, w: sqlite3.Row) -> dict[str, Any]:
-        m = c.execute("SELECT kind, session_id, pid FROM chat_members WHERE id=?", (w["member_id"],)).fetchone()
+        m = c.execute("SELECT kind, session_id, pid, pid_start FROM chat_members WHERE id=?", (w["member_id"],)).fetchone()
         return {"wake_id": w["id"], "message_id": w["message_id"], "member_id": w["member_id"], "kind": m["kind"],
-                "session_id": m["session_id"], "pid": m["pid"]}
+                "session_id": m["session_id"], "pid": m["pid"], "pid_start": m["pid_start"]}
 
     async def claim_host(self, client: Client, waiter: str, wait: float) -> dict[str, Any] | None:
         """Long-poll for the host relay: the wake this waiter already holds, else the oldest pending wake of any
@@ -329,7 +334,8 @@ class Chat:
         with self.db.tx() as c:
             w = c.execute(base + "w.state='claimed' AND w.waiter_id=?" + order, (host, waiter)).fetchone()
             if w is None:
-                w = c.execute(base + "w.state='pending'" + order, (host,)).fetchone()
+                w = c.execute(base + "w.state='pending' AND (w.retry_after IS NULL OR w.retry_after<=?)" + order,
+                              (host, iso(self.now()))).fetchone()
                 if w is None:
                     return None
                 c.execute("UPDATE chat_wakes SET state='claimed', waiter_id=?, claimed_at=? WHERE id=?",
@@ -350,6 +356,27 @@ class Chat:
                 raise NotFound("wake not found")
             c.execute("UPDATE chat_wakes SET state='delivered', finished_at=? WHERE id=?",
                       (iso(self.now()), wake_id))
+        self.svc._after_commit()
+
+    def release(self, client: Client, wake_id: str, waiter: str) -> None:
+        """The relay could not deliver the claimed wake: back to pending after a delay, or skipped after 5 tries."""
+        host = self._host(client)
+        now = self.now()
+        with self.db.tx() as c:
+            w = c.execute("SELECT w.id, w.attempts FROM chat_wakes w JOIN chat_members m ON m.id=w.member_id"
+                          " JOIN chat_groups g ON g.id=m.group_id"
+                          " WHERE w.id=? AND g.host=? AND w.state='claimed' AND w.waiter_id=?",
+                          (wake_id, host, waiter)).fetchone()
+            if w is None:
+                raise NotFound("wake not found")
+            attempts = (w["attempts"] or 0) + 1
+            if attempts >= MAX_WAKE_ATTEMPTS:
+                c.execute("UPDATE chat_wakes SET attempts=?, state='skipped', reason='undeliverable', waiter_id=NULL,"
+                          " finished_at=? WHERE id=?", (attempts, iso(now), wake_id))
+            else:
+                delay = min(30 * 2 ** (attempts - 1), 300)
+                c.execute("UPDATE chat_wakes SET attempts=?, state='pending', waiter_id=NULL, claimed_at=NULL,"
+                          " retry_after=? WHERE id=?", (attempts, iso(now + timedelta(seconds=delay)), wake_id))
         self.svc._after_commit()
 
     def heartbeat(self, client: Client, alive: list[dict[str, Any]]) -> dict[str, Any]:

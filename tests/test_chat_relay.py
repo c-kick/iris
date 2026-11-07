@@ -8,12 +8,10 @@ import subprocess
 import sys
 import tempfile
 import threading
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from notify.chat import CLAIM_TIMEOUT_SECONDS
 from tests.test_chat_api import CHAT_TOKENS, FOLDER, chatlive  # noqa: F401  (fixture)
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "chat-relay"
@@ -100,8 +98,8 @@ def test_relay_delivers_codex_wake(env, chatlive):
         p = env.relay()
         assert p.returncode == 0, p.stderr
         calls = env.codex_calls()
-        assert len(calls) == 1 and calls[0][:4] == ["queue", "--thread", "thread-b", "--message"]
-        assert "hello codex" in calls[0][4] and len(calls[0]) == 5
+        assert len(calls) == 1 and calls[0][:2] == ["queue", "--thread=thread-b"] and len(calls[0]) == 3
+        assert calls[0][2].startswith("--message=") and "hello codex" in calls[0][2]
         assert wake_row(chatlive, b["member_id"])["state"] == "delivered"
         assert CHAT_TOKENS["hosta"] not in p.stderr and "hello codex" not in p.stderr
     finally:
@@ -109,7 +107,7 @@ def test_relay_delivers_codex_wake(env, chatlive):
         me.wait()
 
 
-def test_relay_failure_leaves_pending_after_timeout(env, chatlive):
+def test_relay_failure_releases_wake(env, chatlive):
     me = spawn()
     try:
         a = join(chatlive, "claude", "s-a", me.pid, pid_start_of(me.pid))
@@ -119,10 +117,8 @@ def test_relay_failure_leaves_pending_after_timeout(env, chatlive):
         p = env.relay()
         assert p.returncode == 0 and "exited 1" in p.stderr
         assert len(env.codex_calls()) == 1
-        assert wake_row(chatlive, b["member_id"])["state"] == "claimed"
-        later = datetime.now(timezone.utc) + timedelta(seconds=CLAIM_TIMEOUT_SECONDS + 5)
-        chatlive.call(lambda: chatlive.service.chat.sweep(later))
-        assert wake_row(chatlive, b["member_id"])["state"] == "pending"
+        w = wake_row(chatlive, b["member_id"])
+        assert w["state"] == "pending" and w["attempts"] == 1 and w["retry_after"]
     finally:
         me.kill()
         me.wait()
@@ -213,10 +209,8 @@ def test_relay_claude_socket_missing(env, chatlive):
         chatlive.service.chat.post(a["member_handle"], "hello")
         p = env.relay()
         assert p.returncode == 0 and "socket delivery" in p.stderr
-        assert wake_row(chatlive, b["member_id"])["state"] == "claimed"
-        later = datetime.now(timezone.utc) + timedelta(seconds=CLAIM_TIMEOUT_SECONDS + 5)
-        chatlive.call(lambda: chatlive.service.chat.sweep(later))
-        assert wake_row(chatlive, b["member_id"])["state"] == "pending"
+        w = wake_row(chatlive, b["member_id"])
+        assert w["state"] == "pending" and w["attempts"] == 1 and w["retry_after"]
     finally:
         me.kill()
         me.wait()
@@ -234,6 +228,58 @@ def test_relay_version_warning(env, chatlive):
         assert wake_row(chatlive, b["member_id"])["state"] == "delivered"
         env.fake_claude("2.1.150 (Claude Code)")
         assert "warning" not in env.relay().stderr
+    finally:
+        me.kill()
+        me.wait()
+
+
+def test_relay_failed_wake_does_not_block_others(env, chatlive):
+    me = spawn()
+    try:
+        st = pid_start_of(me.pid)
+        sender = join(chatlive, "codex", "t-sender", me.pid, st)
+        a = join(chatlive, "claude", "s-a", me.pid, st)  # no socket: undeliverable
+        b = join(chatlive, "codex", "t-b", me.pid, st)
+        chatlive.service.chat.post(sender["member_handle"], "hello")
+        assert env.relay().returncode == 0 and env.relay().returncode == 0
+        wa, wb = wake_row(chatlive, a["member_id"]), wake_row(chatlive, b["member_id"])
+        assert wa["state"] == "pending" and wa["attempts"] == 1
+        assert wb["state"] == "delivered"
+    finally:
+        me.kill()
+        me.wait()
+
+
+def test_relay_claude_pid_reused(env, chatlive):
+    me = spawn()
+    try:
+        a = join(chatlive, "codex", "t-a", me.pid, pid_start_of(me.pid))
+        b = join(chatlive, "claude", "s-b", me.pid, "1")  # recorded start time differs: the pid was reused
+        s = SockServer(env.socks / f"{me.pid}.sock")
+        chatlive.service.chat.post(a["member_handle"], "hello")
+        p = env.relay()
+        assert p.returncode == 0 and "reused" in p.stderr
+        w = wake_row(chatlive, b["member_id"])
+        assert w["state"] == "pending" and w["attempts"] == 1
+        s.srv.close()
+        s.t.join(timeout=5)
+        assert s.lines == []
+    finally:
+        me.kill()
+        me.wait()
+
+
+def test_relay_rejects_bad_session_id(env, chatlive):
+    me = spawn()
+    try:
+        a = join(chatlive, "claude", "s-a", me.pid, pid_start_of(me.pid))
+        b = join(chatlive, "codex", "t-b", me.pid, pid_start_of(me.pid))
+        with chatlive.service.db.tx() as cx:  # a row from before the join check
+            cx.execute("UPDATE chat_members SET session_id='--help' WHERE id=?", (b["member_id"],))
+        chatlive.service.chat.post(a["member_handle"], "hello")
+        p = env.relay()
+        assert p.returncode == 0 and "invalid session id" in p.stderr
+        assert env.codex_calls() == [] and wake_row(chatlive, b["member_id"])["attempts"] == 1
     finally:
         me.kill()
         me.wait()

@@ -62,6 +62,14 @@ async def claim(request: Request, waiter: str = Query(min_length=1, max_length=1
     return Response(status_code=204) if got is None else got
 
 
+@router.post("/wakes/{wake_id}/release", status_code=204)
+@_errors
+async def release(wake_id: str, request: Request, waiter: str = Query(min_length=1, max_length=100),
+                  client: Client = Depends(require(Scope.chat))) -> Response:
+    service(request).chat.release(client, wake_id, waiter)
+    return Response(status_code=204)
+
+
 @router.post("/wakes/{wake_id}/confirm", status_code=204)
 @_errors
 async def confirm(wake_id: str, request: Request, waiter: str = Query(min_length=1, max_length=100),
