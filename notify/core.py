@@ -128,6 +128,8 @@ class NotifyService:
         self._intake: asyncio.Semaphore | None = None  # created on first use, in the serving loop
         from .replies import Replies  # replies imports core for types; import here to avoid a cycle
         self.replies = Replies(self)
+        from .chat import Chat  # chat imports core for types, like replies
+        self.chat = Chat(self)
         self.scheduler = schedule.Scheduler(self)
         self.inbound_status: dict[str, dict[str, Any]] = {}  # per provider: last_success, last_error, last_stats
         self.open_mailbox: Any = None  # seam: tests return a fake mailbox; None = the provider's own
