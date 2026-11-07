@@ -337,3 +337,19 @@ def test_retention_prunes_closed_groups(tmp_path):
     assert s.db.scalar("SELECT COUNT(*) FROM chat_members WHERE group_id=?", (c2["group_id"],)) == 1
     assert s.db.scalar("SELECT COUNT(*) FROM events WHERE type LIKE 'group.%'") >= 1
     s.db.close()
+
+
+def test_folder_move_writes_left_and_joined_lines(svc):
+    first = join(svc, "s1", folder="/srv/old")
+    other = join(svc, "s2", folder="/srv/old")
+    moved = join(svc, "s1", folder="/srv/new")
+    assert moved["group_id"] != first["group_id"]
+
+    def lines(gid):
+        return [r["text"] for r in svc.db.query(
+            "SELECT text FROM chat_messages WHERE group_id=? AND author='system' ORDER BY rowid", (gid,))]
+
+    old = lines(first["group_id"])
+    assert f"Claude {first['member_id']} left the chat" in old and f"Claude {other['member_id']} joined the chat" in old
+    assert lines(moved["group_id"]) == [f"Claude {moved['member_id']} joined the chat"]
+    assert svc.db.scalar("SELECT state FROM chat_groups WHERE id=?", (first["group_id"],)) == "open"

@@ -311,6 +311,7 @@ class Database:
         })
         self._add_conversations()
         self._add_chat()
+        self._add_chat_history()
         self._add_missing_columns({"chat_wakes": {"attempts": "INTEGER NOT NULL DEFAULT 0", "retry_after": "TEXT"},
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT"}})
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
@@ -352,6 +353,16 @@ class Database:
                       " state TEXT CHECK(state IN ('pending','claimed','delivered','skipped')), waiter_id TEXT,"
                       " claimed_at TEXT, finished_at TEXT, reason TEXT)")
             c.execute("CREATE INDEX ix_chat_wakes_member_state ON chat_wakes(member_id, state)")
+
+    def _add_chat_history(self) -> None:
+        """Owner-approved reads of earlier closed chats (group_history). Additive, created for old databases too."""
+        with self.tx() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS chat_history_requests (id TEXT PRIMARY KEY,"
+                      " group_id TEXT NOT NULL REFERENCES chat_groups(id),"
+                      " member_id TEXT NOT NULL REFERENCES chat_members(id), reason TEXT NOT NULL,"
+                      " state TEXT NOT NULL CHECK(state IN ('pending','approved','denied','expired','used')),"
+                      " decision_sha256 TEXT, message_id TEXT, created_at TEXT NOT NULL, decided_at TEXT, used_at TEXT)")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_chat_history_member ON chat_history_requests(member_id, state)")
 
     def _add_missing_columns(self, columns: dict[str, dict[str, str]]) -> None:
         """Additive migrations for databases created by older versions."""

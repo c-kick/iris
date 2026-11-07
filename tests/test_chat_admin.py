@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -159,3 +161,55 @@ def test_watching_pause_resume_need_session(ctx):
     srv.service.chat.leave(j["member_handle"])
     for act in ("watching", "pause", "resume"):
         assert b.post(f"{base}/{act}", headers=H).status_code == 409
+
+
+def test_admin_list_one_entry_per_folder(ctx):
+    srv, b, bearer = ctx
+    chat = srv.service.chat
+    first = _join(srv, "host-a", "/srv/one", "s1")
+    chat.post(first["member_handle"], "first session talk")
+    chat.leave(first["member_handle"])
+    second = _join(srv, "host-a", "/srv/one", "s2")
+    chat.leave(second["member_handle"])  # opened and closed, nobody said anything
+    third = _join(srv, "host-a", "/srv/one", "s3")
+    chat.post(third["member_handle"], "current talk")
+    other = _join(srv, "host-b", "/srv/one", "s4")  # same folder name on another host is another thread
+    data = b.get("/admin/api/chats").json()
+    assert len(data["groups"]) == 4  # the flat list still has every group
+    assert len(data["folders"]) == 2
+    mine = next(f for f in data["folders"] if f["host"] == "host-a")
+    assert mine["id"] == third["group_id"] and mine["state"] == "open" and mine["group_count"] == 3
+    assert mine["earlier_count"] == 2 and mine["unread"] == 1 and mine["last_message"]["author"] == "claude"
+    assert mine["last_message"]["text_preview"] == "current talk"
+    assert next(f for f in data["folders"] if f["host"] == "host-b")["id"] == other["group_id"]
+    # newest activity first
+    stamps = [f["activity_at"] for f in data["folders"]]
+    assert stamps == sorted(stamps, reverse=True)
+    info = b.get("/admin/api/chats/folder", params={"host": "host-a", "folder": "/srv/one"}).json()
+    assert [g["id"] for g in info["groups"]] == [first["group_id"], second["group_id"], third["group_id"]]
+    assert [g["message_count"] for g in info["groups"]] == [1, 0, 1]
+    assert [g["state"] for g in info["groups"]] == ["closed", "closed", "open"]
+    assert "text" not in json.dumps(info) and "talk" not in json.dumps(info)
+    assert b.get("/admin/api/chats/folder", params={"host": "host-a", "folder": "/nope"}).status_code == 404
+    # a folder whose newest group is closed is still one entry, shown closed
+    chat.leave(third["member_handle"])
+    mine = next(f for f in b.get("/admin/api/chats").json()["folders"] if f["host"] == "host-a")
+    assert mine["state"] == "closed" and mine["id"] == third["group_id"]
+
+
+def test_admin_folders_redacted_for_bearer(ctx):
+    srv, b, bearer = ctx
+    chat = srv.service.chat
+    j = _join(srv, "host-a", "/srv/one", "s1")
+    chat.post(j["member_handle"], "private words")
+    chat.history(j["member_handle"], "private reason")
+    r = httpx.get(f"{srv.url}/admin/api/chats", headers=bearer)
+    assert r.status_code == 200
+    assert "private" not in r.text
+    assert r.json()["folders"][0]["last_message"]["text_preview"] is None
+    assert r.json()["folders"][0]["pending_history_requests"] == 1
+    m = httpx.get(f"{srv.url}/admin/api/chats/{j['group_id']}/messages", headers=bearer)
+    assert "private" not in m.text and all("text" not in x for x in m.json()["messages"])
+    assert "private" not in httpx.get(f"{srv.url}/admin/api/chats/folder",
+                                      params={"host": "host-a", "folder": "/srv/one"}, headers=bearer).text
+    assert "private reason" in json.dumps(b.get("/admin/api/chats").json())

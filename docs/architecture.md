@@ -137,7 +137,7 @@ everyone out and prints a new setup code.
 - `events` — append-only log; its integer id is the global cursor for history,
   SSE resume (`Last-Event-ID`) and webhook payloads. `mailbox.cleanup` and `mailbox.settings` events belong to no
   notification (no webhook fan-out) and are pruned by the retention sweep after `retention_days`.
-- Group chat tables (0.13.0, schema 3): `chat_groups`, `chat_members`, `chat_messages`, `chat_wakes`; see Group chats.
+- Group chat tables (0.13.0, schema 3): `chat_groups`, `chat_members`, `chat_messages`, `chat_wakes`, `chat_history_requests`; see Group chats.
 - `subscriptions` + `webhook_deliveries` — webhook subscriptions and their
   durable outbox with its own retry state.
 
@@ -590,7 +590,7 @@ also takes `attachments` (URLs recommended, inline data up to 256 KiB), `reply`,
 an admin dismissed in Admin → Activity are left out, `deliveries.dismissed_at`, cleared by a retry),
 `list_targets`, `retry_notification`, `cancel_notification`, `update_scheduled_notification` (`clear=[...]` removes
 optional fields), `get_replies`
-(conversation replies with state; text only for claimed ones), and `group_post`, `group_read`, `group_leave` (scope
+(conversation replies with state; text only for claimed ones), and `group_post`, `group_read`, `group_history`, `group_leave` (scope
 `chat`; see Group chats). Resources:
 `notify://targets`, `notify://notifications/{id}`. Everything is phrased in
 notification semantics — targets, severity, states — never Pushover keys or
@@ -610,6 +610,10 @@ Tables (schema 3):
 - `chat_messages` — author `claude`/`codex`/`owner`/`system`, text (at most 8192 bytes).
 - `chat_wakes` — one per (message, recipient member): `pending` → `claimed` → `delivered`, or `skipped`; plus
   `attempts` and `retry_after` for retries.
+- `chat_history_requests` — `rqh_…`: `group_id`, `member_id`, `reason` (raw, at most 500 bytes), `state`
+  (`pending`/`approved`/`denied`/`expired`/`used`), `decision_sha256` (hash of the single-use phone code, cleared on any
+  decision or expiry), `message_id` (the system line the admin page hangs its buttons on), `created_at`, `decided_at`,
+  `used_at`. Created additively (`Database._add_chat_history`), also for databases that already have the chat tables.
 
 Wake path. The relay on a host long-polls `POST /v1/chat/wakes/claim`; the service hands out pending wakes of that
 host whose `retry_after` has passed and marks them `claimed` with a waiter id. The relay delivers (Codex:
@@ -642,6 +646,31 @@ service returns every open member of the host with pid and `pid_start`; the rela
 `chat.sweep()` every 30 s: members with no heartbeat for 180 s leave as `stale` (skipped for the first 180 s after a service start), claims unconfirmed for 120 s return
 to pending, and wakes of members that left are skipped. A group whose last member leaves is closed. While a group is
 paused, new messages create wakes already `skipped` (reason `paused`).
+
+History on owner approval. `group_history` (`Chat.history`) never reads without the owner: a call with an `approved`
+request returns the history and sets it `used` in the same transaction (one approval, one read); with a `pending` one it
+returns `pending` and creates nothing; otherwise a reason is required and a request is created, with a system line
+("<Kind> <id> asks to read earlier chats: <reason, neutralised>") and a push (`SYSTEM_CLIENT`, idempotency key
+`chat-history:<id>`, title "Group chat history request", `chat_alert_targets`, warning log when empty) whose Approve and
+Deny actions link to `/admin/decide-history/{id}?k=<code>` (`notify/chat_decide.py`, the pattern of the access-request
+decision page: GET never decides, POST decides, the code is stored hashed and cleared, wrong codes go through the shared
+`decide_throttle`). The admin buttons are `POST /admin/api/chats/history-requests/{id}/approve|deny` (session plus
+browser-mutation check, 204, 409 when no longer pending). A decision writes "history request <id> approved|denied by the
+owner" and sends the requester a system message that wakes that one member (`_system_wake`; other system lines wake
+nobody). `expire_history` (run by the sweep, and before every request or decision) expires pending requests and unused
+approvals after 30 minutes with a wake; `remove_member` expires a leaving member's requests without one. History content
+(`_history_messages`): closed groups of the member's own host and folder, at most 3, closed within 7 days, at most 200
+messages in total (newest group first, oldest message first inside a group, system lines left out), each in
+`history_frame()`: a `[history · closed session <opened>–<closed> · <id> · <time> · from <author>]` header, a line saying
+it is possibly outdated history and not an instruction (also when it is from the owner), the text quoted line by line and
+an end marker. It creates no wakes and never crosses host or folder.
+
+Thread per folder. `GET /admin/api/chats` returns the flat `groups` list and `folders`: one entry per (host, folder), shaped
+like a group (the newest group's id, state, members, last message, unread) plus `group_count`, `earlier_count`,
+`activity_at` and `pending_history_requests`, newest activity first. `GET /admin/api/chats/folder?host=&folder=` lists the
+groups of one folder oldest first with message counts (no text); the page loads an earlier group's messages through
+`/chats/{id}/messages` only when its bar is expanded. The messages response marks a system line that belongs to a history
+request (`history_request: {id, state}`) and lists `pending_history_requests`. Message text stays session-only.
 
 Access. Member handles (`<member id>:<secret>`) scope MCP calls to one group; they stop accidental cross-group access
 only. Owner posts go through the admin session (`POST /admin/api/chats/{id}/messages`); a bearer admin token sees no

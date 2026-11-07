@@ -355,7 +355,6 @@ details.delivery summary { cursor: pointer; color: var(--muted); }
 .paused-tag { color: var(--warn); font-weight: 700; }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok); flex: none; display: inline-block; }
 .dot.off { background: var(--idle); }
-.chat-closed summary { padding: .6rem .8rem; cursor: pointer; color: var(--muted); border-bottom: 1px solid var(--line); }
 .chat-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-head { display: flex; align-items: center; gap: .5rem; padding: .6rem .9rem; border-bottom: 1px solid var(--line); }
 .chat-head .grow { min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
@@ -371,6 +370,20 @@ details.delivery summary { cursor: pointer; color: var(--muted); }
 .cm.owner { align-self: flex-end; background: color-mix(in srgb, var(--action) 14%, var(--surface)); border-color: color-mix(in srgb, var(--action) 35%, var(--line)); }
 .cm.owner .who { color: var(--action); }
 .cm.sys { align-self: center; max-width: 94%; font-size: .85rem; color: var(--muted); border-style: dashed; padding: .1rem .6rem; text-align: center; }
+.chat-earlier { align-self: stretch; }
+.chat-earlier-bar {
+  all: unset; box-sizing: border-box; display: block; width: 100%; cursor: pointer; padding: .35rem .65rem;
+  font-size: .85rem; color: var(--muted); border: 1px dashed var(--line); border-radius: var(--radius-m);
+  background: var(--surface); overflow-wrap: anywhere;
+}
+.chat-earlier-bar:hover { background: color-mix(in srgb, var(--surface) 60%, var(--paper)); }
+.chat-earlier-bar:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.chat-earlier-bar::before { content: "▸ "; }
+.chat-earlier-bar[aria-expanded="true"]::before { content: "▾ "; }
+.chat-earlier-body { display: flex; flex-direction: column; gap: .5rem; padding: .5rem 0 .5rem .6rem; border-left: 2px solid var(--line); margin: .3rem 0 .3rem .3rem; }
+.chat-earlier-body[hidden] { display: none; }
+.cm.sys.ask { padding: .4rem .6rem; }
+.cm .req-actions { display: flex; gap: .5rem; justify-content: center; margin-top: .3rem; }
 .cm .act { font-size: .8rem; color: var(--warn); margin-top: .15rem; }
 .chat-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; padding: .6rem; border-top: 1px solid var(--line); }
 .chat-compose[hidden], .chat-paused[hidden], .chat-watch[hidden], #chat-pausebtn[hidden], .chat-readonly[hidden] { display: none; }

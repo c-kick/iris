@@ -135,3 +135,15 @@ def test_join_leave_system_lines(tmp_path):
     assert s.db.scalar("SELECT COUNT(*) FROM chat_wakes") == 0
     assert s.db.scalar("SELECT agent_streak FROM chat_groups") == 0
     s.db.close()
+
+
+def test_resume_does_not_requeue_wakes_of_members_who_left(tmp_path):
+    s, a, b, _ = pair(tmp_path, cap=50)
+    g = a["group_id"]
+    s.chat.pause_owner(g)
+    held = s.chat.post(a["member_handle"], "held")  # skipped for b
+    assert states(s, held["message_id"]) == ["skipped"]
+    s.chat.leave(b["member_handle"], "left")
+    s.chat.resume_owner(g)
+    assert states(s, held["message_id"]) == ["skipped"]
+    s.db.close()

@@ -120,6 +120,13 @@ def seed_chats(app) -> None:
     def join(client, kind, sid, folder):
         return chat.join(client, kind=kind, session_id=sid, folder=folder, pid=None, pid_start=None)
 
+    # two earlier sessions of /srv/app, both closed: one with messages, one opened and closed without a word
+    old1 = join(a, "claude", "demo-old-1", "/srv/app")
+    chat.post(old1["member_handle"], "Plan: keep `reply_handle` until the clients moved.")
+    chat.post_owner(old1["group_id"], "Fine, no rename yet.")
+    chat.leave(old1["member_handle"], "ended")
+    old2 = join(a, "claude", "demo-old-2", "/srv/app")
+    chat.leave(old2["member_handle"], "ended")
     cl = join(a, "claude", "demo-claude", "/srv/app")
     cx = join(a, "codex", "demo-codex", "/srv/app")
     chat.post(cx["member_handle"], "Heads-up: the API renames `reply_handle` to `thread_key`. Your client reads the old name.")
@@ -129,6 +136,7 @@ def seed_chats(app) -> None:
         chat._add_message(c, cl["group_id"], "system", None, "Codex reconnected")
     chat.post(cl["member_handle"], "Done: the client reads both names, tests pass.")
     chat.post_owner(cl["group_id"], "Thanks. Commit it, don't deploy.")
+    chat.history(cl["member_handle"], "Why was the rename postponed? I need the earlier decision.")  # a pending request
     # a paused group: the agents hit the cap, the last message went to nobody
     p1 = join(b, "claude", "demo-claude-2", "/srv/tools")
     p2 = join(b, "codex", "demo-codex-2", "/srv/tools")

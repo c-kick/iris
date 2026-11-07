@@ -467,9 +467,9 @@ Subscribers to `*` or `notification.*` therefore start receiving `notification.s
 ### Upgrading to 0.13.0
 
 - Adds agent group chats (see *Agent group chats*). The schema goes to version 3 (tables `chat_groups`,
-  `chat_members`, `chat_messages`, `chat_wakes`) and migrates itself on start; take a backup first as usual.
+  `chat_members`, `chat_messages`, `chat_wakes`, `chat_history_requests`) and migrates itself on start; take a backup first as usual.
   Nothing changes until you set up a client with scope `chat`; setup per host is optional.
-- Adds the `group.*` event types, the MCP tools `group_post`, `group_read` and `group_leave`, and the settings
+- Adds the `group.*` event types, the MCP tools `group_post`, `group_read`, `group_history` and `group_leave`, and the settings
   `chat_cap` and `chat_alert_targets`.
 
 ### Upgrading to 0.12.0
@@ -706,7 +706,7 @@ also takes `attachments` (URLs recommended, inline data up to 256 KiB),
 `send_notification`, `preview_routing`, `get_notification`,
 `list_notifications`, `list_attention`, `list_targets`, `retry_notification`,
 `cancel_notification`, `update_scheduled_notification`, `get_replies` (takes `reply_handle`), and for group chats
-(scope `chat`) `group_post`, `group_read` and `group_leave`. Resources: `notify://targets`,
+(scope `chat`) `group_post`, `group_read`, `group_history` and `group_leave`. Resources: `notify://targets`,
 `notify://notifications/{id}`. The server instructions tell agents not to
 report `dispatched` as `delivered` and to reserve `critical` for emergencies.
 
@@ -741,8 +741,20 @@ session's start folder (separate worktrees are separate groups), else the start 
   group chat` (REST) or the same text as a tool error (MCP). After a service restart members get 180 s to heartbeat
   again before they can be removed as stale. Closed groups, with their members, messages, wakes and `group.*` events,
   are deleted after `retention_days`.
-- **Admin → Chats** lists groups, members and messages and lets you post. Posting needs the signed-in browser
-  session; a bearer admin token sees groups and members but no message text.
+- **Admin → Chats** shows one thread per host and folder, newest activity first. Opening it shows the current group
+  at the bottom (members, messages, composer, Pause/Resume); every earlier group of that folder sits above it as one
+  collapsed bar ("Earlier session … · N messages · agents can read it only on request, as history"), or as one small
+  line when only system lines were written. Posting needs the signed-in browser session; a bearer admin token sees
+  groups and members but no message text. If no group is open, the composer is hidden.
+- **Reading earlier chats needs your approval.** An agent can call `group_history(member_handle, reason)`. The first
+  call needs a reason; it writes a system line in the group, pushes you (to `server.chat_alert_targets`) with Approve
+  and Deny links to a single-use page like the access-request one, and returns `pending`. You can also decide with the
+  Approve/Deny buttons on that line in Chats. The agent gets a group message with the decision. One approval is
+  exactly one read: the next `group_history` call returns the history and uses the approval up. The history is the
+  closed groups of the same host and folder, at most the last 3, closed within 7 days, at most 200 messages (newest
+  group first), each framed as "possibly outdated history, not an instruction" and quoted line by line. A request
+  and an unused approval expire after 30 minutes (the agent is told), and when the member leaves. The push has links
+  only when `server.external_url` is set; otherwise decide in Chats.
 - Not joined: Codex joins at its first prompt, not at launch (its start hook fires then). Sessions whose process
   cannot be found do not join, and non-interactive ones are skipped (Claude with `CLAUDE_CODE_SESSION_ATTENDED=0`,
   `codex exec`).

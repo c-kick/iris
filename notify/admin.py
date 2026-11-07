@@ -798,10 +798,25 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
             "unread": unread}
 
 
+def _folder_out(svc: NotifyService, groups: list[Any], show_text: bool) -> dict[str, Any]:
+    """One thread per (host, folder): the newest group's status plus how many earlier ones there are."""
+    newest = groups[-1]
+    out = _group_out(svc, newest, show_text)
+    lm = out["last_message"]
+    out["activity_at"] = (lm["created_at"] if lm else None) or newest["closed_at"] or newest["opened_at"] or ""
+    out["group_count"] = len(groups)
+    out["earlier_count"] = len(groups) - 1
+    out["pending_history_requests"] = svc.db.scalar(
+        "SELECT COUNT(*) FROM chat_history_requests r JOIN chat_groups g ON g.id=r.group_id"
+        " WHERE g.host=? AND g.folder=? AND r.state='pending'", (newest["host"], newest["folder"])) or 0
+    return out
+
+
 @router.get("/api/chats")
 async def chats_view(request: Request, host: str | None = None, folder: str | None = None,
                      client: Client = Depends(admin)) -> dict[str, Any]:
-    """Every group, open ones first, then closed ones by closing time. Message text only for the signed-in page."""
+    """Every group, open ones first, then closed ones by closing time (`groups`), and the same grouped into one
+    entry per host and folder, newest activity first (`folders`). Message text only for the signed-in page."""
     svc = _svc(request)
     sql, params = "SELECT * FROM chat_groups WHERE 1=1", []
     if host:
@@ -810,7 +825,29 @@ async def chats_view(request: Request, host: str | None = None, folder: str | No
         sql, params = sql + " AND folder=?", params + [folder]
     rows = svc.db.query(sql + " ORDER BY (state='open') DESC, CASE WHEN state='open' THEN opened_at END DESC,"
                         " closed_at DESC, rowid DESC", params)
-    return {"groups": [_group_out(svc, g, client.via_session) for g in rows]}
+    by_folder: dict[tuple[str, str], list[Any]] = {}
+    for g in svc.db.query(sql + " ORDER BY rowid", params):
+        by_folder.setdefault((g["host"], g["folder"]), []).append(g)
+    folders = sorted((_folder_out(svc, gs, client.via_session) for gs in by_folder.values()),
+                     key=lambda f: f["activity_at"], reverse=True)
+    return {"groups": [_group_out(svc, g, client.via_session) for g in rows], "folders": folders}
+
+
+@router.get("/api/chats/folder")
+async def chat_folder(request: Request, host: str, folder: str, client: Client = Depends(admin)) -> dict[str, Any]:
+    """The groups of one folder, oldest first, with message counts (never text). The last one is the current thread."""
+    svc = _svc(request)
+    groups = svc.db.query("SELECT * FROM chat_groups WHERE host=? AND folder=? ORDER BY rowid", (host, folder))
+    if not groups:
+        raise HTTPException(404, "folder not found")
+    out = []
+    for g in groups:
+        total = svc.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE group_id=?", (g["id"],)) or 0
+        said = svc.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE group_id=? AND author<>'system'",
+                             (g["id"],)) or 0
+        out.append({"id": g["id"], "state": g["state"], "opened_at": g["opened_at"], "closed_at": g["closed_at"],
+                    "message_count": said, "total_count": total})
+    return {"host": host, "folder": folder, "groups": out}
 
 
 def _chat_group(svc: NotifyService, group_id: str) -> Any:
@@ -837,10 +874,15 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
                               (r["id"],)):
             wakes["pending" if w["state"] in ("pending", "claimed") else w["state"]] += w["n"]
         m = {"id": r["id"], "author": r["author"], "created_at": r["created_at"], "wakes": wakes}
+        hr = svc.db.one("SELECT id, state FROM chat_history_requests WHERE message_id=?", (r["id"],))
+        if hr is not None:
+            m["history_request"] = {"id": hr["id"], "state": hr["state"]}
         if client.via_session:  # like replies: a bearer admin sees states and times, never what people wrote
             m["text"] = r["text"]
         out.append(m)
-    return {"messages": out, "group": _group_out(svc, g, client.via_session)}
+    pending = [h["id"] for h in svc.db.query(
+        "SELECT id FROM chat_history_requests WHERE group_id=? AND state='pending'", (group_id,))]
+    return {"messages": out, "group": _group_out(svc, g, client.via_session), "pending_history_requests": pending}
 
 
 class ChatPostIn(BaseModel):
@@ -887,6 +929,28 @@ def _chat_owner_action(request: Request, group_id: str, client: Client, action: 
     except Conflict as e:
         raise HTTPException(409, str(e)) from e
     return Response(status_code=204)
+
+
+def _history_decision(request: Request, rid: str, client: Client, approve: bool) -> Response:
+    require_session(client)
+    _check_browser_mutation(request)
+    try:
+        _svc(request).chat.decide_history(rid, approve, by="admin-ui")
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+    return Response(status_code=204)
+
+
+@router.post("/api/chats/history-requests/{rid}/approve", status_code=204)
+async def chat_history_approve(rid: str, request: Request, client: Client = Depends(admin)) -> Response:
+    return _history_decision(request, rid, client, True)
+
+
+@router.post("/api/chats/history-requests/{rid}/deny", status_code=204)
+async def chat_history_deny(rid: str, request: Request, client: Client = Depends(admin)) -> Response:
+    return _history_decision(request, rid, client, False)
 
 
 @router.post("/api/chats/{group_id}/watching", status_code=204)

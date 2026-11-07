@@ -1633,8 +1633,8 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 
 // ---------------------------------------------------------------- chats
 
-const chats = { groups: [], selected: null, lastId: null, timer: null, composeDraft: "", showClosed: false };
-const chatUnread = () => chats.groups.reduce((n, g) => n + (g.unread || 0), 0);
+const chats = { folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "" };
+const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
 const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
 const CHAT_ACTIVE_MS = 10 * 60 * 1000; // the owner counts as watching this long after the last input
 let chatLastInput = Date.now();
@@ -1642,6 +1642,10 @@ let chatLastInput = Date.now();
   document.addEventListener(t, () => { chatLastInput = Date.now(); }, { passive: true, capture: true }));
 const chatWatchingNow = () => document.visibilityState === "visible" && Date.now() - chatLastInput < CHAT_ACTIVE_MS;
 const CHAT_LIVE_SECONDS = 180; // matches the server's stale sweep
+
+// one thread per host and folder; the key is what the list rows and the selection carry
+const chatKey = (g) => JSON.stringify([g.host, g.folder]);
+const chatFolderOf = (key) => chats.folders.find((f) => chatKey(f) === key);
 
 function chatPresent(g) {
   return g.state === "open" && g.members.some((m) => !m.left_at);
@@ -1656,15 +1660,21 @@ function chatMembersText(g) {
 function chatGroupRow(g) {
   const lm = g.last_message;
   const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${lm.text_preview ?? ""}` : "No messages yet";
-  return `<button type="button" class="chat-row${g.id === chats.selected ? " on" : ""}" data-group="${esc(g.id)}">
+  return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
       ${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span>
-    <span class="p">${esc(g.host)}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}</span>
+    <span class="p">${esc(g.host)} · ${g.state === "open" ? "open" : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
     <span class="p">${esc(preview)}</span></button>`;
 }
 
 function chatMessageHtml(m) {
-  if (m.author === "system") return `<div class="cm sys" data-id="${esc(m.id)}">${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}</div>`;
+  if (m.author === "system") {
+    const hr = m.history_request;
+    const ask = hr && hr.state === "pending"
+      ? `<span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
+      : "";
+    return `<div class="cm sys${ask ? " ask" : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
+  }
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
@@ -1674,59 +1684,73 @@ function chatMessageHtml(m) {
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}</div>`;
 }
 
+// an earlier session of the folder: one bar (expandable), or one small line when nobody said anything
+function chatEarlierHtml(g) {
+  const span = `${when(g.opened_at)}–${when(g.closed_at)}`;
+  if (!g.message_count) return `<div class="cm sys chat-earlier-empty" data-earlier="${esc(g.id)}">Earlier session ${esc(span)} · opened and closed, no messages</div>`;
+  const n = `${g.message_count} message${g.message_count === 1 ? "" : "s"}`;
+  return `<div class="chat-earlier" data-earlier="${esc(g.id)}">
+    <button type="button" class="chat-earlier-bar" aria-expanded="false">Earlier session ${esc(span)} · ${esc(n)} · agents can read it only on request, as history</button>
+    <div class="chat-earlier-body" hidden></div></div>`;
+}
+
 async function chatsPage(main) {
   clearInterval(chats.timer);
   main.innerHTML = `
-    <div class="section-head"><h2>Chats</h2><p>Agent sessions in the same folder talk here. Read along, and post into an open group to steer it.</p></div>
+    <div class="section-head"><h2>Chats</h2><p>Agent sessions in the same folder talk here, one thread per folder. Read along, and post into an open group to steer it.</p></div>
     <div class="chats${chats.selected ? " thread" : ""}" id="chats">
       <div class="chat-list" id="chat-list"><div class="empty">Loading…</div></div>
       <div class="chat-pane" id="chat-pane"></div>
     </div>`;
   const el = main.querySelector("#chats");
   try { await chatsLoadList(el); } catch (ex) { el.querySelector("#chat-list").innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
-  if (chats.selected && chats.groups.some((g) => g.id === chats.selected)) await chatOpen(el, chats.selected, true);
+  if (chats.selected && chatFolderOf(chats.selected)) await chatOpen(el, chats.selected, true);
   else { chats.selected = null; el.classList.remove("thread"); chatPaneEmpty(el); }
   chats.timer = setInterval(() => chatTick(el), 5000);
 }
 
 function chatPaneEmpty(el) {
-  el.querySelector("#chat-pane").innerHTML = `<div class="empty">${chats.groups.length ? "Pick a group on the left." : "No group chats yet. They appear when two agent sessions join in the same folder."}</div>`;
+  el.querySelector("#chat-pane").innerHTML = `<div class="empty">${chats.folders.length ? "Pick a folder on the left." : "No group chats yet. They appear when two agent sessions join in the same folder."}</div>`;
 }
 
 async function chatsLoadList(el) {
   const data = await api("GET", "/chats");
-  chats.groups = data.groups;
+  chats.folders = data.folders;
   chatsRenderList(el);
 }
 
 function chatsRenderList(el) {
-  const open = chats.groups.filter((g) => g.state === "open");
-  const closed = chats.groups.filter((g) => g.state !== "open");
   const list = el.querySelector("#chat-list");
-  list.innerHTML = `${open.map(chatGroupRow).join("") || `<div class="empty">No open groups.</div>`}
-    ${closed.length ? `<details class="chat-closed" ${chats.showClosed ? "open" : ""}><summary>Closed (${closed.length})</summary>${closed.map(chatGroupRow).join("")}</details>` : ""}`;
-  list.querySelector("details")?.addEventListener("toggle", (e) => { chats.showClosed = e.target.open; });
-  list.querySelectorAll("[data-group]").forEach((b) => (b.onclick = () => chatOpen(el, b.dataset.group)));
+  list.innerHTML = chats.folders.map(chatGroupRow).join("") || `<div class="empty">No chats yet.</div>`;
+  list.querySelectorAll("[data-key]").forEach((b) => (b.onclick = () => chatOpen(el, b.dataset.key)));
   const nav = document.querySelector('[data-nav="chats"]');
   if (nav) nav.querySelector(".badge")?.remove();
   const n = chatUnread();
   if (nav && n) nav.insertAdjacentHTML("beforeend", ` <span class="badge" aria-label="${n} unread">${n}</span>`);
 }
 
-async function chatOpen(el, id, keep = false) {
-  chats.selected = id;
+async function chatOpen(el, key, keep = false) {
+  const f = chatFolderOf(key);
+  if (!f) return;
+  chats.selected = key;
   chats.lastId = null;
+  chats.currentId = null;
   el.classList.add("thread");
   chatsRenderList(el);
   const pane = el.querySelector("#chat-pane");
   pane.innerHTML = `<div class="empty">Loading…</div>`;
-  let data;
-  try { data = await api("GET", `/chats/${encodeURIComponent(id)}/messages`); }
-  catch (ex) { pane.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
-  if (chats.selected !== id) return;
+  let data, info;
+  try {
+    info = await api("GET", `/chats/folder?host=${encodeURIComponent(f.host)}&folder=${encodeURIComponent(f.folder)}`);
+    const id = info.groups[info.groups.length - 1].id;
+    data = await api("GET", `/chats/${encodeURIComponent(id)}/messages`);
+  } catch (ex) { pane.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  if (chats.selected !== key) return;
   const g = data.group;
+  const id = g.id;
+  chats.currentId = id;
   pane.innerHTML = `
-    <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back">All groups</button>
+    <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back">All folders</button>
       <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span>
         <span class="hint chat-watch" id="chat-watch" hidden>You're watching: no auto-pause</span></div>
       <button type="button" class="btn" id="chat-pausebtn" hidden></button></div>
@@ -1742,15 +1766,25 @@ async function chatOpen(el, id, keep = false) {
   pane.querySelector("#chat-pausebtn").onclick = async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
-    try { await api("POST", `/chats/${encodeURIComponent(id)}/${btn.dataset.act}`); await chatTick(el); }
+    try { await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/${btn.dataset.act}`); await chatTick(el); }
     catch (ex) { toast(ex.message); }
     finally { btn.disabled = false; }
   };
   pane.querySelector("#chat-back").onclick = () => { chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
   const box = pane.querySelector("#chat-msgs");
-  box.innerHTML = data.messages.map(chatMessageHtml).join("") || `<div class="empty">No messages yet.</div>`;
+  const earlier = info.groups.slice(0, -1); // oldest first, above the current group
+  box.innerHTML = earlier.map(chatEarlierHtml).join("") + (data.messages.map(chatMessageHtml).join("") || `<div class="empty">No messages yet.</div>`);
+  box.onclick = async (e) => {
+    const bar = e.target.closest(".chat-earlier-bar");
+    if (bar) { chatToggleEarlier(bar); return; }
+    const b = e.target.closest("[data-hreq]");
+    if (!b) return;
+    box.querySelectorAll(`[data-hreq="${CSS.escape(b.dataset.hreq)}"]`).forEach((x) => { x.disabled = true; });
+    try { await api("POST", `/chats/history-requests/${encodeURIComponent(b.dataset.hreq)}/${b.dataset.act}`); await chatTick(el); }
+    catch (ex) { toast(ex.message); await chatTick(el); }
+  };
   chats.lastId = data.messages.length ? data.messages[data.messages.length - 1].id : null;
-  chatHeader(el, g);
+  chatHeader(el, g, f);
   box.scrollTop = box.scrollHeight;
   const form = pane.querySelector("#chat-compose");
   const ta = form.querySelector("textarea");
@@ -1766,7 +1800,7 @@ async function chatOpen(el, id, keep = false) {
     btn.disabled = true;
     err.textContent = "";
     try {
-      await api("POST", `/chats/${encodeURIComponent(id)}/messages`, { text });
+      await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/messages`, { text });
       ta.value = "";
       chats.composeDraft = "";
       await chatTick(el);
@@ -1776,7 +1810,23 @@ async function chatOpen(el, id, keep = false) {
   if (g.unread) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
 }
 
-function chatHeader(el, g) {
+async function chatToggleEarlier(bar) {
+  const wrap = bar.closest(".chat-earlier");
+  const body = wrap.querySelector(".chat-earlier-body");
+  const open = bar.getAttribute("aria-expanded") !== "true";
+  bar.setAttribute("aria-expanded", String(open));
+  body.hidden = !open;
+  if (!open || body.dataset.loaded) return;
+  body.innerHTML = `<div class="empty">Loading…</div>`;
+  try {
+    const d = await api("GET", `/chats/${encodeURIComponent(wrap.dataset.earlier)}/messages`);
+    body.innerHTML = d.messages.map(chatMessageHtml).join("") || `<div class="empty">No messages.</div>`;
+    body.querySelectorAll("[data-hreq]").forEach((x) => x.remove()); // an old session cannot be decided any more
+    body.dataset.loaded = "1";
+  } catch (ex) { body.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; }
+}
+
+function chatHeader(el, g, f) {
   el.querySelector("#chat-title").textContent = `${g.folder}`;
   el.querySelector("#chat-sub").textContent = ` ${g.host} · ${chatMembersText(g)}`;
   const p = el.querySelector("#chat-paused");
@@ -1786,6 +1836,7 @@ function chatHeader(el, g) {
   pb.hidden = g.state !== "open";
   pb.dataset.act = g.paused ? "resume" : "pause";
   pb.textContent = g.paused ? "Resume" : "Pause now";
+  if (g.paused) el.querySelector("#chat-watch").hidden = true;
   el.querySelector("#chat-compose").hidden = g.state !== "open";
   el.querySelector("#chat-readonly").hidden = g.state === "open";
 }
@@ -1795,24 +1846,32 @@ async function chatTick(el) {
   if (document.visibilityState !== "visible") return;
   try {
     await chatsLoadList(el);
-    const id = chats.selected;
-    if (!id) return;
+    const key = chats.selected;
+    if (!key) return;
+    const f = chatFolderOf(key);
+    if (!f) return;
+    if (f.id !== chats.currentId) { await chatOpen(el, key, true); return; } // a new session opened in this folder
+    const id = chats.currentId;
     const watch = el.querySelector("#chat-watch");
-    const open = chats.groups.find((x) => x.id === id)?.state === "open";
+    const open = f.state === "open";
     if (open && chatWatchingNow()) {
-      try { await api("POST", `/chats/${encodeURIComponent(id)}/watching`); if (watch) watch.hidden = false; }
+      try { await api("POST", `/chats/${encodeURIComponent(id)}/watching`); if (watch) watch.hidden = !!f.paused; }
       catch { if (watch) watch.hidden = true; }
     } else if (watch) watch.hidden = true;
     const path = `/chats/${encodeURIComponent(id)}/messages${chats.lastId ? `?after=${encodeURIComponent(chats.lastId)}` : ""}`;
     const data = await api("GET", path);
-    if (chats.selected !== id) return;
-    chatHeader(el, data.group);
+    if (chats.selected !== key || chats.currentId !== id) return;
+    chatHeader(el, data.group, f);
+    const box = el.querySelector("#chat-msgs");
+    // a request decided elsewhere (phone link, expiry) loses its buttons
+    box.querySelectorAll("[data-req]").forEach((n) => {
+      if (!data.pending_history_requests.includes(n.dataset.req)) { n.querySelector(".req-actions")?.remove(); n.removeAttribute("data-req"); n.classList.remove("ask"); }
+    });
     if (data.messages.length) {
-      const box = el.querySelector("#chat-msgs");
       const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-      box.querySelector(".empty")?.remove();
+      box.querySelector(":scope > .empty")?.remove();
       for (const m of data.messages) {
-        const old = box.querySelector(`[data-id="${CSS.escape(m.id)}"]`);
+        const old = box.querySelector(`:scope > [data-id="${CSS.escape(m.id)}"]`);
         if (old) old.outerHTML = chatMessageHtml(m); else box.insertAdjacentHTML("beforeend", chatMessageHtml(m));
       }
       chats.lastId = data.messages[data.messages.length - 1].id;
