@@ -77,26 +77,47 @@ def _clean_desc(text: str) -> str:
     return _clean(text, keep_newlines=False).replace("[", "(").replace("]", ")").replace("·", "-")
 
 
-def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str) -> str:
+REPLY_EXCERPT_MAX = 120
+
+
+def reply_excerpt(quoted_text: str) -> str:
+    """A quoted message cut down for display: neutralised, one line, at most 120 characters."""
+    excerpt = " ".join(_clean_desc(" ".join(quoted_text.split())).split())
+    return excerpt[:REPLY_EXCERPT_MAX] + "\u2026" if len(excerpt) > REPLY_EXCERPT_MAX else excerpt
+
+
+def reply_line(quoted_id: str, quoted_desc: str, quoted_text: str) -> str:
+    """The line a reply carries under its header. Starts with an arrow and has no brackets, so it is never a header."""
+    return f"\u21aa reply to {quoted_id} (from {_clean_desc(quoted_desc)}): \"{reply_excerpt(quoted_text)}\""
+
+
+def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, reply: str | None = None) -> str:
     """The text a recipient sees. Every line of the author's text is quoted, so it can never contain a header."""
     mid = msg["id"]
     author = msg["author"]
     rules = OWNER_RULES if author == "owner" else SYSTEM_RULES if author == "system" else AGENT_RULES
     desc = _clean(author_desc, keep_newlines=False)
     body = _clean(msg["text"], keep_newlines=True).split("\n")
-    lines = [f"[hnl-notify group chat · {mid} · {sent_at} · from {desc}]", rules]
+    lines = [f"[hnl-notify group chat · {mid} · {sent_at} · from {desc}]"]
+    if reply:
+        lines.append(reply)
+    lines.append(rules)
     lines += [QUOTE + line for line in body]
     lines.append(f"[end {mid}]")
     return "\n".join(lines)
 
 
-def history_frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, opened: str, closed: str) -> str:
+def history_frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, opened: str, closed: str,
+                  reply: str | None = None) -> str:
     """One message of an earlier session. Like frame(): the author's text is quoted line by line, so it can never
     contain a header, and nothing here reads as a current instruction."""
     mid = msg["id"]
     desc = _clean(author_desc, keep_newlines=False).replace("[", "(").replace("]", ")")
     body = _clean(msg["text"], keep_newlines=True).split("\n")
-    lines = [f"[history · closed session {opened}–{closed} · {mid} · {sent_at} · from {desc}]", HISTORY_RULE]
+    lines = [f"[history · closed session {opened}–{closed} · {mid} · {sent_at} · from {desc}]"]
+    if reply:
+        lines.append(reply)
+    lines.append(HISTORY_RULE)
     lines += [QUOTE + line for line in body]
     lines.append(f"[end {mid}]")
     return "\n".join(lines)
@@ -139,10 +160,11 @@ class Chat:
                  "last_seen_at": r["last_seen_at"], "present": True} for r in rows]
 
     @staticmethod
-    def _add_message(c: sqlite3.Connection, group_id: str, author: str, member_id: str | None, text: str) -> str:
+    def _add_message(c: sqlite3.Connection, group_id: str, author: str, member_id: str | None, text: str,
+                     in_reply_to: str | None = None) -> str:
         mid = new_id("msg")
-        c.execute("INSERT INTO chat_messages(id, group_id, author_member_id, author, text, created_at)"
-                  " VALUES (?, ?, ?, ?, ?, ?)", (mid, group_id, member_id, author, text, now_iso()))
+        c.execute("INSERT INTO chat_messages(id, group_id, author_member_id, author, text, created_at, in_reply_to)"
+                  " VALUES (?, ?, ?, ?, ?, ?, ?)", (mid, group_id, member_id, author, text, now_iso(), in_reply_to))
         return mid
 
     def member_from_handle(self, member_handle: str) -> sqlite3.Row:
@@ -237,15 +259,16 @@ class Chat:
         return True
 
     # ------------------------------------------------------------------ post / read
-    def post(self, member_handle: str, text: str) -> dict[str, Any]:
+    def post(self, member_handle: str, text: str, in_reply_to: str | None = None) -> dict[str, Any]:
         member = self.member_from_handle(member_handle)
-        return self._post(member["group_id"], member["id"], member["kind"], text)
+        return self._post(member["group_id"], member["id"], member["kind"], text, in_reply_to)
 
-    def post_owner(self, group_id: str, text: str) -> dict[str, Any]:
+    def post_owner(self, group_id: str, text: str, in_reply_to: str | None = None) -> dict[str, Any]:
         """The owner's message from the admin page (the only API that names a group id)."""
-        return self._post(group_id, None, "owner", text)
+        return self._post(group_id, None, "owner", text, in_reply_to)
 
-    def _post(self, group_id: str, member_id: str | None, author: str, text: str) -> dict[str, Any]:
+    def _post(self, group_id: str, member_id: str | None, author: str, text: str,
+              in_reply_to: str | None = None) -> dict[str, Any]:
         if not isinstance(text, str) or not _clean(text, keep_newlines=True).strip():
             raise Invalid("message text is required")
         if len(text.encode()) > MESSAGE_MAX_BYTES:
@@ -262,6 +285,16 @@ class Chat:
             if not owner and c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL",
                                        (member_id,)).fetchone() is None:
                 raise MemberGone()
+            only: str | None = None  # an owner reply to an agent wakes just the member who wrote it
+            if in_reply_to is not None:
+                q = (c.execute("SELECT author, author_member_id FROM chat_messages WHERE id=? AND group_id=?",
+                               (in_reply_to, group_id)).fetchone() if isinstance(in_reply_to, str) else None)
+                if q is None or q["author"] not in ("claude", "codex", "owner"):
+                    raise Invalid("in_reply_to must be a message in your group")
+                if owner and q["author"] != "owner" and c.execute(
+                        "SELECT 1 FROM chat_members WHERE id=? AND group_id=? AND left_at IS NULL",
+                        (q["author_member_id"], group_id)).fetchone():
+                    only = q["author_member_id"]
             paused = bool(g["paused"])
             streak = g["agent_streak"]
             watching = bool(g["owner_watch_until"]) and g["owner_watch_until"] > now
@@ -272,7 +305,7 @@ class Chat:
                 paused, streak = False, 0
             elif not paused and not watching:
                 streak += 1
-            msg_id = self._add_message(c, group_id, author, member_id, text)
+            msg_id = self._add_message(c, group_id, author, member_id, text, in_reply_to)
             self._event(c, "group.message", "hnl-notify",
                         {"group_id": group_id, "message_id": msg_id, "author": author, "member_id": member_id})
             newly_paused = not owner and not paused and not watching and streak >= g["cap"]
@@ -280,6 +313,8 @@ class Chat:
             woken: list[str] = []
             for r in c.execute("SELECT id FROM chat_members WHERE group_id=? AND left_at IS NULL AND id IS NOT ?"
                                " ORDER BY joined_at, rowid", (group_id, member_id)).fetchall():
+                if only is not None and r["id"] != only:
+                    continue
                 if skip:
                     c.execute("INSERT INTO chat_wakes(id, message_id, member_id, state, reason, finished_at)"
                               " VALUES (?, ?, ?, 'skipped', 'paused', ?)", (new_id("wak"), msg_id, r["id"], now))
@@ -384,7 +419,8 @@ class Chat:
             opened, closed = grp["opened_at"] or "?", grp["closed_at"] or "?"
             for r in rows:
                 out.append({"id": r["id"], "session_opened": opened, "session_closed": closed,
-                            "text": history_frame(r, self.author_desc(r), r["created_at"], opened, closed)})
+                            "text": history_frame(r, self.author_desc(r), r["created_at"], opened, closed,
+                                                      self.reply_line_for(r))})
         return {"status": "approved", "messages": out, "truncated": truncated,
                 "note": "this approval is used up; ask again with a reason to read it once more"}
 
@@ -499,12 +535,22 @@ class Chat:
                           " WHERE m.id=?", (msg["author_member_id"],))
         return f"{row['kind']} · {_clean_desc(row['host'] + ':' + row['folder'])}" if row else str(msg["author"])
 
+    def reply_line_for(self, msg: sqlite3.Row) -> str | None:
+        """The quote line of a reply (None when the message is no reply or the quoted one is gone)."""
+        if not msg["in_reply_to"]:
+            return None
+        q = self.db.one("SELECT * FROM chat_messages WHERE id=? AND group_id=?", (msg["in_reply_to"], msg["group_id"]))
+        if q is None:
+            return None
+        desc = "the owner" if q["author"] == "owner" else self.author_desc(q)
+        return reply_line(q["id"], desc, q["text"])
+
     def framed_text(self, message_id: str) -> str:
         """The recipient-facing text of a stored message."""
         msg = self.db.one("SELECT * FROM chat_messages WHERE id=?", (message_id,))
         if msg is None:
             raise NotFound("message not found")
-        return frame(msg, self.author_desc(msg), msg["created_at"])
+        return frame(msg, self.author_desc(msg), msg["created_at"], self.reply_line_for(msg))
 
     def read(self, member_handle: str, since: str | None = None) -> dict[str, Any]:
         member = self.member_from_handle(member_handle)
@@ -518,7 +564,8 @@ class Chat:
         with self.db._lock:
             members = self._members(self.db.conn, gid)
         return {"messages": [{"id": r["id"], "author": r["author"], "author_desc": self.author_desc(r),
-                              "created_at": r["created_at"], "text": frame(r, self.author_desc(r), r["created_at"])}
+                              "created_at": r["created_at"], "text": frame(r, self.author_desc(r), r["created_at"],
+                                            self.reply_line_for(r))}
                              for r in rows],
                 "members": members}
 

@@ -1633,7 +1633,7 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 
 // ---------------------------------------------------------------- chats
 
-const chats = { folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "" };
+const chats = { folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "", replyTo: null, msgs: {} };
 const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
 const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
 const CHAT_ACTIVE_MS = 10 * 60 * 1000; // the owner counts as watching this long after the last input
@@ -1667,7 +1667,14 @@ function chatGroupRow(g) {
     <span class="p">${esc(preview)}</span></button>`;
 }
 
-function chatMessageHtml(m) {
+const CHAT_EXCERPT = 120;
+const chatExcerpt = (t) => {
+  const x = String(t ?? "").replace(/\s+/g, " ").trim();
+  return x.length > CHAT_EXCERPT ? `${x.slice(0, CHAT_EXCERPT)}…` : x;
+};
+const chatWhoLabel = (author, memberId) => author === "owner" ? "you" : `${CHAT_WHO[author] || author} ${memberId || ""}`.trim();
+
+function chatMessageHtml(m, canReply = false) {
   if (m.author === "system") {
     const hr = m.history_request;
     const ask = hr && hr.state === "pending"
@@ -1675,13 +1682,17 @@ function chatMessageHtml(m) {
       : "";
     return `<div class="cm sys${ask ? " ask" : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
   }
+  chats.msgs[m.id] = { author: m.author, member_id: m.member_id, text: m.text };
+  const quote = m.in_reply_to
+    ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${esc(CHAT_WHO[m.reply_author] || m.reply_author)}</b> ${esc(m.reply_excerpt)}`}</div>`
+    : "";
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   if (w.pending) notes.push(`waiting for ${w.pending}`);
   return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${esc(CHAT_WHO[m.author] || m.author)} <small>${esc(when(m.created_at))}</small></div>
-    <div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
-    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}</div>`;
+    ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
+    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}</div>`;
 }
 
 // an earlier session of the folder: one bar (expandable), or one small line when nobody said anything
@@ -1735,6 +1746,8 @@ async function chatOpen(el, key, keep = false) {
   chats.selected = key;
   chats.lastId = null;
   chats.currentId = null;
+  chats.replyTo = null;
+  chats.msgs = {};
   el.classList.add("thread");
   chatsRenderList(el);
   const pane = el.querySelector("#chat-pane");
@@ -1757,6 +1770,7 @@ async function chatOpen(el, key, keep = false) {
     <div class="chat-paused" id="chat-paused" hidden></div>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
     <form class="chat-compose" id="chat-compose" hidden>
+      <div class="chat-replying" id="chat-replying" hidden><span class="rq"></span><button type="button" class="btn quiet" id="chat-reply-cancel" aria-label="Cancel reply">✕</button></div>
       <label class="sr" for="chat-text">Message this group</label>
       <textarea id="chat-text" rows="2" placeholder="Message this group…"></textarea>
       <button type="submit" class="btn primary">Send</button>
@@ -1773,8 +1787,18 @@ async function chatOpen(el, key, keep = false) {
   pane.querySelector("#chat-back").onclick = () => { chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
   const box = pane.querySelector("#chat-msgs");
   const earlier = info.groups.slice(0, -1); // oldest first, above the current group
-  box.innerHTML = earlier.map(chatEarlierHtml).join("") + (data.messages.map(chatMessageHtml).join("") || `<div class="empty">No messages yet.</div>`);
+  box.innerHTML = earlier.map(chatEarlierHtml).join("") + (data.messages.map((m) => chatMessageHtml(m, g.state === "open")).join("") || `<div class="empty">No messages yet.</div>`);
+  const replying = pane.querySelector("#chat-replying");
+  const setReply = (id) => {
+    const m = id ? chats.msgs[id] : null;
+    chats.replyTo = m ? id : null;
+    replying.hidden = !m;
+    replying.querySelector(".rq").textContent = m ? `Replying to ${chatWhoLabel(m.author, m.member_id)}: ${chatExcerpt(m.text)}` : "";
+  };
+  replying.querySelector("#chat-reply-cancel").onclick = () => { setReply(null); pane.querySelector("#chat-text").focus(); };
   box.onclick = async (e) => {
+    const rb = e.target.closest("[data-reply]");
+    if (rb) { setReply(rb.dataset.reply); pane.querySelector("#chat-text").focus(); return; }
     const bar = e.target.closest(".chat-earlier-bar");
     if (bar) { chatToggleEarlier(bar); return; }
     const b = e.target.closest("[data-hreq]");
@@ -1800,7 +1824,9 @@ async function chatOpen(el, key, keep = false) {
     btn.disabled = true;
     err.textContent = "";
     try {
-      await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/messages`, { text });
+      const payload = chats.replyTo ? { text, in_reply_to: chats.replyTo } : { text };
+      await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/messages`, payload);
+      setReply(null);
       ta.value = "";
       chats.composeDraft = "";
       await chatTick(el);
@@ -1872,7 +1898,7 @@ async function chatTick(el) {
       box.querySelector(":scope > .empty")?.remove();
       for (const m of data.messages) {
         const old = box.querySelector(`:scope > [data-id="${CSS.escape(m.id)}"]`);
-        if (old) old.outerHTML = chatMessageHtml(m); else box.insertAdjacentHTML("beforeend", chatMessageHtml(m));
+        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open"));
       }
       chats.lastId = data.messages[data.messages.length - 1].id;
       if (stick) box.scrollTop = box.scrollHeight;

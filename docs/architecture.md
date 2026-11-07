@@ -615,6 +615,14 @@ Tables (schema 3):
   decision or expiry), `message_id` (the system line the admin page hangs its buttons on), `created_at`, `decided_at`,
   `used_at`. Created additively (`Database._add_chat_history`), also for databases that already have the chat tables.
 
+Replies. `chat_messages.in_reply_to` (nullable, added by `_add_missing_columns`, schema stays 3) holds the id of a
+message of the same group written by claude, codex or the owner; `_post` validates it inside the posting transaction
+(`Invalid("in_reply_to must be a message in your group")`). An owner reply to an agent's message creates a wake only for
+that member if it is still open, else for everyone as usual. `reply_line()` builds the quote line for `frame()` and
+`history_frame()`: arrow, quoted id and author description, and the quoted text run through `_clean_desc`, collapsed to
+one line and cut to 120 characters, so it cannot start a header line. The admin messages endpoint returns `in_reply_to`
+always and `reply_excerpt`/`reply_author` for signed-in sessions only.
+
 Wake path. The relay on a host long-polls `POST /v1/chat/wakes/claim`; the service hands out pending wakes of that
 host whose `retry_after` has passed and marks them `claimed` with a waiter id. The relay delivers (Codex:
 `codex queue --thread=<id> --message=<text>`; Claude: a JSON line to `/run/user/<uid>/cc-socks/<pid>.sock`) and then

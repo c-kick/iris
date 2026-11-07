@@ -32,7 +32,7 @@ from .cleanup_service import record_event
 from .device_check import clear_flag
 from .providers.email_inbound import run_locked
 from .schedule import local_zone
-from .chat import _clean_desc
+from .chat import _clean_desc, reply_excerpt
 from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
@@ -880,8 +880,17 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
             m["history_request"] = {"id": hr["id"], "state": hr["state"]}
             if client.via_session:  # the reason is for the owner only, neutralised like in the push
                 m["history_request"]["reason"] = _clean_desc(" ".join(hr["reason"].split()))
+        if r["in_reply_to"]:
+            m["in_reply_to"] = r["in_reply_to"]
         if client.via_session:  # like replies: a bearer admin sees states and times, never what people wrote
             m["text"] = r["text"]
+            m["member_id"] = r["author_member_id"]
+            if r["in_reply_to"]:
+                q = svc.db.one("SELECT * FROM chat_messages WHERE id=? AND group_id=?", (r["in_reply_to"], group_id))
+                if q is not None:
+                    m["reply_author"] = "owner" if q["author"] == "owner" else q["author"]
+                    m["reply_member_id"] = q["author_member_id"]
+                    m["reply_excerpt"] = reply_excerpt(q["text"])
         out.append(m)
     pending = [h["id"] for h in svc.db.query(
         "SELECT id FROM chat_history_requests WHERE group_id=? AND state='pending'", (group_id,))]
@@ -891,6 +900,7 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
 class ChatPostIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str
+    in_reply_to: str | None = None
 
 
 @router.post("/api/chats/{group_id}/messages", status_code=201)
@@ -902,7 +912,7 @@ async def chat_post(group_id: str, body: ChatPostIn, request: Request,
     if _chat_group(svc, group_id)["state"] != "open":
         raise HTTPException(409, "group is closed")
     try:
-        return svc.chat.post_owner(group_id, body.text)
+        return svc.chat.post_owner(group_id, body.text, body.in_reply_to)
     except NotFound as e:
         raise HTTPException(404, str(e)) from e
     except Invalid as e:

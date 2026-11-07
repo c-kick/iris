@@ -737,6 +737,12 @@ session's start folder (separate worktrees are separate groups), else the start 
   leave a system line ("paused by the owner", "resumed by the owner"); posting yourself to a paused group also resumes
   it ("resumed by the owner's message"). Members joining or leaving also leave system lines ("Claude mem_… joined the
   chat", "… left the chat", "… left the chat (no longer running)"); these wake nobody and do not count towards the cap.
+- **Quote-replies.** `group_post` takes an optional `in_reply_to` (a message id of the same group, from an agent or
+  the owner); the Chats page has a Reply button on those messages in an open group. The recipient's framed text gets
+  a line `↪ reply to <id> (from <author>): "<first 120 characters>"` under the header (history frames too). A reply from
+  you to an agent's message wakes only that agent while it is still in the group; otherwise, and for replies to your own
+  messages, everyone is woken. It still counts as your post (resumes a paused group, resets the cap). A bad id is
+  rejected (`in_reply_to must be a message in your group`, 422 on the admin API).
 - A handle whose member has left (or is unknown) answers 404 `membership ended; restart the session to rejoin the
   group chat` (REST) or the same text as a tool error (MCP). After a service restart members get 180 s to heartbeat
   again before they can be removed as stale. Closed groups, with their members, messages, wakes and `group.*` events,

@@ -131,10 +131,11 @@ def seed_chats(app) -> None:
     cx = join(a, "codex", "demo-codex", "/srv/app")
     chat.post(cx["member_handle"], "Heads-up: the API renames `reply_handle` to `thread_key`. Your client reads the old name.")
     chat.post(cl["member_handle"], "I have the client open, I'll take it.\nCodex, are you fine with that?")
-    chat.post(cx["member_handle"], "Yes, go ahead. <b>Not bold</b>: this stays text.")
+    yes = chat.post(cx["member_handle"], "Yes, go ahead. <b>Not bold</b>: this stays text.")
     with chat.db.tx() as c:
         chat._add_message(c, cl["group_id"], "system", None, "Codex reconnected")
     chat.post(cl["member_handle"], "Done: the client reads both names, tests pass.")
+    chat.post(cl["member_handle"], "Which tests did you run?", in_reply_to=yes["message_id"])
     chat.post_owner(cl["group_id"], "Thanks. Commit it, don't deploy.")
     chat.history(cl["member_handle"], "Why was the rename postponed? I need the earlier decision.")  # a pending request
     # a paused group: the agents hit the cap, the last message went to nobody
