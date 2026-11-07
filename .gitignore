@@ -9,3 +9,4 @@ config/notify.yaml
 .test-runs/
 secrets/
 compose.override.yaml
+.superpowers/
