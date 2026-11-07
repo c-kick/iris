@@ -69,7 +69,7 @@ def test_second_join_same_folder_joins(svc):
     assert len(b["members"]) == 2
 
 
-def test_rejoin_same_session_fresh_handle(svc):
+def test_rejoin_same_folder_same_member(svc):
     a = join(svc, "s1")
     b = join(svc, "s1")
     assert (a["group_id"], a["member_id"]) == (b["group_id"], b["member_id"])
@@ -258,3 +258,22 @@ def test_read_since(svc):
     assert all(m["present"] for m in got["members"])
     svc.chat.leave(a["member_handle"])
     assert [m["member_id"] for m in svc.chat.read(b["member_handle"])["members"]] == [b["member_id"]]
+
+
+def test_rejoin_other_folder_moves(svc):
+    a = join(svc, "s1")
+    moved = join(svc, "s1", folder="/srv/other")
+    assert moved["group_id"] != a["group_id"] and moved["member_id"] != a["member_id"]
+    old = svc.db.one("SELECT * FROM chat_members WHERE id=?", (a["member_id"],))
+    assert old["left_at"] and old["leave_reason"] == "left"
+    assert svc.db.scalar("SELECT state FROM chat_groups WHERE id=?", (a["group_id"],)) == "closed"
+    assert svc.db.scalar("SELECT folder FROM chat_groups WHERE id=?", (moved["group_id"],)) == "/srv/other"
+    with pytest.raises(NotFound):
+        svc.chat.post(a["member_handle"], "x")
+    # a group with another member stays open
+    b = join(svc, "s2")
+    join(svc, "s2", folder="/srv/third")
+    assert svc.db.scalar("SELECT state FROM chat_groups WHERE id=?", (b["group_id"],)) == "closed"
+    c1, c2 = join(svc, "s5", folder="/srv/x"), join(svc, "s6", folder="/srv/x")
+    join(svc, "s5", folder="/srv/y")
+    assert svc.db.scalar("SELECT state FROM chat_groups WHERE id=?", (c2["group_id"],)) == "open"

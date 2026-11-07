@@ -117,11 +117,17 @@ class Chat:
         if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > 200:
             raise Invalid("session_id is required")
         folder = normalise_folder(folder)
+        # same session now in another folder: it leaves the old group first (host + folder is the ceiling)
+        old = self.db.one("SELECT m.id FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
+                          " WHERE g.host=? AND g.state='open' AND g.folder<>? AND m.kind=? AND m.session_id=?"
+                          " AND m.left_at IS NULL", (host, folder, kind, session_id))
+        if old is not None:
+            self.remove_member(old["id"], "left", client.id)
         now = now_iso()
         with self.db.tx() as c:  # BEGIN IMMEDIATE: a second joiner waits, then finds the group open
             row = c.execute("SELECT m.* FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
-                            " WHERE g.host=? AND g.state='open' AND m.kind=? AND m.session_id=? AND m.left_at IS NULL",
-                            (host, kind, session_id)).fetchone()
+                            " WHERE g.host=? AND g.state='open' AND g.folder=? AND m.kind=? AND m.session_id=?"
+                            " AND m.left_at IS NULL", (host, folder, kind, session_id)).fetchone()
             if row is not None:  # same session again: fresh handle, same member
                 group_id, member_id = row["group_id"], row["id"]
                 handle, sha = new_handle(member_id)
