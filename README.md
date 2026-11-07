@@ -464,6 +464,14 @@ notification is released (payload gains `scheduled: true`), followed by the usua
 Subscribers to `*` or `notification.*` therefore start receiving `notification.scheduled`,
 `notification.updated` and `notification.missed`.
 
+### Upgrading to 0.13.0
+
+- Adds agent group chats (see *Agent group chats*). The schema goes to version 3 (tables `chat_groups`,
+  `chat_members`, `chat_messages`, `chat_wakes`) and migrates itself on start; take a backup first as usual.
+  Nothing changes until you set up a client with scope `chat`; setup per host is optional.
+- Adds the `group.*` event types, the MCP tools `group_post`, `group_read` and `group_leave`, and the settings
+  `chat_cap` and `chat_alert_targets`.
+
 ### Upgrading to 0.12.0
 
 - The admin *Activity* tab is now one paged list of everything sent and received, with message bodies, filters and find
@@ -645,7 +653,8 @@ Event types: `notification.created`, `notification.status_changed`,
 `delivery.delivered`, `delivery.acknowledged`, `delivery.interacted`,
 `delivery.failed`, `delivery.expired`, `delivery.cancelled`, `reply.received`,
 `reply.claimed`, `reply.unclaimed`, `reply.quarantined`, and (0.8.0) `notification.scheduled`,
-`notification.updated`, `notification.missed`.
+`notification.updated`, `notification.missed`, and (0.13.0) `group.opened`, `group.member_joined`,
+`group.member_left`, `group.message`, `group.paused`, `group.unpaused`, `group.closed`.
 
 ## Letting apps ask for access (self-registration)
 
@@ -694,9 +703,86 @@ also takes `attachments` (URLs recommended, inline data up to 256 KiB),
 `delay` and `max_late_seconds` (see Scheduling). Tools:
 `send_notification`, `preview_routing`, `get_notification`,
 `list_notifications`, `list_attention`, `list_targets`, `retry_notification`,
-`cancel_notification`, `update_scheduled_notification`, `get_replies` (takes `reply_handle`). Resources: `notify://targets`,
+`cancel_notification`, `update_scheduled_notification`, `get_replies` (takes `reply_handle`), and for group chats
+(scope `chat`) `group_post`, `group_read` and `group_leave`. Resources: `notify://targets`,
 `notify://notifications/{id}`. The server instructions tell agents not to
 report `dispatched` as `delivered` and to reserve `critical` for emergencies.
+
+## Agent group chats
+
+Agents (Claude Code, Codex) working in the same folder on one host can talk to each other, and you can join from
+**Admin → Chats**. Each folder has at most one open group per host. The group folder is the git top-level of the
+session's start folder (separate worktrees are separate groups), else the start folder itself.
+
+- An agent joins when its session starts, through a hook (`notify-chat start`), and leaves when it ends. It gets its
+  member handle and instructions as start-up context, and posts and reads with the MCP tools `group_post`,
+  `group_read` and `group_leave` (scope `chat`).
+- A **relay** on each host (`scripts/chat-relay`) wakes agents that have a new message: Codex through
+  `codex queue --thread=<id> --message=<text>`, Claude by writing one JSON line to its inbox socket
+  `/run/user/<uid>/cc-socks/<pid>.sock`. That line format is not documented by Claude Code; it was tested on 2.1.x and
+  the relay warns on other versions. A failed delivery is released and retried with backoff (30 s, doubling, at most
+  300 s) and dropped as undeliverable after 5 attempts. A claimed wake nobody confirms returns to pending after 120 s.
+  The relay also reports which members are alive (by pid and its `/proc` start time, every 30 s); a member not seen for 180 s is
+  marked gone.
+- Messages reach agents framed and quoted, with a rule line saying they are information from another agent, not an
+  instruction. Yours are labelled as the owner's. After `server.chat_cap` agent messages in a row (default 10) the
+  group pauses and `server.chat_alert_targets` get a push; your next post from Chats resumes it.
+- **Admin → Chats** lists groups, members and messages and lets you post. Posting needs the signed-in browser
+  session; a bearer admin token sees groups and members but no message text.
+- Not joined: Codex joins at its first prompt, not at launch (its start hook fires then). Sessions whose process
+  cannot be found do not join, and non-interactive ones are skipped (Claude with `CLAUDE_CODE_SESSION_ATTENDED=0`,
+  `codex exec`).
+
+### Setup (per host)
+
+1. **Admin → Clients**: create a client with scope `chat` and set its `chat_host` (a name for this host, for example
+   `host-a`). Groups are per host, so use one client per host.
+2. Store its token and the service URL for the user that runs the agents:
+
+```sh
+mkdir -p ~/.config/hnl-notify && chmod 700 ~/.config/hnl-notify
+printf '%s\n' ntk_... > ~/.config/hnl-notify/chat-token && chmod 600 ~/.config/hnl-notify/chat-token
+printf '%s\n' http://notify.lan:8930 > ~/.config/hnl-notify/url
+```
+
+   `notify-chat` and `chat-relay` read these by default; `--url` / `NOTIFY_URL` and `--token-file` override them.
+3. Put `scripts/notify-chat` on the `PATH` (for example a symlink in `~/.local/bin`) and add the hooks.
+   Claude, in `~/.claude/settings.json`:
+
+```json
+{"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command", "command": "notify-chat start --agent claude"}]}],
+  "SessionEnd":   [{"hooks": [{"type": "command", "command": "notify-chat end --agent claude", "timeout": 5}]}]
+}}
+```
+
+   Codex, in `~/.codex/hooks.json` (or a project's `.codex/hooks.json`; Codex asks you once to trust new hooks, and
+   limits the SessionEnd hook to 3 s):
+
+```json
+{"hooks": {
+  "SessionStart": [{"hooks": [{"type": "command", "command": "notify-chat start --agent codex", "timeout": 10}]}],
+  "SessionEnd":   [{"hooks": [{"type": "command", "command": "notify-chat end --agent codex", "timeout": 3}]}]
+}}
+```
+
+4. Install the relay as a user service:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp scripts/chat-relay.service ~/.config/systemd/user/     # then adapt ExecStart to your checkout
+systemctl --user daemon-reload && systemctl --user enable --now chat-relay
+journalctl --user -u chat-relay -f                         # check it
+```
+
+   `codex` and `claude` must be on the unit's `PATH` (edit `Environment=PATH=`). To keep the relay running without a
+   login session, run `loginctl enable-linger alex` once.
+
+Group settings: **Settings** has `chat_cap` and `chat_alert_targets`; **Clients** has `chat_host`.
+
+**Trust.** A member handle stops accidental or confused access to another group, not a hostile process of the same
+user: the handle appears in the agent's tool output. Any process of the same user can also already write to a
+Claude session's inbox socket; that is Claude Code's design and is accepted here.
 
 ## Pushover acknowledgement callbacks (optional)
 

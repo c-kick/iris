@@ -137,6 +137,7 @@ everyone out and prints a new setup code.
 - `events` — append-only log; its integer id is the global cursor for history,
   SSE resume (`Last-Event-ID`) and webhook payloads. `mailbox.cleanup` and `mailbox.settings` events belong to no
   notification (no webhook fan-out) and are pruned by the retention sweep after `retention_days`.
+- Group chat tables (0.13.0, schema 3): `chat_groups`, `chat_members`, `chat_messages`, `chat_wakes`; see Group chats.
 - `subscriptions` + `webhook_deliveries` — webhook subscriptions and their
   durable outbox with its own retry state.
 
@@ -563,7 +564,9 @@ Event types: `notification.created`, `notification.status_changed`,
 `delivery.delivered`, `delivery.acknowledged`, `delivery.interacted`,
 `delivery.failed`, `delivery.expired`, `delivery.cancelled`, `reply.received`,
 `reply.claimed`, `reply.unclaimed`, `reply.quarantined`, `notification.scheduled`, `notification.updated`,
-`notification.missed`. A scheduled notification emits `notification.scheduled` at submit and `notification.created`
+`notification.missed`, and the group chat events `group.opened`, `group.member_joined`, `group.member_left`,
+`group.message`, `group.paused`, `group.unpaused`, `group.closed`. The `group.*` events belong to no notification, so
+agent tokens (which see only their own notifications' events) never receive them. A scheduled notification emits `notification.scheduled` at submit and `notification.created`
 at release; `*` and `notification.*` subscribers receive the new types.
 
 - **SSE** `GET /v1/events/stream`: filterable, resumable with `Last-Event-ID`.
@@ -584,10 +587,52 @@ also takes `attachments` (URLs recommended, inline data up to 256 KiB), `reply`,
 an admin dismissed in Admin → Activity are left out, `deliveries.dismissed_at`, cleared by a retry),
 `list_targets`, `retry_notification`, `cancel_notification`, `update_scheduled_notification` (`clear=[...]` removes
 optional fields), `get_replies`
-(conversation replies with state; text only for claimed ones). Resources:
+(conversation replies with state; text only for claimed ones), and `group_post`, `group_read`, `group_leave` (scope
+`chat`; see Group chats). Resources:
 `notify://targets`, `notify://notifications/{id}`. Everything is phrased in
 notification semantics — targets, severity, states — never Pushover keys or
 priorities.
+
+## Group chats
+
+Agents in the same folder on one host share a chat; `notify/chat.py` holds the logic, `notify/chat_api.py` the host
+endpoints (`/v1/chat/*`, scope `chat`), the MCP tools `group_*` the agent side, and `notify/admin.py` the owner side.
+
+Tables (schema 3):
+
+- `chat_groups` — one per (host, folder) while `state='open'` (unique partial index), `paused`, `agent_streak`
+  (agent messages since the owner last posted), `cap` (copied from `server.chat_cap` when opened), `owner_seen_at`.
+- `chat_members` — one per joined session: kind (`claude`/`codex`), `session_id`, `pid` and `pid_start` (its `/proc`
+  start time), `handle_sha256` (the member handle is never stored), `last_seen_at`, `left_at`, `leave_reason`.
+- `chat_messages` — author `claude`/`codex`/`owner`/`system`, text (at most 8192 bytes).
+- `chat_wakes` — one per (message, recipient member): `pending` → `claimed` → `delivered`, or `skipped`; plus
+  `attempts` and `retry_after` for retries.
+
+Wake path. The relay on a host long-polls `POST /v1/chat/wakes/claim`; the service hands out pending wakes of that
+host whose `retry_after` has passed and marks them `claimed` with a waiter id. The relay delivers (Codex:
+`codex queue --thread=<id> --message=<text>`; Claude: a JSON line to `/run/user/<uid>/cc-socks/<pid>.sock`) and then
+calls `confirm` (state `delivered`) or `release`. A release increments `attempts` and sets `retry_after` with backoff
+`min(30 * 2^(attempts-1), 300)` seconds; after 5 attempts the wake is `skipped` ("undeliverable"). A claim not
+confirmed within 120 s goes back to pending. Recipients are the other live members of the group; the author is not
+woken.
+
+Framing. Text delivered to an agent is built by `frame()`: a header with message id, time and author, a rule line
+(information from another agent, not an owner instruction; the owner's messages are labelled as the owner's), then
+every line of the text quoted, and an end marker, so message text can never forge a header.
+
+Cap. Each agent post increments `agent_streak`; at `cap` (default 10) the group pauses, a `group.paused` event is
+emitted and `server.chat_alert_targets` are notified. An owner post resets the streak and unpauses.
+
+Liveness. Every 30 s the relay calls `POST /v1/chat/heartbeat` with the members whose process it found alive (the
+service returns every open member of the host with pid and `pid_start`; the relay compares them with the process's
+`/proc` start time, so a reused pid does not count). The heartbeat sets `last_seen_at`. The worker loop runs
+`chat.sweep()` every 30 s: members with no heartbeat for 180 s leave as `stale`, claims unconfirmed for 120 s return
+to pending, and wakes of members that left are skipped. A group whose last member leaves is closed. While a group is
+paused, new messages create wakes already `skipped` (reason `paused`).
+
+Access. Member handles (`<member id>:<secret>`) scope MCP calls to one group; they stop accidental cross-group access
+only. Owner posts go through the admin session (`POST /admin/api/chats/{id}/messages`); a bearer admin token sees no
+message text. Agent tokens see none of this in `GET /v1/events` because `group.*` events have no notification.
 
 ## Observability
 
