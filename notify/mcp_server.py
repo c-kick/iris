@@ -10,12 +10,12 @@ from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from .attachments import MCP_INLINE_MAX
+from .chat import MEMBER_GONE
 from .core import Client, Conflict, Forbidden, Gone, Invalid, NotFound, NotifyService
 from .models import NotificationIn, ScheduleUpdate, Scope
 from .schedule import local_zone
 
 SCOPE_KEY = "notify.client"
-_NO_MEMBER = "unknown or ended member handle"  # what Chat.member_from_handle raises
 
 _INSTRUCTIONS = """\
 hnl-notify is the household notification service. Send notifications to logical
@@ -163,13 +163,8 @@ def build_mcp(get_service: Any) -> FastMCP:
     async def _chat_call(fn: Any, handle: str, *a: Any) -> Any:
         """Any bad or dead handle gives one fixed message (the value is never echoed)."""
         if not isinstance(handle, str) or len(handle) > 200:
-            raise ToolError("member_handle is not valid")
-        try:
-            return await call(fn, handle, *a)
-        except ToolError as e:
-            if str(e) == _NO_MEMBER:
-                raise ToolError("member_handle is not valid") from None
-            raise
+            raise ToolError(MEMBER_GONE)
+        return await call(fn, handle, *a)  # call() turns MemberGone (a NotFound) into ToolError(MEMBER_GONE)
 
     @mcp.tool()
     async def send_notification(

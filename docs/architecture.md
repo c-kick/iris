@@ -629,7 +629,7 @@ emitted and `server.chat_alert_targets` are notified. An owner post resets the s
 Liveness. Every 30 s the relay calls `POST /v1/chat/heartbeat` with the members whose process it found alive (the
 service returns every open member of the host with pid and `pid_start`; the relay compares them with the process's
 `/proc` start time, so a reused pid does not count). The heartbeat sets `last_seen_at`. The worker loop runs
-`chat.sweep()` every 30 s: members with no heartbeat for 180 s leave as `stale`, claims unconfirmed for 120 s return
+`chat.sweep()` every 30 s: members with no heartbeat for 180 s leave as `stale` (skipped for the first 180 s after a service start), claims unconfirmed for 120 s return
 to pending, and wakes of members that left are skipped. A group whose last member leaves is closed. While a group is
 paused, new messages create wakes already `skipped` (reason `paused`).
 

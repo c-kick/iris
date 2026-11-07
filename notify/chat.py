@@ -43,10 +43,25 @@ OWNER_RULES = "Message from the owner."
 SYSTEM_RULES = "Notice from hnl-notify."
 
 
+MEMBER_GONE = "membership ended; restart the session to rejoin the group chat"
+
+
+class MemberGone(NotFound):
+    """The handle is unknown, tampered with, or its member has left. One fixed message for all three."""
+
+    def __init__(self) -> None:
+        super().__init__(MEMBER_GONE)
+
+
 def _clean(text: str, *, keep_newlines: bool) -> str:
-    """Drop control characters (and line/paragraph separators); keep tab and, optionally, newline."""
+    """Drop control and format characters (and line/paragraph separators); keep tab and, optionally, newline."""
     keep = "\t\n" if keep_newlines else "\t"
-    return "".join(ch for ch in text if ch in keep or unicodedata.category(ch) not in ("Cc", "Zl", "Zp"))
+    return "".join(ch for ch in text if ch in keep or unicodedata.category(ch) not in ("Cc", "Cf", "Zl", "Zp"))
+
+
+def _clean_desc(text: str) -> str:
+    """Author description for the header: no brackets or separator dot, so a folder cannot forge a header."""
+    return _clean(text, keep_newlines=False).replace("[", "(").replace("]", ")").replace("·", "-")
 
 
 def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str) -> str:
@@ -78,6 +93,7 @@ class Chat:
     def __init__(self, svc: NotifyService):
         self.svc = svc
         self.now = utcnow  # seam: tests move the clock
+        self.started_at = self.now()  # a restart gives members one STALE_SECONDS to heartbeat again
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -111,7 +127,7 @@ class Chat:
             row = self.db.one("SELECT * FROM chat_members WHERE id=? AND left_at IS NULL", (parsed[0],))
             if row is not None and handle_matches(member_handle, row["id"], row["handle_sha256"]):
                 return row
-        raise NotFound("unknown or ended member handle")
+        raise MemberGone()
 
     # ------------------------------------------------------------------ join / leave
     def join(self, client: Client, *, kind: str, session_id: str, folder: str,
@@ -215,7 +231,7 @@ class Chat:
                 raise Invalid("group is closed")
             if not owner and c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL",
                                        (member_id,)).fetchone() is None:
-                raise NotFound("unknown or ended member handle")
+                raise MemberGone()
             paused = bool(g["paused"])
             streak = g["agent_streak"]
             if owner:
@@ -273,7 +289,7 @@ class Chat:
             return "hnl-notify"
         row = self.db.one("SELECT m.kind, g.host, g.folder FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
                           " WHERE m.id=?", (msg["author_member_id"],))
-        return f"{row['kind']} · {row['host']}:{row['folder']}" if row else str(msg["author"])
+        return f"{row['kind']} · {_clean_desc(row['host'] + ':' + row['folder'])}" if row else str(msg["author"])
 
     def framed_text(self, message_id: str) -> str:
         """The recipient-facing text of a stored message."""
@@ -397,14 +413,15 @@ class Chat:
                              "pid": r["pid"], "pid_start": r["pid_start"]} for r in rows]}
 
     def sweep(self, now: datetime | None = None) -> None:
-        """(a) members with no heartbeat leave as stale; (b) unconfirmed claims return to pending;
+        """(a) members with no heartbeat leave as stale (not until STALE_SECONDS after start-up); (b) unconfirmed claims return to pending;
         (c) non-final wakes of members that left are skipped."""
         now = now or self.now()
         stale_before = iso(now - timedelta(seconds=STALE_SECONDS))
         claim_before = iso(now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS))
-        for r in self.db.query("SELECT id FROM chat_members WHERE left_at IS NULL AND last_seen_at < ?",
-                               (stale_before,)):
-            self.remove_member(r["id"], "stale")
+        if now - self.started_at >= timedelta(seconds=STALE_SECONDS):
+            for r in self.db.query("SELECT id FROM chat_members WHERE left_at IS NULL AND last_seen_at < ?",
+                                   (stale_before,)):
+                self.remove_member(r["id"], "stale")
         with self.db.tx() as c:
             c.execute("UPDATE chat_wakes SET state='pending', waiter_id=NULL, claimed_at=NULL"
                       " WHERE state='claimed' AND claimed_at < ?", (claim_before,))

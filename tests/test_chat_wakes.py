@@ -9,6 +9,7 @@ import pytest
 
 from notify.chat import CLAIM_TIMEOUT_SECONDS, STALE_SECONDS
 from notify.core import Forbidden, NotFound
+from notify.db import iso
 from tests.test_chat_core import AGENT, NOHOST, OTHER_HOST, build, join
 
 
@@ -27,6 +28,7 @@ class Clock:
 def svc(tmp_path):
     s = build(tmp_path)
     s.chat.now = Clock()
+    s.chat.started_at = s.chat.now()  # the grace after start-up counts from the fake clock
     yield s
     s.db.close()
 
@@ -218,3 +220,16 @@ def test_release_wrong_waiter_or_host(svc):
         svc.chat.release(NOHOST, g["wake_id"], "w1")
     r = wake_state(svc, g["wake_id"])
     assert r["state"] == "claimed" and r["attempts"] == 0
+
+
+def test_no_stale_sweep_right_after_start(svc):
+    a, b = two(svc)
+    started = svc.chat.started_at
+    with svc.db.tx() as c:
+        c.execute("UPDATE chat_members SET last_seen_at=?", (iso(started - timedelta(minutes=10)),))
+    svc.chat.now.t = started + timedelta(seconds=60)
+    svc.chat.sweep()
+    assert svc.db.scalar("SELECT COUNT(*) FROM chat_members WHERE left_at IS NULL") == 2
+    svc.chat.now.t = started + timedelta(seconds=STALE_SECONDS + 1)
+    svc.chat.sweep()
+    assert svc.db.scalar("SELECT COUNT(*) FROM chat_members WHERE left_at IS NULL") == 0

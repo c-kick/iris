@@ -1286,6 +1286,13 @@ class NotifyService:
             c.execute("DELETE FROM reply_quarantine WHERE received_at < ?", (cutoff,))
             c.execute("DELETE FROM events WHERE notification_id IS NULL AND type LIKE 'mailbox.%' AND created_at < ?",
                       (cutoff,))
+            old = "(SELECT id FROM chat_groups WHERE state='closed' AND closed_at < ?)"
+            c.execute(f"DELETE FROM chat_wakes WHERE message_id IN (SELECT id FROM chat_messages WHERE group_id IN {old})"
+                      f" OR member_id IN (SELECT id FROM chat_members WHERE group_id IN {old})", (cutoff, cutoff))
+            c.execute(f"DELETE FROM chat_messages WHERE group_id IN {old}", (cutoff,))
+            c.execute(f"DELETE FROM chat_members WHERE group_id IN {old}", (cutoff,))
+            c.execute("DELETE FROM chat_groups WHERE state='closed' AND closed_at < ?", (cutoff,))
+            c.execute("DELETE FROM events WHERE type LIKE 'group.%' AND created_at < ?", (cutoff,))
         return len(ids)
 
     def stats(self) -> dict[str, Any]:

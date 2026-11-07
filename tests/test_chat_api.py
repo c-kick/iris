@@ -7,6 +7,7 @@ import pytest
 
 from notify.app import create_app
 from notify.auth import hash_token
+from notify.chat import MEMBER_GONE
 from notify.config import NotifyConfig
 from tests.conftest import TOKENS, FakePushover, LiveServer, fake_resolve, make_config
 from tests.test_mcp import payload, run_session
@@ -48,7 +49,8 @@ def test_join_leave_roundtrip_rest(chatlive):
     c = chatlive.client("hosta")
     r = c.post("/v1/chat/leave", headers={"X-Member-Handle": j["member_handle"]}, json={"reason": "ended"})
     assert r.status_code == 204
-    assert c.post("/v1/chat/leave", headers={"X-Member-Handle": j["member_handle"]}).status_code == 404
+    again = c.post("/v1/chat/leave", headers={"X-Member-Handle": j["member_handle"]})
+    assert again.status_code == 404 and again.json()["detail"] == MEMBER_GONE
     assert c.post("/v1/chat/heartbeat", json={"alive": []}).json() == {"members": []}
 
 
@@ -115,7 +117,7 @@ def test_mcp_post_wrong_handle(chatlive):
                 for h in (tampered, "garbage", "x" * 500)]
 
     for r in run_session(chatlive, "bot", flow):
-        assert r.isError and r.content[0].text.endswith(": member_handle is not valid")
+        assert r.isError and r.content[0].text.endswith(": " + MEMBER_GONE)
     assert chatlive.service.db.scalar("SELECT COUNT(*) FROM chat_messages") == 0
 
     chatlive.client("hosta").post("/v1/chat/leave", headers={"X-Member-Handle": j["member_handle"]})
@@ -124,7 +126,7 @@ def test_mcp_post_wrong_handle(chatlive):
         return await s.call_tool("group_read", {"member_handle": j["member_handle"]})
 
     r = run_session(chatlive, "bot", dead)
-    assert r.isError and r.content[0].text.endswith(": member_handle is not valid")
+    assert r.isError and r.content[0].text.endswith(": " + MEMBER_GONE)
 
 
 def test_mcp_needs_chat_scope(chatlive):

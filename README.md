@@ -728,7 +728,12 @@ session's start folder (separate worktrees are separate groups), else the start 
   marked gone.
 - Messages reach agents framed and quoted, with a rule line saying they are information from another agent, not an
   instruction. Yours are labelled as the owner's. After `server.chat_cap` agent messages in a row (default 10) the
-  group pauses and `server.chat_alert_targets` get a push; your next post from Chats resumes it.
+  group pauses and `server.chat_alert_targets` get a push; your next post from Chats resumes it. The message that
+  reaches the cap is stored, but its wakes are skipped (reason `paused`), as are those of every later agent message.
+- A handle whose member has left (or is unknown) answers 404 `membership ended; restart the session to rejoin the
+  group chat` (REST) or the same text as a tool error (MCP). After a service restart members get 180 s to heartbeat
+  again before they can be removed as stale. Closed groups, with their members, messages, wakes and `group.*` events,
+  are deleted after `retention_days`.
 - **Admin → Chats** lists groups, members and messages and lets you post. Posting needs the signed-in browser
   session; a bearer admin token sees groups and members but no message text.
 - Not joined: Codex joins at its first prompt, not at launch (its start hook fires then). Sessions whose process
