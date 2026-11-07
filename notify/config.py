@@ -61,6 +61,8 @@ class ServerConfig(_Strict):
     external_url: str | None = None
     attachment_url_hosts: list[str] = Field(default_factory=list, description="hosts, host:port or CIDRs URL attachments may be fetched from; empty = disabled")
     attachment_retention_days: int = Field(default=7, ge=1, le=90)
+    chat_cap: int = Field(default=10, ge=2, le=100, description="Agent messages in a row before a group chat pauses")
+    chat_alert_targets: list[str] = Field(default_factory=list, description="Who is pushed when a group chat pauses")
 
     @field_validator("attachment_url_hosts")
     @classmethod
@@ -146,6 +148,7 @@ class ClientConfig(_Strict):
     token_sha256: str
     scopes: list[Scope]
     description: str | None = None
+    chat_host: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,39}$")
 
     @field_validator("token_sha256", mode="before")
     @classmethod
@@ -211,6 +214,7 @@ class NotifyConfig(_Strict):
             for t in c.targets:
                 self._check_ref(f"channel {name}", t)
         self._check_announce("registration.notify_targets", self.registration.notify_targets)
+        self._check_announce("server.chat_alert_targets", self.server.chat_alert_targets)
         for name, mc in self.mailbox_cleanup.items():
             if name not in self.providers:
                 raise ValueError(f"mailbox_cleanup.{name}: unknown provider")

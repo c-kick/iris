@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -310,11 +310,12 @@ class Database:
             "replies": {"late_ok": "INTEGER NOT NULL DEFAULT 0"},
         })
         self._add_conversations()
+        self._add_chat()
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_scheduled ON notifications(status, send_at)")
         with self.tx() as c:
-            c.execute("INSERT OR IGNORE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
+            c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
     def _add_conversations(self) -> None:
         """0.7.0: the conversations table and its one-time backfill. Not in SCHEMA: executescript autocommits, so a
@@ -327,6 +328,28 @@ class Database:
             # every existing reply conversation keeps the old token rule; its unclaimed replies (late_ok 0) stay put
             c.execute("INSERT INTO conversations(id, legacy, created_at) SELECT DISTINCT conversation_id, 1, ?"
                       " FROM notifications WHERE reply_wanted=1 AND conversation_id IS NOT NULL", (iso(utcnow()),))
+
+    def _add_chat(self) -> None:
+        """Agent group chats (schema 3). Not in SCHEMA, like conversations: one transaction, all or nothing."""
+        with self.tx() as c:
+            if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_groups'").fetchone():
+                return
+            c.execute("CREATE TABLE chat_groups (id TEXT PRIMARY KEY, host TEXT NOT NULL, folder TEXT NOT NULL,"
+                      " state TEXT NOT NULL, opened_at TEXT, closed_at TEXT, paused INTEGER NOT NULL DEFAULT 0,"
+                      " agent_streak INTEGER NOT NULL DEFAULT 0, cap INTEGER NOT NULL, owner_seen_at TEXT)")
+            c.execute("CREATE UNIQUE INDEX ux_chat_groups_open ON chat_groups(host, folder) WHERE state='open'")
+            c.execute("CREATE TABLE chat_members (id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES chat_groups(id),"
+                      " kind TEXT CHECK(kind IN ('claude','codex')), session_id TEXT NOT NULL, pid INTEGER,"
+                      " pid_start TEXT, client_id TEXT, handle_sha256 TEXT NOT NULL, joined_at TEXT, last_seen_at TEXT,"
+                      " left_at TEXT, leave_reason TEXT)")
+            c.execute("CREATE TABLE chat_messages (id TEXT PRIMARY KEY, group_id TEXT NOT NULL REFERENCES chat_groups(id),"
+                      " author_member_id TEXT, author TEXT CHECK(author IN ('claude','codex','owner','system')),"
+                      " text TEXT NOT NULL, created_at TEXT)")
+            c.execute("CREATE TABLE chat_wakes (id TEXT PRIMARY KEY, message_id TEXT NOT NULL REFERENCES chat_messages(id),"
+                      " member_id TEXT NOT NULL REFERENCES chat_members(id),"
+                      " state TEXT CHECK(state IN ('pending','claimed','delivered','skipped')), waiter_id TEXT,"
+                      " claimed_at TEXT, finished_at TEXT, reason TEXT)")
+            c.execute("CREATE INDEX ix_chat_wakes_member_state ON chat_wakes(member_id, state)")
 
     def _add_missing_columns(self, columns: dict[str, dict[str, str]]) -> None:
         """Additive migrations for databases created by older versions."""

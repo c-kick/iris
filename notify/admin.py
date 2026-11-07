@@ -500,6 +500,7 @@ class ClientIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     description: str | None = None
     scopes: list[Scope] = Field(min_length=1)
+    chat_host: str | None = None
 
 
 @router.post("/api/clients/{name}")
@@ -511,6 +512,8 @@ async def create_client(name: str, body: ClientIn, request: Request, _: Client =
     def mutate(data: dict[str, Any]) -> None:
         data["clients"][name] = {"token_sha256": hash_token(token), "scopes": [s.value for s in body.scopes],
                                  "description": body.description or None}
+        if body.chat_host:
+            data["clients"][name]["chat_host"] = body.chat_host
     out = _commit(request, mutate)
     out["token"] = token
     return out
@@ -522,6 +525,11 @@ async def update_client(name: str, body: ClientIn, request: Request, _: Client =
         if name not in data["clients"]:
             raise ConfigError(f"unknown API client {name!r}")
         data["clients"][name].update(scopes=[s.value for s in body.scopes], description=body.description or None)
+        if "chat_host" in body.model_fields_set:  # omitted = keep, empty = clear
+            if body.chat_host:
+                data["clients"][name]["chat_host"] = body.chat_host
+            else:
+                data["clients"][name].pop("chat_host", None)
     return _commit(request, mutate)
 
 
@@ -572,6 +580,8 @@ class ServerIn(BaseModel):
     retention_days: int | None = None
     attachment_retention_days: int | None = None
     attachment_url_hosts: list[str] | None = None
+    chat_cap: int | None = None
+    chat_alert_targets: list[str] | None = None
 
 
 @router.put("/api/server")
@@ -591,6 +601,10 @@ async def put_server(body: ServerIn, request: Request, _: Client = Depends(admin
             s["attachment_retention_days"] = body.attachment_retention_days
         if body.attachment_url_hosts is not None:
             s["attachment_url_hosts"] = [h.strip() for h in body.attachment_url_hosts if h.strip()]
+        if body.chat_cap is not None:
+            s["chat_cap"] = body.chat_cap
+        if body.chat_alert_targets is not None:
+            s["chat_alert_targets"] = [t.strip() for t in body.chat_alert_targets if t.strip()]
     return _commit(request, mutate)
 
 

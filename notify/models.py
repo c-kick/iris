@@ -33,6 +33,7 @@ class Scope(str, Enum):
     read = "read"
     manage = "manage"
     admin = "admin"
+    chat = "chat"
 
 
 # --- delivery state machine -------------------------------------------------

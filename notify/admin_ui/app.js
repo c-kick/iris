@@ -52,6 +52,7 @@ const SCOPE_HELP = {
   read: "see its own history, targets and events",
   manage: "retry or cancel its own notifications",
   admin: "everything, for every client",
+  chat: "take part in agent group chats",
 };
 
 // ---------------------------------------------------------------- helpers
