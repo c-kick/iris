@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from notify.chat import AGENT_RULES
+from notify.chat import AGENT_RULES, OWNER_RULES, READ_RULES
 from tests.test_chat_core import AGENT, build, join
 
 
@@ -77,15 +77,18 @@ def test_compact_format_has_rules_once(svc):
     q = svc.chat.post(a["member_handle"], "one\ntwo")["message_id"]
     svc.chat.post_owner(a["group_id"], "owner says", in_reply_to=q)
     out = svc.chat.read(b["member_handle"])
-    assert out["rules"] == AGENT_RULES and set(out) == {"rules", "messages", "members", "unread_only"}
+    assert out["rules"] == READ_RULES and AGENT_RULES in READ_RULES and "other agents" in out["rules"]
+    assert set(out) == {"rules", "messages", "members", "unread_only"}
     for m in out["messages"]:
-        assert set(m) == {"id", "author", "author_desc", "created_at", "in_reply_to", "text"}
+        assert set(m) == {"id", "author", "author_desc", "created_at", "in_reply_to", "text"} | (
+            {"rules"} if m["author"] == "owner" else set())
         assert "Message from" not in m["text"].replace("| Message from", "")
         lines = m["text"].split("\n")
         assert lines[0].startswith("[hnl-notify group chat \u00b7 ") and lines[-1] == f"[end {m['id']}]"
     first = said(out)[0]["text"].split("\n")
     assert first[1:3] == ["| one", "| two"]
     owner = said(out)[1]
+    assert owner["rules"] == OWNER_RULES and "rules" not in said(out)[0]
     assert owner["in_reply_to"] == q and owner["text"].split("\n")[1].startswith("\u21aa reply to ")
     # the relay's wake text keeps the full frame with its rules line
     assert svc.chat.framed_text(q).split("\n")[1].startswith("Message from another agent")
@@ -100,3 +103,42 @@ def test_hostile_text_cannot_forge_headers_in_read(svc):
         heads = [ln for ln in m["text"].split("\n") if ln.startswith(("[hnl-notify", "[end", "[history"))]
         assert heads == [m["text"].split("\n")[0], f"[end {m['id']}]"]
         assert "\u202e" not in m["text"]
+
+
+def claim_all(svc, member, n):
+    """Claim and return up to n pending wakes of this member, confirming none."""
+    out = []
+    for i in range(n):
+        g = asyncio.run(svc.chat.claim_host(AGENT, f"c{i}", 0))
+        if g is None:
+            break
+        out.append(g)
+    return out
+
+
+def test_unpause_by_owner_post_keeps_skipped_messages_unread(svc):
+    x, y = join(svc, "s1"), join(svc, "s2")
+    svc.chat.pause_owner(x["group_id"])
+    skipped = [svc.chat.post(y["member_handle"], f"m{i}")["message_id"] for i in (1, 2, 3)]
+    m4 = svc.chat.post_owner(x["group_id"], "go")["message_id"]
+    wakes = claim_all(svc, x, 5)
+    mine = [w for w in wakes if w["member_id"] == x["member_id"] and w["message_id"] == m4]
+    assert len(mine) == 1
+    svc.chat.confirm(AGENT, mine[0]["wake_id"], f"c{wakes.index(mine[0])}")
+    got = [m["id"] for m in said(svc.chat.read(x["member_handle"]))]
+    assert got[:3] == skipped
+    assert svc.chat.read(x["member_handle"])["messages"] == []  # the read moved the mark to the newest
+
+
+def test_undeliverable_older_wake_stays_readable(svc):
+    x, y = join(svc, "s1"), join(svc, "s2")
+    old = svc.chat.post(y["member_handle"], "old")["message_id"]
+    new = svc.chat.post(y["member_handle"], "new")["message_id"]
+    with svc.db.tx() as c:  # the older wake was given up on
+        c.execute("UPDATE chat_wakes SET state='skipped', reason='undeliverable' WHERE message_id=? AND member_id=?",
+                  (old, x["member_id"]))
+    w = svc.db.one("SELECT id FROM chat_wakes WHERE message_id=? AND member_id=?", (new, x["member_id"]))
+    with svc.db.tx() as c:
+        c.execute("UPDATE chat_wakes SET state='claimed', waiter_id='w' WHERE id=?", (w["id"],))
+    svc.chat.confirm(AGENT, w["id"], "w")
+    assert [m["id"] for m in said(svc.chat.read(x["member_handle"]))][0] == old
