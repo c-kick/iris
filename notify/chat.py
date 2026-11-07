@@ -87,8 +87,8 @@ def reply_excerpt(quoted_text: str) -> str:
 
 
 def reply_line(quoted_id: str, quoted_desc: str, quoted_text: str) -> str:
-    """The line a reply carries under its header. Starts with an arrow and has no brackets, so it is never a header."""
-    return f"\u21aa reply to {quoted_id} (from {_clean_desc(quoted_desc)}): \"{reply_excerpt(quoted_text)}\""
+    """The two lines a reply carries under its header: an arrow line without brackets, and the excerpt quoted like body text."""
+    return f"\u21aa reply to {quoted_id} (from {_clean_desc(quoted_desc)}):\n{QUOTE}{reply_excerpt(quoted_text)}"
 
 
 def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, reply: str | None = None) -> str:
