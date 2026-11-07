@@ -290,9 +290,15 @@ class Workers:
 
     # ------------------------------------------------------------------ sweeper
     async def _sweep_loop(self) -> None:
+        last_retention = float("-inf")
+
         async def once() -> None:
-            removed = self.service.retention_sweep()
-            if removed:
-                log.info("retention sweep", extra={"removed": removed})
-            await asyncio.sleep(3600)
+            nonlocal last_retention
+            if time.monotonic() - last_retention >= 3600:
+                removed = self.service.retention_sweep()
+                if removed:
+                    log.info("retention sweep", extra={"removed": removed})
+                last_retention = time.monotonic()
+            self.service.chat.sweep()  # chat liveness must be checked well within STALE_SECONDS
+            await asyncio.sleep(30)
         await self._guard("sweeper", once, 60.0)
