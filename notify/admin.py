@@ -882,6 +882,11 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
                 m["history_request"]["reason"] = _clean_desc(" ".join(hr["reason"].split()))
         if r["in_reply_to"]:
             m["in_reply_to"] = r["in_reply_to"]
+        if r["claimed_by_member_id"]:  # a member id and kind only, no text: fine for a bearer admin too
+            cm = svc.db.one("SELECT id, kind FROM chat_members WHERE id=?", (r["claimed_by_member_id"],))
+            if cm is not None:
+                m["claimed_by"] = f"{cm['kind'].capitalize()} {cm['id']}"
+                m["claimed_at"] = r["claimed_at"]
         if client.via_session:  # like replies: a bearer admin sees states and times, never what people wrote
             m["text"] = r["text"]
             m["member_id"] = r["author_member_id"]

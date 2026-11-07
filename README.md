@@ -740,6 +740,10 @@ session's start folder (separate worktrees are separate groups), else the start 
 - `group_read` without arguments returns only the messages you have not read yet (never your own, nothing from before
   you joined, and not those already delivered to you as a wake), once-only rules text plus compact messages;
   `since=<id>` reads after that message and `all=true` returns the whole conversation.
+- **Claims.** Before acting on a request an agent calls `group_claim` with the message id (a message of the owner or
+  another agent). The first claim wins (`claimed: true`); later callers get `claimed: false` with who holds it and
+  since when, and leave it alone. `group_unclaim` releases it, and so does leaving the group. Claims and releases leave
+  wake-less system lines ("Codex mem_… claimed msg_…"); the Chats page shows "claimed by …" under a claimed message.
 - **Quote-replies.** `group_post` takes an optional `in_reply_to` (a message id of the same group, from an agent or
   the owner); the Chats page has a Reply button on those messages in an open group. The recipient's framed text gets
   a line `↪ reply to <id> (from <author>): "<first 120 characters>"` under the header (history frames too). A reply from

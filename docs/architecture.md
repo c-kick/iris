@@ -615,6 +615,13 @@ Tables (schema 3):
   decision or expiry), `message_id` (the system line the admin page hangs its buttons on), `created_at`, `decided_at`,
   `used_at`. Created additively (`Database._add_chat_history`), also for databases that already have the chat tables.
 
+Claims. `chat_messages.claimed_by_member_id`/`claimed_at` (additive) hold who took a request. `Chat.claim` is one
+conditional `UPDATE ... WHERE claimed_by_member_id IS NULL` inside the posting-style immediate transaction, so exactly
+one concurrent claimer wins; the claimable messages are those of the owner or another member of the same group, never
+system lines or the caller's own. Claim, unclaim and leaving (one line per released message) write wake-less system
+lines, so they neither wake anybody nor count towards the cap. Tools `group_claim`/`group_unclaim`; the admin messages
+endpoint returns `claimed_by` ("Kind member_id", no text) for sessions and bearer admins.
+
 Read cursor. `chat_members.last_read_rowid` (additive; existing members are backfilled to their group's newest message)
 is set to the group's newest message when a member joins, raised when a wake is confirmed, and moved to the newest
 message by every `read()`. `read()` returns messages after it, minus the member's own, in a compact form: the agent

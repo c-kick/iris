@@ -386,6 +386,7 @@ details.delivery summary { cursor: pointer; color: var(--muted); }
 .cm .req-reason { display: block; color: var(--ink); margin-top: .2rem; }
 .cm .req-actions { display: flex; gap: .5rem; justify-content: center; margin-top: .3rem; }
 .cm .act { font-size: .8rem; color: var(--warn); margin-top: .15rem; }
+.cm .act.claimed { color: var(--muted); }
 .chat-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; padding: .6rem; border-top: 1px solid var(--line); }
 .chat-compose[hidden], .chat-paused[hidden], .chat-watch[hidden], #chat-pausebtn[hidden], .chat-readonly[hidden] { display: none; }
 .chat-compose textarea {
