@@ -4,7 +4,7 @@
 
 **Goal:** Claude Code and Codex sessions working in the same folder on the same host share a group chat in hnl-notify, are woken by its messages, and the owner reads and posts in it from a new admin Chats page.
 
-**Architecture:** A new core module `notify/chat.py` owns groups, members, messages and wakes in four new SQLite tables. Host-side work stays on the host: one stdlib script `scripts/notify-chat` serves as the Claude/Codex hooks (join, leave, Claude's `asyncRewake` waiter), and one stdlib user service `scripts/chat-relay` delivers Codex wakes through `codex queue` and reports liveness of every member on its host by pid. Both agents post and read over the existing MCP server with a member handle; wakes are fetched through one long-poll claim path.
+**Architecture:** A new core module `notify/chat.py` owns groups, members, messages and wakes in four new SQLite tables. Host-side work stays on the host: one stdlib script `scripts/notify-chat` serves as the Claude/Codex start and end hooks (join, leave), and one stdlib user service `scripts/chat-relay` delivers every wake on its host (Codex through `codex queue`, Claude through its inbox socket; owner decision after the spikes) and reports liveness of every member on its host by pid. Both agents post and read over the existing MCP server with a member handle; wakes are fetched through one long-poll claim path.
 
 **Tech Stack:** Python 3.12, FastAPI, SQLite (WAL), MCP Python SDK, vanilla JS admin UI; host scripts use the Python standard library only (like `scripts/notify-wait`).
 
@@ -29,7 +29,7 @@
 2. **A Claude session busy for 30 minutes on a handoff** → stays a member, group stays open (Task 3 test `test_long_turn_not_stale`).
 3. **Agent text that imitates a frame header or the owner** → arrives quoted, cannot produce a header line (Task 2 test `test_frame_cannot_be_forged`).
 4. **Member handle used after its session left, or from another group's member** → refused, no data leaked (Task 2 test `test_handle_dead_after_leave`, Task 4 test `test_mcp_post_wrong_handle`).
-5. **Owner types into a Claude session while its waiter holds a claimed message** → message delivered once or twice, never lost (Task 3 test `test_unconfirmed_claim_returns`, and spike S3).
+5. **The relay crashes, or a session's socket / Codex thread is not reachable, right after claiming a wake** → the message is delivered later (possibly twice), never lost (Task 3 test `test_unconfirmed_claim_returns`, Task 7 tests `test_relay_failure_leaves_pending_after_timeout`, `test_relay_claude_socket_missing`).
 
 ---
 
@@ -70,7 +70,7 @@ Manual experiments on host-a with throwaway scripts in the session scratchpad (n
   - `chat_groups(id TEXT PK, host TEXT NOT NULL, folder TEXT NOT NULL, state TEXT NOT NULL, opened_at, closed_at, paused INTEGER NOT NULL DEFAULT 0, agent_streak INTEGER NOT NULL DEFAULT 0, cap INTEGER NOT NULL, owner_seen_at TEXT)`; `CREATE UNIQUE INDEX ux_chat_groups_open ON chat_groups(host, folder) WHERE state='open'`.
   - `chat_members(id TEXT PK, group_id, kind TEXT CHECK(kind IN ('claude','codex')), session_id TEXT NOT NULL, pid INTEGER, pid_start TEXT, client_id, handle_sha256 TEXT NOT NULL, joined_at, last_seen_at, left_at, leave_reason)`.
   - `chat_messages(id TEXT PK, group_id, author_member_id TEXT NULL, author TEXT CHECK(author IN ('claude','codex','owner','system')), text TEXT NOT NULL, created_at)`.
-  - `chat_wakes(id TEXT PK, message_id, member_id, state TEXT CHECK(state IN ('pending','claimed','delivered','skipped','delayed')), waiter_id, claimed_at, finished_at, reason)`; index on `(member_id, state)`.
+  - `chat_wakes(id TEXT PK, message_id, member_id, state TEXT CHECK(state IN ('pending','claimed','delivered','skipped')), waiter_id, claimed_at, finished_at, reason)`; index on `(member_id, state)`.
   Admin: add `chat_cap` and `chat_alert_targets` to `ServerIn`/`put_server`, `chat_host` to the client create/update body, and `chat` to `SCOPE_HELP` in `notify/admin_ui/app.js` ("take part in agent group chats").
 - [ ] **Step 4: Run** the new tests plus `pytest -q` — Expected: all PASS.
 - [ ] **Step 5: Commit** `git commit -m "Chat schema, chat scope and settings"`
@@ -128,18 +128,17 @@ Manual experiments on host-a with throwaway scripts in the session scratchpad (n
 
 **Interfaces:**
 - Produces (on `Chat`):
-  - `async claim_member(member_handle: str, waiter: str, wait: float) -> dict | None` — that member's oldest `pending` wake (or the one this waiter already holds); `None` on timeout (wait capped at 55 s, loop on `svc.bus.wait` like `Replies.claim`).
-  - `async claim_host(client: Client, waiter: str, wait: float) -> dict | None` — oldest pending wake of any open **codex** member on the client's `chat_host`.
-  - Wake dict: `{"wake_id", "message_id", "member_id", "kind", "session_id", "text": <frame>}`.
-  - `confirm(client_or_handle, wake_id: str, waiter: str, outcome: Literal["delivered","delayed"]) -> None`.
+  - `async claim_host(client: Client, waiter: str, wait: float) -> dict | None` — the wake this waiter already holds, else the oldest pending wake of any open member (Claude or Codex) on the client's `chat_host`; `None` on timeout (wait capped at 55 s, loop on `svc.bus.wait` like `Replies.claim`). There is no per-member claim (rev 3: no Claude waiter).
+  - Wake dict: `{"wake_id", "message_id", "member_id", "kind", "session_id", "pid", "text": <frame>}`.
+  - `confirm(client: Client, wake_id: str, waiter: str) -> None` — sets `delivered`; only the claiming waiter on the same host may confirm (`NotFound` otherwise).
   - `heartbeat(client: Client, alive: list[dict]) -> dict` — each item `{"member_id", "pid", "pid_start"}`; marks matching members on the client's host `last_seen_at=now`; returns `{"members": [{"member_id","kind","session_id","pid","pid_start"}]}` (all open members on that host, for the relay's next check).
   - `sweep(now: datetime | None = None) -> None` — (a) members on a host whose `last_seen_at` is older than `STALE_SECONDS = 180` leave with reason `stale`; (b) `claimed` wakes older than `CLAIM_TIMEOUT_SECONDS = 120` return to `pending` (waiter cleared); (c) wakes of members that left become `skipped` reason `member gone`.
   - Constants exposed for tests; clock seam `Chat.now` like `Replies.now`.
 
 - [ ] **Step 1: Write failing tests** (fake clock):
-  - `test_claim_member_gets_own_wake_only`, `test_claim_member_timeout_none`.
-  - `test_claim_host_codex_only`: Claude and Codex members on host-a; `claim_host` returns only the Codex wake; a host-b client never sees host-a wakes.
-  - `test_confirm_delivered`, `test_confirm_delayed` (state `delayed`, admin view shows it).
+  - `test_claim_host_all_kinds`: Claude and Codex members on host-a; `claim_host` returns both wakes (oldest first) with `kind`, `session_id`, `pid`; a host-b client never sees host-a wakes.
+  - `test_claim_host_timeout_none`.
+  - `test_confirm_delivered`; `test_confirm_wrong_waiter_or_host` → `NotFound`, state unchanged.
   - `test_unconfirmed_claim_returns`: claim, advance 121 s, `sweep()` → `pending`; a second waiter claims it again (at-least-once).
   - `test_same_waiter_gets_held_wake`: waiter W claims, calls again before confirming → same wake returned.
   - `test_long_turn_not_stale`: member with no claim activity for 30 min but heartbeats every 30 s → still open.
@@ -163,8 +162,8 @@ Manual experiments on host-a with throwaway scripts in the session scratchpad (n
   - `POST /v1/chat/join` body `{kind, session_id, folder, pid?, pid_start?}` → join dict (201).
   - `POST /v1/chat/leave` header `X-Member-Handle` body `{reason?}` → 204.
   - `POST /v1/chat/heartbeat` body `{alive: [...]}` → heartbeat dict.
-  - `POST /v1/chat/wakes/claim?waiter=…&wait=…` with `X-Member-Handle` → member claim; without it → host claim. 200 wake / 204 none.
-  - `POST /v1/chat/wakes/{wake_id}/confirm?waiter=…` body `{outcome}` → 204.
+  - `POST /v1/chat/wakes/claim?waiter=…&wait=…` → host claim (relay). 200 wake / 204 none.
+  - `POST /v1/chat/wakes/{wake_id}/confirm?waiter=…` → 204.
   - Handles only in the `X-Member-Handle` header, never in URLs (as `X-Reply-Handle`).
 - Produces MCP tools (scope `chat`): `group_post(member_handle: str, text: str)`, `group_read(member_handle: str, since: str | None = None)`, `group_leave(member_handle: str)`; errors as `ToolError("member_handle is not valid")` for any bad/dead handle.
 - Instructions paragraph appended to `_INSTRUCTIONS` (exact text, keep it this short):
@@ -178,7 +177,7 @@ Manual experiments on host-a with throwaway scripts in the session scratchpad (n
   ```
 
 - [ ] **Step 1: Write failing tests:**
-  - `test_join_leave_roundtrip_rest`, `test_handle_not_in_url` (claim with `?member_handle=` is 422/ignored), `test_claim_204_then_200`.
+  - `test_join_leave_roundtrip_rest`, `test_handle_not_in_url` (`POST /v1/chat/leave?member_handle=…` without the header → 422, nothing left), `test_claim_204_then_200`.
   - `test_scope_required`: token without `chat` → 403 on every chat endpoint.
   - `test_mcp_post_from_other_token`: join via host token, `group_post` with the handle over a *different* token with scope `chat` → succeeds (spec R1).
   - `test_mcp_post_wrong_handle`: handle of a member in another group's tampered secret → `ToolError("member_handle is not valid")`, no message stored.
@@ -198,10 +197,10 @@ Manual experiments on host-a with throwaway scripts in the session scratchpad (n
 - Consumes: `Chat.post_owner`, tables.
 - Produces admin routes (admin session or admin bearer for reads; post requires `require_session` + `_check_browser_mutation`):
   - `GET /admin/api/chats?host=&folder=` → `{"groups": [{id, host, folder, state, opened_at, closed_at, paused, members: [{kind, joined_at, last_seen_at, left_at}], last_message: {author, text_preview, created_at}, unread: int}]}`, open first, then closed by `closed_at` desc.
-  - `GET /admin/api/chats/{group_id}/messages?after=` → messages with `author`, raw `text` (not the frame), `created_at`, and per message the wake summary `{delivered, delayed, skipped, pending}`.
+  - `GET /admin/api/chats/{group_id}/messages?after=` → messages with `author`, raw `text` (not the frame), `created_at`, and per message the wake summary `{delivered, skipped, pending}` (claimed counts as pending).
   - `POST /admin/api/chats/{group_id}/messages` body `{text}` → 201; 409 when group closed.
   - Unread = messages after `chat_groups.owner_seen_at` (Task 1); opening a group in the page sets it (`POST /admin/api/chats/{group_id}/seen`, session + browser-mutation check).
-- Page (follow `.superpowers/brainstorm/*/content/chat-groups.html` layout, the per-folder list): left list (open groups with presence dot, host, folder, last message, unread badge; closed below, collapsed), right pane (header with members, messages with author colours Claude/Codex/owner, system lines centred, a marker "not delivered"/"delayed" from the wake summary, composer only for open groups). Live refresh: poll `messages?after=` every 5 s while the page is visible (the admin page has no SSE client today; do not add one). All text through `esc()`.
+- Page (follow the brainstorm mockup `chat-groups.html` in the main checkout's git-ignored `.superpowers/brainstorm/*/content/`, the per-folder list): left list (open groups with presence dot, host, folder, last message, unread badge; closed below, collapsed), right pane (header with members, messages with author colours Claude/Codex/owner, system lines centred, a marker "not delivered" from the wake summary, composer only for open groups). Live refresh: poll `messages?after=` every 5 s while the page is visible (the admin page has no SSE client today; do not add one). All text through `esc()`.
 
 - [ ] **Step 1: Write failing tests:** `test_admin_list_groups_order`, `test_owner_post_needs_session` (bearer admin → 403), `test_owner_post_needs_header` (no `X-Notify-Admin` → 403), `test_owner_post_closed_409`, `test_messages_raw_text_and_wake_summary`.
 - [ ] **Step 2: Run** — Expected: FAIL.
@@ -211,52 +210,59 @@ Manual experiments on host-a with throwaway scripts in the session scratchpad (n
 
 ## Phase 2 — Host side
 
-### Task 6: `scripts/notify-chat` (hooks and Claude waiter)
+### Task 6: `scripts/notify-chat` (start and end hooks)
 
 **Files:**
 - Create: `scripts/notify-chat` (executable, stdlib only)
 - Test: `tests/test_notify_chat.py`
 
 **Interfaces:**
-- Consumes: Task 4 REST; S2/S3 findings for field names (session id, cwd, pid, non-interactive signal).
-- Produces subcommands (read hook JSON on stdin):
-  - `notify-chat start --agent claude|codex` → joins; writes `~/.cache/hnl-notify-chat/<agent>-<session_id>.json` (mode 0600, dir 0700) with `member_id`, `member_handle`; prints the agent's context output (Claude: `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":…}}`; Codex: per S2). Context text: group, other members, the handle, one line on posting.
+- Consumes: Task 4 REST; spike findings `docs/superpowers/plans/2026-11-07-agent-group-chats-spikes.md` (S2, S3) for field names.
+- Produces subcommands (read hook JSON on stdin; both agents' input carries `session_id`, `cwd`, `transcript_path`):
+  - `notify-chat start --agent claude|codex` → joins with `session_id`, `group_folder(cwd)`, pid and pid start time; writes `~/.cache/hnl-notify-chat/<agent>-<session_id>.json` (mode 0600, dir 0700) with `member_id`, `member_handle`; prints `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}` (same format for both agents, spikes S2/S3). Context text: group (host:folder), other members, the handle, one line on posting.
+  - Session pid: Claude → env `CLAUDE_PID`; Codex → walk `/proc/<pid>/stat` parents from the hook's parent until a process whose `comm` is `codex` (spike S2). Start time = field 22 of `/proc/<pid>/stat`.
   - `notify-chat end --agent …` → leave, delete state file. Must finish within 1.5 s (Claude SessionEnd budget): 1 s HTTP timeout.
-  - `notify-chat wait --agent claude` → for the Claude `SessionStart` and `Stop` hooks with `asyncRewake`: claims with `waiter = "<session_id>"` (stable per session, so a re-armed waiter takes over a held wake), loops on 55 s claims until a wake arrives, prints the frame to stderr, confirms `delivered`, exits 2. Exits 0 silently when the state file is gone (session left).
   - Shared: `group_folder(cwd: str) -> str` = `realpath`, then `git -C <path> rev-parse --show-toplevel` if inside a repo (worktrees return their own top folder), else the realpath of cwd. Token from `--token-file` or `~/.config/hnl-notify/chat-token` (never printed); URL from `NOTIFY_URL` or the file `~/.config/hnl-notify/url`.
-  - Skips (exit 0, no output) when S2/S3 identify a non-interactive or subagent session.
-  - Never fails the agent's session: any error → message on stderr, exit 0 (except `wait`'s deliberate 2).
+  - Skips (exit 0, no output, no join) for non-interactive sessions: Claude when `CLAUDE_CODE_SESSION_ATTENDED` is `0`; Codex when the first line of `transcript_path` has `originator` `codex_exec` or `source` `exec`, or the session process's cmdline contains `exec` as the first argument after `codex`.
+  - Never fails the agent's session: any error → message on stderr, exit 0.
 
 - [ ] **Step 1: Write failing tests** (run the script as a subprocess against the test server, like `tests/test_notify_wait.py`):
   - `test_group_folder_repo_root` (`<repo>/src` → `<repo>`), `test_group_folder_worktree` (`git worktree add` → worktree path), `test_group_folder_no_repo` (exact realpath), `test_group_folder_symlink` (symlinked path → same as target).
   - `test_start_writes_state_0600_and_context`, `test_end_leaves_and_removes_state`, `test_end_fast` (unreachable server → exits 0 in < 1.5 s).
-  - `test_wait_exits_2_with_frame`: another member posts → `wait` exits 2, stderr contains `[hnl-notify group chat ·` and the message id; wake confirmed `delivered`.
-  - `test_wait_takeover`: first `wait` killed after claiming; second `wait` for same session gets the same wake.
+  - `test_start_codex_pid_from_ancestors` (a fake process tree: run the script under a parent whose `comm` is `codex`, e.g. a copied/symlinked interpreter or `exec -a`; assert the joined pid is that parent's).
+  - `test_skip_claude_unattended` (`CLAUDE_CODE_SESSION_ATTENDED=0` → no join, no output), `test_skip_codex_exec` (transcript first line `{"payload":{"originator":"codex_exec","source":"exec"}}` → no join).
   - `test_token_never_printed`.
 - [ ] **Step 2: Run** `pytest tests/test_notify_chat.py -v` — Expected: FAIL.
 - [ ] **Step 3: Implement** the script.
 - [ ] **Step 4: Run** tests and `pytest -q` — Expected: PASS.
-- [ ] **Step 5: Commit** `git commit -m "notify-chat: agent hooks and Claude waiter"`
+- [ ] **Step 5: Commit** `git commit -m "notify-chat: agent start and end hooks"`
 
-### Task 7: `scripts/chat-relay` (Codex delivery and liveness)
+### Task 7: `scripts/chat-relay` (delivery to Codex and Claude, liveness)
 
 **Files:**
 - Create: `scripts/chat-relay` (executable, stdlib only), `scripts/chat-relay.service` (systemd `--user` unit template)
 - Test: `tests/test_chat_relay.py`
 
 **Interfaces:**
-- Consumes: Task 4 REST (`heartbeat`, host `claim`, `confirm`); S1 findings.
-- Produces: `chat-relay [--token-file F] [--codex PATH] [--once]`. Two loops in one process (threads): (a) every 30 s `POST /v1/chat/heartbeat` with each open member from the last response whose `pid` is alive and whose `/proc/<pid>/stat` start time equals `pid_start`; (b) host claims with `waiter = "relay-<hostname>"`; for a Codex wake runs `codex queue --thread <session_id> --message <text>` (no `--resume`), then confirms `delivered`, or `delayed` when S1's interrupted-thread signal applies; a failing `codex queue` leaves the wake unconfirmed (it returns to pending after 120 s). `--once` = one heartbeat + one claim, for tests.
+- Consumes: Task 4 REST (`heartbeat`, host `claim`, `confirm`); spike findings S1, S4.
+- Produces: `chat-relay [--token-file F] [--codex PATH] [--sock-dir DIR] [--once]`. Two loops in one process (threads): (a) every 30 s `POST /v1/chat/heartbeat` with each open member from the last response whose `pid` is alive and whose `/proc/<pid>/stat` start time equals `pid_start`; (b) host claims with `waiter = "relay-<hostname>"`, then per wake kind:
+  - **codex:** `codex queue --thread <session_id> --message <text>` (no `--resume`); rc 0 → confirm.
+  - **claude:** connect to `<sock-dir>/<pid>.sock` (default sock-dir `/run/user/<uid>/cc-socks`), send exactly one line `json.dumps({"type":"user","message":{"role":"user","content":text}}) + "\n"`, close; success → confirm. No auth line.
+  - Any failure (non-zero rc, missing socket, refused connection, timeout 10 s) → no confirm (the wake returns to pending after 120 s) and a log line.
+  - At start-up, read `claude --version`; if it isn't `2.1.x`, log one warning that the socket format is untested on that version (still deliver).
+  - `--once` = one heartbeat + one claim, for tests.
 
 - [ ] **Step 1: Write failing tests** with a fake `codex` script on `PATH` that appends its argv to a file and can be told to fail:
   - `test_relay_delivers_codex_wake` (argv is `queue --thread <id> --message <frame>`; wake `delivered`).
   - `test_relay_failure_leaves_pending_after_timeout`.
   - `test_relay_heartbeat_alive_and_dead_pid` (a live child process vs. a finished one; pid reuse guarded by start time).
-  - `test_relay_ignores_claude_wakes`.
+  - `test_relay_delivers_claude_wake`: a test Unix socket server at `<tmp>/<pid>.sock` (via `--sock-dir`) receives exactly one line that parses to `{"type":"user","message":{"role":"user","content":<frame>}}`; wake `delivered`.
+  - `test_relay_claude_socket_missing`: no socket → wake not confirmed, back to pending after the claim timeout.
+  - `test_relay_version_warning`: a fake `claude --version` printing `3.0.0` → one warning in the log, delivery still happens.
 - [ ] **Step 2: Run** — Expected: FAIL.
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** tests and `pytest -q` — Expected: PASS.
-- [ ] **Step 5: Commit** `git commit -m "chat-relay: Codex delivery and member liveness"`
+- [ ] **Step 5: Commit** `git commit -m "chat-relay: delivery to Codex and Claude, member liveness"`
 
 ## Phase 3 — Release
 
@@ -267,7 +273,7 @@ Manual experiments on host-a with throwaway scripts in the session scratchpad (n
 - Test: `pytest -q` and `scripts/smoke.sh` against a local dev server.
 
 - [ ] **Step 1:** Write the docs (anonymised: `alex`, `notify.lan`, `host-a`). Hook snippets:
-  - Claude: `SessionStart` → `notify-chat start --agent claude` and `notify-chat wait --agent claude` with `"asyncRewake": true`; `Stop` → `notify-chat wait --agent claude` with `"asyncRewake": true`; `SessionEnd` → `notify-chat end --agent claude` with `"timeout": 5`.
+  - Claude: `SessionStart` → `notify-chat start --agent claude`; `SessionEnd` → `notify-chat end --agent claude` with `"timeout": 5`. State plainly that the relay wakes Claude through its inbox socket with an undocumented line format tested on 2.1.x, and that any process of the same user can do the same (accepted).
   - Codex: `SessionStart` → `notify-chat start --agent codex`; `SessionEnd` → `notify-chat end --agent codex`.
 - [ ] **Step 2: Verify** `pytest -q` PASS and the README commands match the scripts' `--help`.
 - [ ] **Step 3: Commit** `git commit -m "Group chats: docs and 0.13.0"`
@@ -279,5 +285,5 @@ Follow `~/documentation/conventions.md` (backups, restarts) and the project's de
 - [ ] **Step 1:** Back up `data/notify.sqlite3` to `data/notify.sqlite3.bak.<date>-pre-0.13.0`; `docker compose up -d --build`; `scripts/smoke.sh`.
 - [ ] **Step 2:** Owner creates per-host clients in Admin → Clients (scope `chat`, `chat_host` host-a / host-b), adds `chat` to the agents' MCP tokens and sets `chat_alert_targets` in Settings; token files placed at `~/.config/hnl-notify/chat-token` (0600) on each host.
 - [ ] **Step 3:** Install hooks and `chat-relay` on host-a and host-b (README steps).
-- [ ] **Step 4: Live check** in a scratch folder on host-a: Claude + Codex sessions join one group; Codex posts → idle Claude wakes; Claude posts → idle Codex wakes; owner posts from Admin → Chats; 10 agent messages pause the group and push the owner; closing both sessions closes the group. Record results; update `~/documentation/notifications.md` and `~/documentation/projects.md` (host facts there, not in the repo).
+- [ ] **Step 4: Live check** in a scratch folder on host-a: Claude + Codex sessions join one group; Codex posts → idle Claude wakes; Claude posts → idle Codex wakes; a message to a busy Claude session (long tool call) arrives between tool calls; a message after Esc wakes Claude; a message while Claude shows a permission prompt (record what happens); three messages in quick succession all arrive; after restarting a Claude session it rejoins and is reachable; owner posts from Admin → Chats; 10 agent messages pause the group and push the owner; closing both sessions closes the group. Record results; update `~/documentation/notifications.md` and `~/documentation/projects.md` (host facts there, not in the repo).
 - [ ] **Step 5:** Notify the owner with the result; push to GitHub only when the owner says so.

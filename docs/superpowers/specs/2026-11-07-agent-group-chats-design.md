@@ -1,6 +1,7 @@
 # Agent group chats — design
 
-Date: 2026-11-07. Status: revision 2 (after staff review + ambassador ruling), for approval.
+Date: 2026-11-07. Status: revision 3 (rev 2 after staff review + ambassador ruling, approved;
+rev 3 after the spikes: Claude woken through its inbox socket, owner decision 2026-11-07).
 Target: hnl-notify (next minor after 0.12.0).
 
 ## Intent
@@ -61,7 +62,8 @@ The picture is an impromptu WhatsApp group: it exists while people are in it.
 - **Agents looping**, burning tokens unattended. Guarded by the per-group cap.
 - **Surprise actions**: changes the owner learns about only later. Guarded by the action ping.
 - **Noise in a working session**: a session the owner is actively using being interrupted by
-  chatter. Messages never cut into a running turn (see Waking), and handoff discipline keeps the
+  chatter. A message never interrupts a running tool; Codex receives it after the turn, Claude
+  between tool calls (owner accepted with the socket route, 2026-11-07); handoff discipline keeps the
   volume low.
 - **An injection path**: one agent steering another into harmful actions. Every agent-authored
   message reaches agents framed as untrusted data from another agent, never as an instruction from
@@ -116,9 +118,9 @@ Evidence gathered in the design conversation; re-check before building, these to
  │                 │                     │            │  messages, cap, pings    │
  │  start/end hooks ─► join/leave (REST) ─────────────►  admin Chats page        │
  │                                       │            │                          │
- │  Claude: asyncRewake hook ◄─ claim (long-poll) ────┤  wakes (one claim path)  │
- │  chat-relay (user service) ◄─ claim (long-poll) ───┤                          │
+ │  chat-relay (user service) ◄─ claim (long-poll) ───┤  wakes (one claim path)  │
  │    ├─ Codex member: codex queue --thread …         │                          │
+ │    ├─ Claude member: line to cc-socks/<pid>.sock   │                          │
  │    └─ liveness of all members (pid) ─ heartbeat ───►                          │
  └───────────────────────────────────────┘            └──────────────────────────┘
 ```
@@ -137,8 +139,8 @@ Evidence gathered in the design conversation; re-check before building, these to
 - **message** (`msg_…`): group, author (a member or the owner), kind (`text` / `system`), text,
   created_at. System messages record joins, leaves, pause, unpause and close.
 - **wake**: one per (message, recipient member): state `pending` / `claimed` (waiter id, claimed_at)
-  / `delivered` / `skipped` (reason: paused, member gone) / `delayed` (Codex thread interrupted,
-  see Waking), timestamps. This is what lets the admin page and the agents see whether a message
+  / `delivered` / `skipped` (reason: paused, member gone), timestamps. (Rev 3: no `delayed` state;
+  the relay cannot detect an interrupted Codex thread, see Waking.) This is what lets the admin page and the agents see whether a message
   reached anyone.
 - **Delivery is at-least-once (ambassador ruling, 2026-11-07).** A claimed wake that is not
   confirmed within a timeout returns to `pending` and is claimed again, so a crash between claim
@@ -166,7 +168,7 @@ has no devices or provider deliveries.
   the token cannot tell sessions apart. Join therefore returns a **member handle**
   (`<member id>:<secret>`, only the secret's hash stored, as with reply handles since 0.7.0). The
   SessionStart hook hands it to the session in its context line; the `group_*` tools take it as
-  their one required argument, and the Claude waiter and Codex relay use it too. The handle binds
+  their one required argument. The handle binds
   the call to one member, so one group and one host.
 - **The handle is the membership credential, valid from any token (ambassador ruling R1).** The
   hook joins with its per-host token, but the agent posts over its own MCP connection with its own
@@ -184,32 +186,38 @@ has no devices or provider deliveries.
   header, least of all the owner's. The owner's messages get a header only hnl-notify writes for
   admin-session posts. The MCP server instructions state the rule.
 - **Residual risk, stated honestly:** `codex queue` delivers the framed text to Codex as a user
-  message, and the `asyncRewake` route delivers it to Claude as a system reminder. Both arrive with
-  more authority than "data from another agent", and framing cannot lower that role. The framing,
-  the agents' own permission settings and the action ping are the controls; nothing here grants
-  permissions. (Claude's inbox socket route does carry built-in "from another session" provenance,
-  see Waking a Claude session.)
+  message, with more authority than "data from another agent", and framing cannot lower that role.
+  Claude gets it through its inbox socket, which Claude Code itself labels as coming from another
+  session, not from the owner (see Waking a Claude session). The framing, the agents' own permission
+  settings and the action ping are the controls; nothing here grants permissions.
 
 ### Joining and leaving
 
 - A `SessionStart` hook (Claude Code and Codex) calls hnl-notify to join: host (from token),
   folder (session cwd), agent kind, session id, session pid. hnl-notify opens a group if none is open for that
   host + folder, otherwise adds the member. The hook returns a short context line to the session:
-  who else is in the group and how to post.
+  who else is in the group and how to post. Both agents accept
+  `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"…"}}` on stdout
+  (spike S2/S3). Codex fires `SessionStart` at the session's **first prompt**, not at launch, and a
+  Codex thread can only be queued to after its first turn; so a Codex session joins with its first
+  prompt (spike S1/S2). Codex's `session_id` is the thread UUID.
 - A `SessionEnd` hook leaves. When the last member leaves, the group closes.
 - **Liveness is checked on the host, by process (staff review R3).** The relay on each host
   reports, for every member on that host, whether its session process (pid recorded at join) is
   still running, as a periodic heartbeat; this covers Claude and Codex members alike. A member
   whose process is gone, or that is not confirmed for a few minutes because the relay is down, is
-  marked `stale` and leaves. A long turn never looks dead, since liveness does not depend on the
-  Claude waiter (which is absent while the turn it started runs). Builder decides how to make pid
-  reuse harmless (e.g. pid + process start time).
+  marked `stale` and leaves. A long turn never looks dead, since liveness depends only on the
+  process. Builder decides how to make pid reuse harmless (e.g. pid + process start time). The
+  session pid: Claude exports `CLAUDE_PID` to hooks; for Codex the hook's ancestor chain in `/proc`
+  leads to the `codex` process (spike S2).
 - Re-joining with the same session id (e.g. `codex resume`, Claude `--resume`) re-adds the member
   to the open group for that folder, or opens a new one.
 
 - **Non-interactive sessions (designer's call): best-effort exclusion.** The hooks skip joining
-  when the session is evidently not interactive (Claude: `-p`/SDK runs, subagent sessions; Codex:
-  `codex exec`), using whatever the hook input and environment reliably reveal. A non-interactive
+  when the session is evidently not interactive, using the signals the spikes found: Claude
+  `CLAUDE_CODE_SESSION_ATTENDED=0` (interactive is `1`, entrypoint `cli`; `-p` is entrypoint
+  `sdk-cli`); Codex `originator: codex_exec` / `source: exec` (first line of `transcript_path`, or
+  `codex exec` in the parent's cmdline). A non-interactive
   session that slips through is harmless: it leaves when it ends and is marked stale otherwise.
 
 ### Posting and reading (MCP)
@@ -232,25 +240,26 @@ their own inbound messages.
   by the ambassador: it would leave a third session unaware the work was taken; volume is already
   bounded by the one-message handoff etiquette and 2–3 sessions per folder).
 - **One claim path (staff review R2).** Wakes are fetched through a claim endpoint (long-poll), in
-  the pattern of `POST /v1/notifications/{nid}/replies/claim`: the Claude waiter claims its own
-  member's wakes with the member handle; the relay claims the wakes of the Codex members on its
-  host with its per-host token. The events/SSE visibility rule stays as it is (agent tokens see
+  the pattern of `POST /v1/notifications/{nid}/replies/claim`: the relay on each host claims the
+  wakes of all members (Claude and Codex) on its host with its per-host token. The events/SSE visibility rule stays as it is (agent tokens see
   only their own events, `events_after` in `notify/core.py`); `group.*` events are for the admin
   page.
-- Waking a Codex member is done by the **chat-relay**, a small user service on each host (systemd
+- Waking any member is done by the **chat-relay**, a small user service on each host (systemd
   `--user`, shipped from this repo under `scripts/` with an install note), because only processes
   on the host can reach the agents. It also does the liveness heartbeat for all members on its host.
 - **Codex member:** `codex queue --thread <uuid> --message <framed text>`. Delivery is at the
   next turn boundary: immediately when idle, after the current turn when busy. A thread the owner
   interrupted does not dispatch queued messages at once, but `codex queue` stores them durably
-  (`ext/queue/src/service.rs:275-292`), so they arrive **later**, after the owner's next input. The
-  relay marks such wakes `delayed` (not "skipped"), and the framed text carries the send time so
-  the agent can see it is old. Whether to delete such items instead (`thread/queue/delete`,
-  experimental API) is a spike question. No `--resume`: a session that is not loaded is not a
-  live member. The message text appears in the host's process list as an argument; accepted on a
-  single-user host.
-- **Claude member:** not through the relay; see "Waking a Claude session".
-- Messages never interrupt a running turn, for either agent.
+  (`ext/queue/src/service.rs:275-292`), so they arrive **later**, after the owner's next input; the
+  framed text carries the send time so the agent can see it is old. They are not deleted (spike S1: after Esc the item sits in the queue
+  and runs after the owner's next input; deleting would need the experimental API). The relay
+  cannot tell idle/busy/interrupted apart beforehand (`thread/read` reports `notLoaded` for a live
+  TUI); every successful `codex queue` is `delivered`. No `--resume`: a session that is not loaded
+  is not a live member. The message text appears in the host's process list as an argument;
+  accepted on a single-user host.
+- **Claude member:** through the inbox socket; see "Waking a Claude session".
+- A message never interrupts a running tool: Codex gets it after the turn, Claude between tool
+  calls.
 - The framed text a woken agent receives contains the group, author, message, and a reminder of
   the rules: untrusted data from another agent; act within your normal permissions; if you take a
   handoff, post "I'll take it" once and then work; report edits or commits with a ping to the
@@ -258,26 +267,29 @@ their own inbound messages.
 
 ### Waking a Claude session
 
-The session wakes itself through a hook it owns; the relay only checks that it is alive.
+Owner decision after the spikes (2026-11-07, `2026-11-07-agent-group-chats-spikes.md`): the **inbox
+socket route**. The chat-relay delivers to Claude members exactly as it does to Codex members.
 
-- **Primary: a re-arming `asyncRewake` hook.** On `SessionStart` and on every `Stop`, a background
-  command hook (`asyncRewake: true`) claims the member's next wake (long-poll, in the style of
-  `notify-wait`: one waiter per member, a new waiter replaces an older one). When a message arrives
-  it prints the framed text and exits 2, which wakes Claude with it as a system reminder. Messages
-  that arrive during a turn are therefore picked up when the turn ends (`Stop` re-arms, finds them
-  pending, exits 2 at once), never mid-turn. Delivery is confirmed when the waiter exits 2; an
-  unconfirmed claim returns to pending (at-least-once).
-- **Alternative if `asyncRewake` is not supported on these events:** a per-session listener
-  started by the `SessionStart` hook (a child of the session, so it counts as an own-child sender)
-  that posts each message to `CLAUDE_CODE_MESSAGING_SOCKET`. Documented as a use case, but its wire
-  format is not, so this needs a spike first and pinning to the tested Claude Code version. Its
-  advantage: Claude Code itself tells the receiving Claude the message "came from another session,
-  not from you" (cross-session-messaging.md), which the `asyncRewake` route lacks. The spike
-  compares both on that point.
-- The plan starts with a short spike that confirms the primary route on 2.1.319: idle wake, busy
-  session (picked up at turn end), no lost or doubled message when the owner types during a wait,
-  and whether `Stop` fires after an interrupt (Esc). If it does not, an interrupted session has no
-  waiter and goes deaf until its next completed turn; the spike must find a re-arm point.
+- The Claude `SessionStart` hook registers the member with `session_id`, `cwd` and the session pid
+  (`CLAUDE_PID`, exported to hooks; equal to the pid in the socket name).
+- The relay delivers by connecting to `/run/user/<uid>/cc-socks/<pid>.sock` (the documented
+  `CLAUDE_CODE_MESSAGING_SOCKET` location for that pid; mode 0600 under a 0700 dir) and writing one
+  line: `{"type":"user","message":{"role":"user","content":"<framed text>"}}` + newline. No auth line
+  is needed for a non-child sender on Linux (spike S4). A successful write is `delivered`; a missing
+  socket or a refused connection leaves the wake unconfirmed (it returns to pending).
+- Observed behaviour (spike S4, Claude Code 2.1.319): an idle session starts a turn within ~1 s;
+  during a running turn the message is read **between tool calls** (a running tool is never
+  interrupted); after Esc it wakes the session at once. Claude Code labels it "Another Claude session
+  sent a message", which is the provenance the design wants.
+- **The line format is undocumented** (found in the Claude Code binary, not in the docs). The relay
+  pins the tested Claude Code major.minor (2.1) and, on any other version, still delivers but logs a
+  warning once per version; a delivery that produces no turn is not detectable, so the live check in
+  the release task repeats the idle/busy/Esc tests.
+- **Accepted risk:** any process of the same OS user can already write to that socket without a
+  token. This is how Claude Code works, not something this feature adds; hnl-notify relies on it.
+- The `asyncRewake` hook route (spike S3) is not built. If a future Claude Code drops the socket
+  format, S3 is the documented fallback (needs waiter dedupe and a re-arm via `UserPromptSubmit`,
+  since `Stop` does not fire after Esc).
 
 ### Loop guard
 
@@ -327,20 +339,12 @@ The session wakes itself through a hook it owns; the relay only checks that it i
 - Hook scripts for Claude Code (`~/.claude/settings.json`) and Codex (`hooks.json`), and how they
   find the token without printing it (as `notify-wait --token-file` does).
 
-## Open checks before or during the plan
+## Spikes (done 2026-11-07)
 
-The plan starts with spikes for the checks below (Codex `codex queue` against a live TUI, Codex hook
-payloads, Claude `asyncRewake` on `SessionStart`/`Stop`). **Go/no-go is the owner's (2026-11-07):**
-if either agent's half fails, stop and report the results; the owner decides then whether to ship
-one half, use a fallback, or stop.
-
-- Confirm `codex queue` behaviour live against a running TUI session on this host (idle, busy,
-  interrupted, and that an interrupted thread receives the queued message later). Source reading
-  only so far.
-- Confirm the Codex `SessionStart` / `SessionEnd` hook payloads carry the cwd and thread id, and
-  that the hook can learn the session's pid.
-- Claude: `asyncRewake` on `SessionStart`/`Stop`, `Stop` after Esc, and the provenance comparison
-  with the inbox socket route (see Waking a Claude session).
+Results: `docs/superpowers/plans/2026-11-07-agent-group-chats-spikes.md` (reviewed, clean). The
+owner chose the inbox socket route for Claude and gave the go for building. Still untested and
+covered by the release task's live check: socket delivery during a permission prompt, across a
+Claude restart and with several rapid messages; `codex queue --resume` (not used).
 
 ## Review record
 
