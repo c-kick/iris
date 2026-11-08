@@ -17,6 +17,7 @@ import unicodedata
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+from . import chat_names
 from .auth import hash_token
 from .core import SYSTEM_CLIENT, Client, Conflict, Forbidden, Invalid, NotFound, external_base
 from .db import dumps, iso, new_id, now_iso, parse_iso, utcnow
@@ -168,6 +169,19 @@ def normalise_folder(folder: str) -> str:
     return folder.rstrip("/") or "/"
 
 
+def who(kind: str | None, name: str | None, member_id: str) -> str:
+    """A member as text: "Claude Wren" (the id when it has no name, e.g. from before 0.14.0)."""
+    return f"{(kind or 'agent').capitalize()} {name or member_id}"
+
+
+def who_push(kind: str | None, name: str | None, member_id: str) -> str:
+    """A member in a push: "Wren (Claude)"."""
+    return f"{name or member_id} ({(kind or 'agent').capitalize()})"
+
+
+NAME_REUSE = timedelta(days=7)  # a name is not given again in the same host + folder this soon (when one is left)
+
+
 def _mark_acted(c: sqlite3.Connection, member_id: str) -> None:
     """The member made a group call: everything that had reached it by now counts as read (read receipts).
     last_read_rowid only covers delivered or group_read messages, so a wake still queued is not marked."""
@@ -197,9 +211,9 @@ class Chat:
 
     @staticmethod
     def _members(c: sqlite3.Connection, group_id: str) -> list[dict[str, Any]]:
-        rows = c.execute("SELECT id, kind, joined_at, last_seen_at FROM chat_members"
+        rows = c.execute("SELECT id, kind, name, joined_at, last_seen_at FROM chat_members"
                          " WHERE group_id=? AND left_at IS NULL ORDER BY joined_at, rowid", (group_id,)).fetchall()
-        return [{"member_id": r["id"], "kind": r["kind"], "joined_at": r["joined_at"],
+        return [{"member_id": r["id"], "name": r["name"], "kind": r["kind"], "joined_at": r["joined_at"],
                  "last_seen_at": r["last_seen_at"], "present": True} for r in rows]
 
     @staticmethod
@@ -278,18 +292,55 @@ class Chat:
                     group_id = g["id"]
                 member_id = new_id("mem")
                 handle, sha = new_handle(member_id)
+                name = self._pick_name(c, group_id, host, folder)
                 c.execute("INSERT INTO chat_members(id, group_id, kind, session_id, pid, pid_start, client_id,"
-                          " handle_sha256, joined_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                          (member_id, group_id, kind, session_id, pid, pid_start, client.id, sha, now, now))
+                          " handle_sha256, joined_at, last_seen_at, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (member_id, group_id, kind, session_id, pid, pid_start, client.id, sha, now, now, name))
                 self._event(c, "group.member_joined", client.id,
-                            {"group_id": group_id, "member_id": member_id, "kind": kind})
-                self._add_message(c, group_id, "system", None, f"{kind.capitalize()} {member_id} joined the chat")
+                            {"group_id": group_id, "member_id": member_id, "kind": kind, "name": name})
+                self._add_message(c, group_id, "system", None, f"{who(kind, name, member_id)} joined the chat")
                 # a new member owes nothing older than its own join notice
                 c.execute("UPDATE chat_members SET last_read_rowid=(SELECT MAX(rowid) FROM chat_messages"
                           " WHERE group_id=?) WHERE id=?", (group_id, member_id))
             members = self._members(c, group_id)
+            name = c.execute("SELECT name FROM chat_members WHERE id=?", (member_id,)).fetchone()["name"]
         self.svc._after_commit()
-        return {"group_id": group_id, "member_id": member_id, "member_handle": handle, "members": members}
+        return {"group_id": group_id, "member_id": member_id, "name": name, "member_handle": handle,
+                "members": members}
+
+    def _pick_name(self, c: sqlite3.Connection, group_id: str, host: str, folder: str) -> str:
+        """Inside the join transaction (BEGIN IMMEDIATE), so two joiners never get the same name."""
+        taken = [r[0] for r in c.execute("SELECT name FROM chat_members WHERE group_id=? AND left_at IS NULL",
+                                         (group_id,))]
+        recent = [r[0] for r in c.execute(
+            "SELECT m.name FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=? AND g.folder=?"
+            " AND m.joined_at >= ?", (host, folder, iso(self.now() - NAME_REUSE)))]
+        return chat_names.pick(taken, recent)
+
+    def rename_owner(self, member_id: str, name: str) -> dict[str, Any]:
+        """The owner renames a member (signed-in admin page). Unique in the group, case-insensitively."""
+        name = name.strip() if isinstance(name, str) else ""
+        if not chat_names.valid_name(name):
+            raise Invalid("a name is one word of 2-20 letters or digits, starting with a letter")
+        with self.db.tx() as c:
+            m = c.execute("SELECT m.*, g.state AS gstate FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
+                          " WHERE m.id=?", (member_id,)).fetchone()
+            if m is None:
+                raise NotFound("member not found")
+            if m["left_at"] is not None or m["gstate"] != "open":
+                raise Conflict("this member is no longer in the chat")
+            if (m["name"] or "") == name:
+                return {"member_id": member_id, "name": name}
+            if c.execute("SELECT 1 FROM chat_members WHERE group_id=? AND left_at IS NULL AND id<>?"
+                         " AND lower(name)=lower(?)", (m["group_id"], member_id, name)).fetchone():
+                raise Conflict(f"{name} is already in this chat")
+            c.execute("UPDATE chat_members SET name=? WHERE id=?", (name, member_id))
+            self._add_message(c, m["group_id"], "system", None,
+                              f"{who(m['kind'], m['name'], member_id)} is now {name} (renamed by the owner)")
+            self._event(c, "group.member_renamed", "admin-ui", {"group_id": m["group_id"], "member_id": member_id,
+                                                                 "name": name})
+        self.svc._after_commit()
+        return {"member_id": member_id, "name": name}
 
     def leave(self, member_handle: str, reason: str = "ended") -> None:
         if reason not in LEAVE_REASONS:
@@ -312,13 +363,13 @@ class Chat:
             c.execute("UPDATE chat_history_requests SET state='expired', decision_sha256=NULL"
                       " WHERE member_id=? AND state IN ('pending', 'approved')", (member_id,))
             self._event(c, "group.member_left", by, {"group_id": gid, "member_id": member_id, "reason": reason})
-            self._add_message(c, gid, "system", None, f"{m['kind'].capitalize()} {member_id} left the chat"
+            self._add_message(c, gid, "system", None, f"{who(m['kind'], m['name'], member_id)} left the chat"
                               + (" (no longer running)" if reason == "stale" else ""))
             for held in c.execute("SELECT id FROM chat_messages WHERE claimed_by_member_id=? ORDER BY rowid",
                                   (member_id,)).fetchall():
                 c.execute("UPDATE chat_messages SET claimed_by_member_id=NULL, claimed_at=NULL WHERE id=?",
                           (held["id"],))
-                self._add_message(c, gid, "system", None, f"{m['kind'].capitalize()} {member_id} released {held['id']}")
+                self._add_message(c, gid, "system", None, f"{who(m['kind'], m['name'], member_id)} released {held['id']}")
             if c.execute("SELECT 1 FROM chat_members WHERE group_id=? AND left_at IS NULL", (gid,)).fetchone() is None:
                 c.execute("UPDATE chat_groups SET state='closed', closed_at=? WHERE id=?", (now, gid))
                 self._add_message(c, gid, "system", None, "closed")
@@ -330,7 +381,7 @@ class Chat:
     def claim(self, member_handle: str, message_id: str) -> dict[str, Any]:
         """Take a request: the first member to claim a message gets it; the others are told who has it."""
         member = self.member_from_handle(member_handle)
-        label = f"{member['kind'].capitalize()} {member['id']}"
+        label = who(member["kind"], member["name"], member["id"])
         with self.db.tx() as c:
             if c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL", (member["id"],)).fetchone() is None:
                 raise MemberGone()
@@ -345,11 +396,11 @@ class Chat:
             if cur.rowcount:
                 self._add_message(c, member["group_id"], "system", None, f"{label} claimed {message_id}")
                 return {"claimed": True, "message_id": message_id}
-            held = c.execute("SELECT m.id, m.kind, x.claimed_at FROM chat_messages x JOIN chat_members m"
+            held = c.execute("SELECT m.id, m.kind, m.name, x.claimed_at FROM chat_messages x JOIN chat_members m"
                              " ON m.id=x.claimed_by_member_id WHERE x.id=?", (message_id,)).fetchone()
             if held["id"] == member["id"]:
                 return {"claimed": True, "message_id": message_id}
-            return {"claimed": False, "message_id": message_id, "by": f"{held['kind'].capitalize()} {held['id']}",
+            return {"claimed": False, "message_id": message_id, "by": who(held["kind"], held["name"], held["id"]),
                     "at": held["claimed_at"]}
 
     def unclaim(self, member_handle: str, message_id: str) -> dict[str, Any]:
@@ -364,7 +415,7 @@ class Chat:
             if not cur.rowcount:
                 raise Invalid("you do not hold a claim on that message")
             self._add_message(c, member["group_id"], "system", None,
-                              f"{member['kind'].capitalize()} {member['id']} released {message_id}")
+                              f"{who(member['kind'], member['name'], member['id'])} released {message_id}")
         return {"released": True, "message_id": message_id}
 
     def release_claim_owner(self, message_id: str) -> dict[str, Any]:
@@ -615,18 +666,18 @@ class Chat:
             rid, code = new_id("rqh"), secrets.token_urlsafe(24)
             shown = _clean_desc(" ".join(reason.split()))
             mid = self._add_message(c, g["id"], "system", None,
-                                    f"{member['kind'].capitalize()} {member['id']} asks to read earlier chats")
+                                    f"{who(member['kind'], member['name'], member['id'])} asks to read earlier chats")
             c.execute("INSERT INTO chat_history_requests(id, group_id, member_id, reason, state, decision_sha256,"
                       " message_id, created_at) VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)",
                       (rid, g["id"], member["id"], reason, hash_token(code), mid, iso(now)))
             self._event(c, "group.history_requested", "hnl-notify", {"group_id": g["id"], "request_id": rid})
-            info = (g["host"], g["folder"], member["kind"], shown)
+            info = (g["host"], g["folder"], who_push(member["kind"], member["name"], member["id"]), shown)
         self.svc._after_commit()
         self._push_history(rid, code, *info)
         return {"status": "pending", "request_id": rid,
                 "note": "the owner decides; you'll get a group message when it's decided"}
 
-    def _push_history(self, rid: str, code: str, host: str, folder: str, kind: str, shown: str) -> None:
+    def _push_history(self, rid: str, code: str, host: str, folder: str, label: str, shown: str) -> None:
         targets = list(self.svc.config.server.chat_alert_targets)
         where = _clean_desc(f"{host}:{folder}")
         if not targets:
@@ -645,7 +696,7 @@ class Chat:
         try:
             self.svc.submit(SYSTEM_CLIENT, NotificationIn(
                 targets=targets, title="Group chat history request",
-                message=f"{kind.capitalize()} in {where} asks to read earlier chats: {shown}"
+                message=f"{label} in {where} asks to read earlier chats: {shown}"
                         + ("" if base else " Open Admin, Chats to decide."),
                 tags=["group-chat"], idempotency_key=f"chat-history:{rid}", **kw))
         except Exception:  # the request is stored and shows in Admin, Chats; a failed push must not undo it
@@ -666,14 +717,14 @@ class Chat:
                       (verdict, now, request_id))
             self._event(c, "group.history_decided", by, {"group_id": r["group_id"], "request_id": request_id,
                                                          "decision": verdict})
-            m = c.execute("SELECT kind FROM chat_members WHERE id=?", (r["member_id"],)).fetchone()
-            who = f"{m['kind'].capitalize()} {r['member_id']}"
+            m = c.execute("SELECT kind, name FROM chat_members WHERE id=?", (r["member_id"],)).fetchone()
+            label = who(m["kind"], m["name"], r["member_id"])
             how = {"phone link": "via the phone link", "admin-ui": "in the admin page"}.get(by, f"by {by}")
             # one message: the transcript line and the wake of the requester (nobody else is woken)
             self._system_wake(c, r["group_id"], r["member_id"],
-                              f"history request {request_id} approved {how}: {who} may read earlier chats once"
+                              f"history request {request_id} approved {how}: {label} may read earlier chats once"
                               " (call group_history)" if approve else
-                              f"history request {request_id} denied {how}: {who} may not read earlier chats")
+                              f"history request {request_id} denied {how}: {label} may not read earlier chats")
         self.svc._after_commit()
 
     def expire_history(self, now: datetime | None = None) -> None:
@@ -684,12 +735,12 @@ class Chat:
                              " OR (state='approved' AND decided_at < ?) ORDER BY rowid", (cutoff, cutoff)).fetchall()
             for r in rows:
                 c.execute("UPDATE chat_history_requests SET state='expired', decision_sha256=NULL WHERE id=?", (r["id"],))
-                m = c.execute("SELECT kind FROM chat_members WHERE id=?", (r["member_id"],)).fetchone()
-                who = f"{m['kind'].capitalize()} {r['member_id']}"
+                m = c.execute("SELECT kind, name FROM chat_members WHERE id=?", (r["member_id"],)).fetchone()
+                label = who(m["kind"], m["name"], r["member_id"])
                 self._system_wake(c, r["group_id"], r["member_id"],
-                                  f"history request {r['id']} expired without a decision: {who} was not given earlier chats"
+                                  f"history request {r['id']} expired without a decision: {label} was not given earlier chats"
                                   if r["state"] == "pending" else
-                                  f"history request {r['id']} expired unused: {who} did not read earlier chats"
+                                  f"history request {r['id']} expired unused: {label} did not read earlier chats"
                                   " (ask again if needed)")
         if rows:
             self.svc._after_commit()
@@ -699,9 +750,11 @@ class Chat:
             return "the owner (admin page)"
         if msg["author"] == "system":
             return "hnl-notify"
-        row = self.db.one("SELECT m.kind, g.host, g.folder FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
-                          " WHERE m.id=?", (msg["author_member_id"],))
-        return f"{row['kind']} · {_clean_desc(row['host'] + ':' + row['folder'])}" if row else str(msg["author"])
+        row = self.db.one("SELECT m.kind, m.name, g.host, g.folder FROM chat_members m"
+                          " JOIN chat_groups g ON g.id=m.group_id WHERE m.id=?", (msg["author_member_id"],))
+        if row is None:
+            return str(msg["author"])
+        return f"{who(row['kind'], row['name'], msg['author_member_id'])} · {_clean_desc(row['host'] + ':' + row['folder'])}"
 
     def reply_line_for(self, msg: sqlite3.Row) -> str | None:
         """The quote line of a reply (None when the message is no reply or the quoted one is gone)."""

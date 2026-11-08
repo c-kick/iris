@@ -34,7 +34,7 @@ from .cleanup_service import record_event
 from .device_check import clear_flag
 from .providers.email_inbound import run_locked
 from .schedule import local_zone
-from .chat import _clean_desc, reply_excerpt
+from .chat import _clean_desc, reply_excerpt, who
 from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
@@ -849,9 +849,9 @@ def _preview(text: str) -> str:
 
 def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
     gid = g["id"]
-    members = [{"kind": m["kind"], "joined_at": m["joined_at"], "last_seen_at": m["last_seen_at"],
-                "left_at": m["left_at"]}
-               for m in svc.db.query("SELECT kind, joined_at, last_seen_at, left_at FROM chat_members"
+    members = [{"id": m["id"], "name": m["name"], "kind": m["kind"], "joined_at": m["joined_at"],
+                "last_seen_at": m["last_seen_at"], "left_at": m["left_at"]}
+               for m in svc.db.query("SELECT id, name, kind, joined_at, last_seen_at, left_at FROM chat_members"
                                      " WHERE group_id=? ORDER BY joined_at, rowid", (gid,))]
     last = svc.db.one("SELECT author, text, created_at FROM chat_messages WHERE group_id=? ORDER BY rowid DESC LIMIT 1",
                       (gid,))
@@ -934,6 +934,7 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
         sql += " AND rowid > COALESCE((SELECT rowid FROM chat_messages WHERE id=? AND group_id=?), 0)"
         params += [after, group_id]
     out = []
+    names = {r["id"]: r["name"] for r in svc.db.query("SELECT id, name FROM chat_members WHERE group_id=?", (group_id,))}
     for r in svc.db.query(sql + " ORDER BY rowid", params):
         wakes = {"delivered": 0, "skipped": 0, "pending": 0}
         for w in svc.db.query("SELECT state, COUNT(*) AS n FROM chat_wakes WHERE message_id=? GROUP BY state",
@@ -948,18 +949,20 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
         if r["in_reply_to"]:
             m["in_reply_to"] = r["in_reply_to"]
         if r["claimed_by_member_id"]:  # a member id and kind only, no text: fine for a bearer admin too
-            cm = svc.db.one("SELECT id, kind FROM chat_members WHERE id=?", (r["claimed_by_member_id"],))
+            cm = svc.db.one("SELECT id, kind, name FROM chat_members WHERE id=?", (r["claimed_by_member_id"],))
             if cm is not None:
-                m["claimed_by"] = f"{cm['kind'].capitalize()} {cm['id']}"
+                m["claimed_by"] = who(cm["kind"], cm["name"], cm["id"])
                 m["claimed_at"] = r["claimed_at"]
         if client.via_session:  # like replies: a bearer admin sees states and times, never what people wrote
             m["text"] = r["text"]
             m["member_id"] = r["author_member_id"]
+            m["member_name"] = names.get(r["author_member_id"])
             if r["in_reply_to"]:
                 q = svc.db.one("SELECT * FROM chat_messages WHERE id=? AND group_id=?", (r["in_reply_to"], group_id))
                 if q is not None:
                     m["reply_author"] = "owner" if q["author"] == "owner" else q["author"]
                     m["reply_member_id"] = q["author_member_id"]
+                    m["reply_member_name"] = names.get(q["author_member_id"])
                     m["reply_excerpt"] = reply_excerpt(q["text"])
         out.append(m)
     pending = [h["id"] for h in svc.db.query(
@@ -1053,6 +1056,26 @@ async def chat_release_claim(message_id: str, request: Request, client: Client =
     except Invalid as e:
         raise HTTPException(409, str(e)) from e
     return Response(status_code=204)
+
+
+class ChatRenameIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(max_length=40)
+
+
+@router.put("/api/chats/members/{member_id}")
+async def chat_rename_member(member_id: str, body: ChatRenameIn, request: Request,
+                             client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _check_browser_mutation(request)
+    try:
+        return _svc(request).chat.rename_owner(member_id, body.name)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
 
 
 @router.post("/api/chats/{group_id}/watching", status_code=204)

@@ -471,6 +471,7 @@ details.delivery summary:hover { color: var(--ink); }
 .cm .who small { font: 400 .72rem var(--mono); color: var(--faint); margin-left: .25rem; }
 .cm .who { display: flex; align-items: baseline; gap: .3rem; }
 .cm .who small { margin-left: 0; }
+.cm .who .kind, .cm .quote .kind { font-weight: 400; font-size: .7rem; color: var(--faint); text-transform: none; }
 .ticks { margin-left: auto; padding-left: .6rem; display: inline-flex; align-items: center; align-self: center; color: var(--muted); }
 /* receipt dots: two discs overlapping like a card logo; the overlap reads darker */
 .ticks i { width: 12px; height: 12px; border-radius: 50%; background: currentColor; opacity: .55; flex: none; }

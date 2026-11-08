@@ -1741,7 +1741,7 @@ function deletedLeftText(s) {
 }
 
 function chatMembersText(g) {
-  const here = g.members.filter((m) => !m.left_at).map((m) => CHAT_WHO[m.kind] || m.kind);
+  const here = g.members.filter((m) => !m.left_at).map(chatMemberLabel);
   if (g.state === "closed") return `Closed ${when(g.closed_at)}`;
   return here.length ? `Here now: ${here.join(", ")}` : "Nobody here";
 }
@@ -1761,7 +1761,12 @@ const chatExcerpt = (t) => {
   const x = String(t ?? "").replace(/\s+/g, " ").trim();
   return x.length > CHAT_EXCERPT ? `${x.slice(0, CHAT_EXCERPT)}…` : x;
 };
-const chatWhoLabel = (author, memberId) => author === "owner" ? "you" : `${CHAT_WHO[author] || author} ${memberId || ""}`.trim();
+const chatMemberLabel = (m) => m.name ? `${m.name} (${CHAT_WHO[m.kind] || m.kind})` : (CHAT_WHO[m.kind] || m.kind);
+const chatWhoLabel = (author, memberId, name) => author === "owner" ? "you"
+  : name ? `${name} (${CHAT_WHO[author] || author})` : `${CHAT_WHO[author] || author} ${memberId || ""}`.trim();
+// the author line of a message: the member's name with its kind small, "You" for the owner
+const chatAuthorHtml = (author, name) => author === "owner" || !name ? esc(CHAT_WHO[author] || author)
+  : `${esc(name)} <span class="kind">${esc(CHAT_WHO[author] || author)}</span>`;
 
 // read receipts as dots: one hollow dot = not yet in every session, one dot = reached everyone,
 // two overlapping dots = everyone was active in the chat after it reached them, green = an agent claimed it
@@ -1784,14 +1789,14 @@ function chatMessageHtml(m, canReply = false) {
       : "";
     return `<div class="cm sys${ask ? " ask" : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
   }
-  chats.msgs[m.id] = { author: m.author, member_id: m.member_id, text: m.text };
+  chats.msgs[m.id] = { author: m.author, member_id: m.member_id, name: m.member_name, text: m.text };
   const quote = m.in_reply_to
-    ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${esc(CHAT_WHO[m.reply_author] || m.reply_author)}</b> ${esc(m.reply_excerpt)}`}</div>`
+    ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(m.reply_excerpt)}`}</div>`
     : "";
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
-  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${esc(CHAT_WHO[m.author] || m.author)} <small>${esc(when(m.created_at))}</small>${chatTicksHtml(m.id, m.receipt)}</div>
+  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${chatTicksHtml(m.id, m.receipt)}</div>
     ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}</div>`;
 }
@@ -1894,7 +1899,7 @@ async function chatOpen(el, key, keep = false) {
     const m = id ? chats.msgs[id] : null;
     chats.replyTo = m ? id : null;
     replying.hidden = !m;
-    replying.querySelector(".rq").textContent = m ? `Replying to ${chatWhoLabel(m.author, m.member_id)}: ${chatExcerpt(m.text)}` : "";
+    replying.querySelector(".rq").textContent = m ? `Replying to ${chatWhoLabel(m.author, m.member_id, m.name)}: ${chatExcerpt(m.text)}` : "";
   };
   replying.querySelector("#chat-reply-cancel").onclick = () => { setReply(null); pane.querySelector("#chat-text").focus(); };
   box.onclick = async (e) => {

@@ -17,7 +17,7 @@ from fastapi.responses import HTMLResponse
 
 from .auth import hash_token
 from .clientip import client_ip
-from .chat import _clean_desc
+from .chat import _clean_desc, who_push
 from .core import Conflict
 from .registrations import _page, _when
 
@@ -55,9 +55,9 @@ def _check_code(request: Request, rid: str, code: str | None) -> Any:
 
 def _who(request: Request, r: Any) -> tuple[str, str, str]:
     row = request.app.state.service.db.one(
-        "SELECT m.kind, g.host, g.folder FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE m.id=?",
-        (r["member_id"],))
-    return row["kind"].capitalize(), _clean_desc(f"{row['host']}:{row['folder']}"), _clean_desc(" ".join(r["reason"].split()))
+        "SELECT m.kind, m.name, g.host, g.folder FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
+        " WHERE m.id=?", (r["member_id"],))
+    return who_push(row["kind"], row["name"], r["member_id"]), _clean_desc(f"{row['host']}:{row['folder']}"), _clean_desc(" ".join(r["reason"].split()))
 
 
 @router.get("/admin/decide-history/{rid}", include_in_schema=False)

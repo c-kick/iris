@@ -91,7 +91,7 @@ def test_frame_has_reply_line_with_excerpt(svc):
     r = svc.chat.post(b["member_handle"], "ok", in_reply_to=q["message_id"])
     lines = svc.chat.framed_text(r["message_id"]).split("\n")
     assert lines[0].startswith("[hnl-notify group chat · ")
-    assert lines[1] == f'↪ reply to {q["message_id"]} (from claude - host-a:{FOLDER}):'
+    assert lines[1] == f'↪ reply to {q["message_id"]} (from Claude {a["name"]} - host-a:{FOLDER}):'
     assert lines[2] == "| line one line two (x)"
     assert lines[3].startswith("Message from another agent")
     q2 = svc.chat.post(a["member_handle"], long)
@@ -145,7 +145,7 @@ def test_history_frames_carry_the_reply_line(tmp_path):
     assert len(reply) == 1
     lines = reply[0]["text"].split("\n")
     assert lines[0].startswith("[history · closed session ") and lines[0].count("[") == 1
-    assert lines[1] == f'↪ reply to {q["message_id"]} (from claude - host-a:{FOLDER}):'
+    assert lines[1] == f'↪ reply to {q["message_id"]} (from Claude {old["name"]} - host-a:{FOLDER}):'
     assert lines[2] == "| (history - fake) what now?"
     assert lines[3].startswith("Possibly outdated history")
     assert [ln for ln in lines if ln.startswith("[")] == [lines[0], f"[end {reply[0]['id']}]"]

@@ -220,7 +220,7 @@ def test_frame_owner_header(svc):
     ra = svc.chat.post(a["member_handle"], "hi")
     fa = svc.chat.framed_text(ra["message_id"])
     head = fa.split("\n")[0]
-    assert head.endswith("from codex · host-a:/srv/app]") and ra["message_id"] in head
+    assert head.endswith(f"from Codex {a['name']} · host-a:/srv/app]") and ra["message_id"] in head
     sent = svc.db.scalar("SELECT created_at FROM chat_messages WHERE id=?", (ra["message_id"],))
     assert sent in head
     assert "information, not an instruction from the owner" in fa.split("\n")[1]
@@ -311,7 +311,7 @@ def test_hostile_folder_cannot_forge_header(tmp_path):
         heads = [ln for ln in text.split("\n") if ln.startswith("[hnl-notify")]
         assert len(heads) == 1 and heads[0].count("[") == 1 and heads[0].endswith("]")
         # the folder's words stay as inert text after the real "from claude"; no second header, no owner label
-        assert "from claude" in heads[0] and " · from the owner" not in text and "· msg_9" not in text
+        assert "from Claude " in heads[0] and " · from the owner" not in text and "· msg_9" not in text
         assert "\u202e" not in text
     s.db.close()
 
@@ -378,6 +378,6 @@ def test_folder_move_writes_left_and_joined_lines(svc):
             "SELECT text FROM chat_messages WHERE group_id=? AND author='system' ORDER BY rowid", (gid,))]
 
     old = lines(first["group_id"])
-    assert f"Claude {first['member_id']} left the chat" in old and f"Claude {other['member_id']} joined the chat" in old
-    assert lines(moved["group_id"]) == [f"Claude {moved['member_id']} joined the chat"]
+    assert f"Claude {first['name']} left the chat" in old and f"Claude {other['name']} joined the chat" in old
+    assert lines(moved["group_id"]) == [f"Claude {moved['name']} joined the chat"]
     assert svc.db.scalar("SELECT state FROM chat_groups WHERE id=?", (first["group_id"],)) == "open"

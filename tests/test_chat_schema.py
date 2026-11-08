@@ -42,7 +42,7 @@ def test_migration_from_v2(tmp_path):
     db.conn.close()
     db = Database(path)
     assert CHAT_TABLES <= _tables(db)
-    assert db.scalar("SELECT value FROM meta WHERE key='schema_version'") == str(SCHEMA_VERSION) == "3"
+    assert db.scalar("SELECT value FROM meta WHERE key='schema_version'") == str(SCHEMA_VERSION) == "4"
 
 
 def test_chat_settings(fresh):

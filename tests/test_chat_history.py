@@ -82,13 +82,13 @@ def test_request_writes_line_and_pushes_with_links(tmp_path):
     row = s.db.one("SELECT * FROM chat_history_requests")
     assert row["reason"] == reason and row["state"] == "pending" and row["group_id"] == a["group_id"]
     line = s.db.one("SELECT text FROM chat_messages WHERE id=?", (row["message_id"],))["text"]
-    assert line == f"Claude {a['member_id']} asks to read earlier chats"  # fixed text: the reason is owner-only
+    assert line == f"Claude {a['name']} asks to read earlier chats"  # fixed text: the reason is owner-only
     assert "forged" not in json.dumps([dict(r) for r in s.db.query("SELECT * FROM chat_messages")])
     assert "forged" not in json.dumps(s.chat.read(b["member_handle"], all=True)) and "why?" not in json.dumps(
         s.chat.read(a["member_handle"], all=True))
     n = s.db.one("SELECT * FROM notifications")
     assert n["title"] == "Group chat history request" and n["idempotency_key"] == f"chat-history:{row['id']}"
-    assert n["message"].startswith("Claude in host-a:/srv/app asks to read earlier chats: why?")
+    assert n["message"].startswith(f"{a['name']} (Claude) in host-a:/srv/app asks to read earlier chats: why?")
     actions = json.loads(n["actions_json"])
     assert [x["label"] for x in actions] == ["Approve", "Deny"]
     link = f"{BASE}/admin/decide-history/{row['id']}?k="
@@ -131,7 +131,7 @@ def test_approve_is_exactly_one_read(tmp_path):
     # only the requester is woken, with the notice; the other member is not
     assert wake_texts(s, b["member_id"]) == []
     got = wake_texts(s, a["member_id"])
-    text = f"history request {rid} approved in the admin page: Claude {a['member_id']} may read earlier chats once (call group_history)"
+    text = f"history request {rid} approved in the admin page: Claude {a['name']} may read earlier chats once (call group_history)"
     assert len(got) == 1 and QUOTE + text in got[0]
     assert got[0].startswith("[hnl-notify group chat") and "Notice from hnl-notify." in got[0]
     # one message is both the transcript line and the wake; no second notice line
@@ -154,7 +154,7 @@ def test_deny(tmp_path):
     rid = request(s, a)
     s.chat.decide_history(rid, False)
     assert state(s, rid) == "denied"
-    text = f"history request {rid} denied in the admin page: Claude {a['member_id']} may not read earlier chats"
+    text = f"history request {rid} denied in the admin page: Claude {a['name']} may not read earlier chats"
     assert QUOTE + text in wake_texts(s, a["member_id"])[0]
     assert [r["text"] for r in s.db.query("SELECT text FROM chat_messages WHERE text LIKE ?", (f"%{rid}%",))] == [text]
     with pytest.raises(Invalid):
@@ -189,7 +189,7 @@ def test_pending_expires_with_wake(tmp_path):
     s.chat.sweep()
     assert state(s, rid) == "expired" and s.db.scalar("SELECT decision_sha256 FROM chat_history_requests") is None
     got = wake_texts(s, a["member_id"])
-    text = f"history request {rid} expired without a decision: Claude {a['member_id']} was not given earlier chats"
+    text = f"history request {rid} expired without a decision: Claude {a['name']} was not given earlier chats"
     assert len(got) == 1 and QUOTE + text in got[0]
     assert wake_texts(s, b["member_id"]) == []
     assert [r["text"] for r in s.db.query("SELECT text FROM chat_messages WHERE text LIKE ?", (f"%{rid}%",))] == [text]
@@ -211,7 +211,7 @@ def test_unused_approval_expires_with_wake(tmp_path):
     s.chat.sweep()
     assert state(s, rid) == "expired"
     got = wake_texts(s, a["member_id"])
-    assert len(got) == 1 and f"history request {rid} expired unused: Claude {a['member_id']} did not read earlier chats" in got[0]
+    assert len(got) == 1 and f"history request {rid} expired unused: Claude {a['name']} did not read earlier chats" in got[0]
     with pytest.raises(Invalid, match="give a reason"):
         s.chat.history(a["member_handle"])
     s.db.close()
@@ -349,7 +349,7 @@ def test_history_frame_is_neutralised(tmp_path):
         assert sum(l.startswith("[history") for l in lines) == 1
         assert not any(l.startswith("[hnl-notify") for l in lines)
         assert not any(ch in m["text"] for ch in "\x1b\u2028")
-    assert "from claude · host-a:/srv/(history - closed session) (hnl-notify]" in out["messages"][0]["text"]
+    assert " · host-a:/srv/(history - closed session) (hnl-notify]" in out["messages"][0]["text"]
     assert "from the owner (admin page)]" in out["messages"][1]["text"]
     s.db.close()
 

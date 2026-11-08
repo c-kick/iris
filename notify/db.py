@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -315,7 +315,8 @@ class Database:
         self._add_missing_columns({"chat_wakes": {"attempts": "INTEGER NOT NULL DEFAULT 0", "retry_after": "TEXT"},
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT"},
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT"},
-                                  "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER"},
+                                  "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
+                                                   "name": "TEXT"},  # 0.14.0
                                   "subscriptions": {"failing_since": "TEXT"},
                                   # 0.13.2: bumped by every claim, never reset (a retry resets attempts)
                                   "deliveries": {"lease_no": "INTEGER NOT NULL DEFAULT 0"},
@@ -326,9 +327,11 @@ class Database:
         # members from before 0.13.0's read cursor owe nothing: start them at their group's newest message
         self.conn.execute("UPDATE chat_members SET last_read_rowid=(SELECT COALESCE(MAX(rowid), 0) FROM chat_messages"
                           " WHERE group_id=chat_members.group_id) WHERE last_read_rowid IS NULL")
+        self._name_open_members()
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_scheduled ON notifications(status, send_at)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_chat_members_name ON chat_members(group_id, name)")
         with self.tx() as c:
             c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 
@@ -375,6 +378,22 @@ class Database:
                       " state TEXT NOT NULL CHECK(state IN ('pending','approved','denied','expired','used')),"
                       " decision_sha256 TEXT, message_id TEXT, created_at TEXT NOT NULL, decided_at TEXT, used_at TEXT)")
             c.execute("CREATE INDEX IF NOT EXISTS ix_chat_history_member ON chat_history_requests(member_id, state)")
+
+    def _name_open_members(self) -> None:
+        """0.14.0: members still in an open group get a name, with a line in the chat ("Claude mem_... is now Wren")."""
+        from .chat_names import pick
+        with self.tx() as c:
+            rows = c.execute("SELECT m.id, m.kind, m.group_id FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
+                             " WHERE g.state='open' AND m.left_at IS NULL AND m.name IS NULL ORDER BY m.rowid").fetchall()
+            for r in rows:
+                taken = [x[0] for x in c.execute("SELECT name FROM chat_members WHERE group_id=? AND left_at IS NULL",
+                                                 (r["group_id"],))]
+                name = pick(taken, [])
+                c.execute("UPDATE chat_members SET name=? WHERE id=?", (name, r["id"]))
+                c.execute("INSERT INTO chat_messages(id, group_id, author_member_id, author, text, created_at)"
+                          " VALUES (?, ?, NULL, 'system', ?, ?)",
+                          (new_id("msg"), r["group_id"], f"{(r['kind'] or 'agent').capitalize()} {r['id']} is now {name}",
+                           iso(utcnow())))
 
     def _add_missing_columns(self, columns: dict[str, dict[str, str]]) -> None:
         """Additive migrations for databases created by older versions."""

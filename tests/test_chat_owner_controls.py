@@ -128,9 +128,9 @@ def test_join_leave_system_lines(tmp_path):
     a = join(s, "s1")
     b = join(s, "s2", kind="codex")
     a = join(s, "s1")  # same session again: same member, fresh handle, nothing written
-    assert sys_lines(s) == [f"Claude {a['member_id']} joined the chat", f"Codex {b['member_id']} joined the chat"]
+    assert sys_lines(s) == [f"Claude {a['name']} joined the chat", f"Codex {b['name']} joined the chat"]
     s.chat.leave(a["member_handle"])
-    assert sys_lines(s)[-1] == f"Claude {a['member_id']} left the chat"
+    assert sys_lines(s)[-1] == f"Claude {a['name']} left the chat"
     clock = s.chat.now()
     from tests.test_chat_core import AGENT
     for t in range(0, 1001, 30):  # the relay keeps reporting, without the codex member
@@ -139,7 +139,7 @@ def test_join_leave_system_lines(tmp_path):
     s.chat.now = lambda: clock + td(seconds=1000)
     s.chat.sweep()
     lines = sys_lines(s)
-    assert lines[-2:] == [f"Codex {b['member_id']} left the chat (no longer running)", "closed"]
+    assert lines[-2:] == [f"Codex {b['name']} left the chat (no longer running)", "closed"]
     assert s.db.scalar("SELECT COUNT(*) FROM chat_wakes") == 0
     assert s.db.scalar("SELECT agent_streak FROM chat_groups") == 0
     s.db.close()

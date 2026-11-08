@@ -37,8 +37,8 @@ def test_first_claim_wins_second_is_told(svc):
     a, b, c, req = setup(svc)
     assert svc.chat.claim(b["member_handle"], req) == {"claimed": True, "message_id": req}
     r = svc.chat.claim(c["member_handle"], req)
-    assert r["claimed"] is False and r["by"] == f"Codex {b['member_id']}" and r["at"]
-    assert sysnotes(svc, a["group_id"])[-1] == f"Codex {b['member_id']} claimed {req}"
+    assert r["claimed"] is False and r["by"] == f"Codex {b['name']}" and r["at"]
+    assert sysnotes(svc, a["group_id"])[-1] == f"Codex {b['name']} claimed {req}"
     n = len(sysnotes(svc, a["group_id"]))
     assert svc.chat.claim(b["member_handle"], req)["claimed"] is True  # again: still held, no new line
     assert len(sysnotes(svc, a["group_id"])) == n
@@ -76,7 +76,7 @@ def test_unclaim_rules(svc):
     with pytest.raises(Invalid):
         svc.chat.unclaim(c["member_handle"], req)
     assert svc.chat.unclaim(b["member_handle"], req) == {"released": True, "message_id": req}
-    assert sysnotes(svc, a["group_id"])[-1] == f"Codex {b['member_id']} released {req}"
+    assert sysnotes(svc, a["group_id"])[-1] == f"Codex {b['name']} released {req}"
     assert svc.chat.claim(c["member_handle"], req)["claimed"] is True
 
 
@@ -87,7 +87,7 @@ def test_leaving_releases_claims(svc):
     svc.chat.claim(b["member_handle"], second)
     svc.chat.leave(b["member_handle"], "ended")
     notes = sysnotes(svc, a["group_id"])
-    assert notes[-2:] == [f"Codex {b['member_id']} released {req}", f"Codex {b['member_id']} released {second}"]
+    assert notes[-2:] == [f"Codex {b['name']} released {req}", f"Codex {b['name']} released {second}"]
     assert svc.chat.claim(c["member_handle"], req)["claimed"] is True
 
 
@@ -135,7 +135,7 @@ def test_admin_shows_claimed_by_to_session_and_bearer(ctx):  # noqa: F811
     req = srv.service.chat.post_owner(j["group_id"], "task")["message_id"]
     srv.service.chat.claim(j2["member_handle"], req)
     url = f"/admin/api/chats/{j['group_id']}/messages"
-    by = f"Claude {j2['member_id']}"
+    by = f"Claude {j2['name']}"
     sess = {m["id"]: m for m in b.get(url).json()["messages"]}[req]
     bear = {m["id"]: m for m in httpx.get(f"{srv.url}{url}", headers=bearer).json()["messages"]}[req]
     assert sess["claimed_by"] == by and bear["claimed_by"] == by and "text" not in bear
