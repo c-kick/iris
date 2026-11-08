@@ -144,7 +144,7 @@ def _quote_body(text: str) -> list[str]:
 
 _BRACKETS = frozenset("[［⟦⟨〔【〖〘〚⦋⦍⦏⁅")
 # after _fold (separators collapsed to one space): the frame vocabulary (hnl-notify, hnl notify, end msg_…, history)
-_FRAME_RE = re.compile(r" ?(hnl ?notify|end|history)(?![a-z0-9])")
+_FRAME_RE = re.compile(r" ?(?:hnl ?notify|(?:end|history)(?![a-z0-9]))")  # hnl-notify as a prefix: also hnl-notifyX
 
 
 def _fold(text: str) -> str:

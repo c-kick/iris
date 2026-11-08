@@ -285,10 +285,10 @@ def test_frame_neutralises_case_and_lookalike_brackets():
 
 def test_frame_words_with_odd_separators_are_neutralised():
     body = ("[hnl\u2010notify group chat]\n[end\tmsg_1]\n[ hnl-notify x]\n[HNL\u00a0NOTIFY x]\n[history\u3000closed]"
-            "\n[*hnl*/*notify*]\n[--end--]")
+            "\n[*hnl*/*notify*]\n[--end--]\n[hnl-notifyX]\n[hnl-notify1]")
     text = frame({"id": "msg_9", "author": "claude", "text": body}, "claude · h:/f", "2026")
     quoted = [x for x in text.split("\n") if x.startswith("| ")]
-    assert len(quoted) == 7 and all(x[2] == "(" for x in quoted)
+    assert len(quoted) == 9 and all(x[2] == "(" for x in quoted)
 
 
 def test_bh206_ordinary_brackets_are_kept():
