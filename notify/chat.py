@@ -135,16 +135,25 @@ def _quote_body(text: str) -> list[str]:
         rest = line.lstrip()
         # frame vocabulary in any letter case, after NFKC, behind any bracket lookalike (`[HNL-notify`,
         # `［hnl-notify`, `⟦end `): ordinary brackets (JSON, TOML, [INFO], markdown links) stay as written
-        if rest and rest[0] in _BRACKETS:
-            probe = "[" + unicodedata.normalize("NFKC", rest[1:40]).casefold()
-            if probe.startswith(_FRAME_WORDS):
-                line = line[:len(line) - len(rest)] + "(" + rest[1:]
+        if rest and (rest[0] in _BRACKETS or unicodedata.normalize("NFKC", rest[0]) == "[") \
+                and _FRAME_RE.match(_fold(rest[1:60])):
+            line = line[:len(line) - len(rest)] + "(" + rest[1:]
         out.append(QUOTE + line)
     return out
 
 
 _BRACKETS = frozenset("[［⟦⟨〔【〖〘〚⦋⦍⦏⁅")
-_FRAME_WORDS = ("[hnl-notify", "[hnl notify", "[end ", "[history")
+# after _fold: optional spaces, then the frame vocabulary with any separators (hnl-notify, hnl notify, end msg_…)
+_FRAME_RE = re.compile(r" *(hnl[ \-_.·]*notify|end(?![a-z0-9])|history(?![a-z0-9]))")
+
+
+def _fold(text: str) -> str:
+    """NFKC + casefold, every dash (Unicode Pd) to '-', every whitespace or invisible format char to one space."""
+    out = []
+    for ch in unicodedata.normalize("NFKC", text).casefold():
+        cat = unicodedata.category(ch)
+        out.append("-" if cat == "Pd" else " " if ch.isspace() or cat in ("Zs", "Cf") else ch)
+    return "".join(out)
 
 
 def normalise_folder(folder: str) -> str:
