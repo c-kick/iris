@@ -292,3 +292,14 @@ def test_c5_probing_with_bad_codes_does_not_lock_out_a_valid_link(wp):
     for i in range(8):
         web.get("/push/enroll", params={"c": f"bad{i}"})
     assert web.get("/push/enroll", params={"c": code}).status_code == 200
+
+
+def test_latent_junk_decide_probes_do_not_lock_out_the_valid_link(server_factory, fake):
+    live = server_factory(external_url="http://notify.test")
+    assert httpx.post(f"{live.url}/v1/registrations", json={"name": "newapp", "scopes": ["send"]}).status_code == 202
+    url = wait_for(lambda: next((m.get("url") for m in fake.messages if "/admin/decide/" in (m.get("url") or "")), None))
+    path, _, query = url.partition("?")
+    rid, code = path.rsplit("/", 1)[1], query.split("k=")[1].split("&")[0]
+    for i in range(8):
+        httpx.get(f"{live.url}/admin/decide/{rid}", params={"k": f"junk{i}"})
+    assert httpx.get(f"{live.url}/admin/decide/{rid}", params={"k": code}).status_code == 200

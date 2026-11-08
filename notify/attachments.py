@@ -139,8 +139,8 @@ def _host_port(url: str) -> tuple[str, int]:
 
 
 def _allowed(host: str, port: int, allow: list[str]) -> bool:
-    """Hostnames match host / host:port entries only; CIDR entries match IP-literal hosts only, on ports 80/443
-    (a `cidr:port` entry, e.g. 10.0.0.5/32:8123, allows that one port)."""
+    """Hostnames match host / host:port entries only; an `ip:port` entry matches that IP on that port; CIDR entries
+    match IP-literal hosts only, on ports 80/443 (a `cidr:port` entry, e.g. 10.0.0.0/24:8123, allows one port)."""
     lit = _ip(host)
     for e in allow:
         e = e.strip().lower()
@@ -157,7 +157,9 @@ def _allowed(host: str, port: int, allow: list[str]) -> bool:
             net = ipaddress.ip_network(e, strict=False)
         except ValueError:
             m = re.fullmatch(r"([a-z0-9.-]+)(?::(\d{1,5}))?", e)
-            if m and lit is None and m.group(1) == host and (m.group(2) is None or int(m.group(2)) == port):
+            same = (m is not None and ((lit is None and m.group(1) == host)
+                                       or (lit is not None and _ip(m.group(1)) == lit)))  # `192.168.1.10:8123`
+            if same and (m.group(2) is None or int(m.group(2)) == port):
                 return True
             continue
         # a bare CIDR (no port) covers the ordinary web ports only: never any service on the whole subnet

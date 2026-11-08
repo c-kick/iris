@@ -503,6 +503,11 @@ A hardening release (hostile review, fixes and a bug hunt). No schema change. Wh
   (old rows are cleaned at start).
 - Group chats and the scripts: see *Agent group chats* (pause holds queued wakes, posting delivers them, a silent relay
   no longer removes members) and `notify-wait` (always asks once, a killed run's reply reaches the next run).
+- `notify-wait` marks a printed reply collected (`POST /v1/notifications/{id}/replies/{reply_id}/collected`, scope
+  `read`, with the handle): from then on no run is handed it again. Two runs for one handle on a host take turns.
+- Cancelling an emergency alert whose every attempt had an unknown outcome still asks Pushover to stop it (by tag).
+- `ip:port` (e.g. `192.168.1.10:8123`) is accepted in *Hosts allowed* and matches that port.
+- Two email providers must not share one reply mailbox: each quarantines the other's replies as `no_thread`.
 
 ### Upgrading to 0.13.0
 

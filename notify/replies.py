@@ -181,6 +181,17 @@ class Replies:
                 return None
             await self.svc.bus.wait(min(left, 5.0))  # every commit (including a stored reply) wakes it
 
+    def mark_collected(self, client: Client, nid: str, reply_id: str, handle: str | None = None) -> None:
+        """The waiter printed this reply: it is never handed to a waiter again."""
+        n = self._access(client, nid, handle)
+        conv = n["conversation_id"] or n["id"]
+        with self.svc.db.tx() as c:
+            hit = c.execute("UPDATE replies SET collected_at=COALESCE(collected_at, ?) WHERE id=? AND conversation_id=?"
+                            " AND state='claimed' AND claimed_by=?", (iso(self.now()), reply_id, conv, client.id))
+            if hit.rowcount == 0:
+                from .core import NotFound
+                raise NotFound(f"reply {reply_id} not found")
+
     def _gone_if_dead(self, conv: str) -> None:
         from .core import Gone
         reason = self.dead_reason(conv)
@@ -214,8 +225,10 @@ class Replies:
         now = iso(self.now())
         with self.svc.db.tx() as c:
             c.execute("UPDATE notifications SET listener_seen_at=? WHERE id=? OR conversation_id=?", (now, conv, conv))
+            # handed again to the same waiter only until it reports the reply collected (a run killed after the
+            # claim gets it once more; a later run with the same waiter id never gets an old answer)
             r = c.execute("SELECT * FROM replies WHERE conversation_id=? AND state='claimed' AND waiter_id=?"
-                          " ORDER BY received_at, id LIMIT 1", (conv, waiter)).fetchone()
+                          " AND collected_at IS NULL ORDER BY received_at, id LIMIT 1", (conv, waiter)).fetchone()
             if r is not None:
                 return r
             r = c.execute("SELECT * FROM replies WHERE conversation_id=? AND state='waiting'"

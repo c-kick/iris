@@ -51,7 +51,7 @@ async def webhook_address_ok(url: str, resolve: Any) -> bool:
     try:
         host, _ = attachments._host_port(url)
         ips = [host] if attachments._ip(host) is not None else list(await resolve(host))
-    except (attachments.AttachmentError, OSError):
+    except (attachments.AttachmentError, OSError, ValueError):  # ValueError: e.g. a label longer than 63
         return False
     return bool(ips) and not any(attachments._denied(attachments._ip(x)) for x in ips)
 
@@ -307,6 +307,10 @@ class Workers:
                                                                "error": f"{type(e).__name__}: {e}"[:300]})
                     kind = "timeout" if isinstance(e, httpx.TimeoutException) else "connection failed"
                     self.service.webhook_result(item, False, None, kind)
+                except Exception as e:  # e.g. a host name the resolver refuses: record it, never leave the row pending
+                    log.info("webhook delivery failed", extra={"subscription_id": item["sid"],
+                                                               "error": f"{type(e).__name__}: {e}"[:300]})
+                    self.service.webhook_result(item, False, None, "invalid address")
 
         async def once() -> None:
             items = self.service.claim_webhooks(limit=20)

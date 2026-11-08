@@ -412,9 +412,12 @@ def test_decision_page_wrong_code_refused_and_throttled(live):
     assert anon.post(f"/admin/decide-history/{rid}", data={"k": "nope", "decision": "approve"}).status_code == 410
     assert anon.get("/admin/decide-history/rqh_unknown", params={"k": caught["code"]}).status_code == 410
     assert srv.service.db.scalar("SELECT state FROM chat_history_requests") == "pending"
-    r = anon.post(f"/admin/decide-history/{rid}", data={"k": caught["code"], "decision": "approve"})
-    assert r.status_code == 429  # five wrong codes locked this address out, even for the right one
+    # 0.13.1: wrong codes are throttled, but never the right one (behind a proxy everyone shares one address)
+    assert anon.post(f"/admin/decide-history/{rid}", data={"k": "nope2", "decision": "approve"}).status_code == 429
     assert srv.service.db.scalar("SELECT state FROM chat_history_requests") == "pending"
+    r = anon.post(f"/admin/decide-history/{rid}", data={"k": caught["code"], "decision": "approve"})
+    assert r.status_code == 200
+    assert srv.service.db.scalar("SELECT state FROM chat_history_requests") == "approved"
 
 
 def test_decision_page_expired_request_is_gone(live):

@@ -151,6 +151,16 @@ async def claim_reply(nid: str, request: Request,
     return Response(status_code=204) if out is None else JSONResponse(out)
 
 
+@router.post("/v1/notifications/{nid}/replies/{rid}/collected", status_code=204, tags=["replies"])
+@_errors
+async def reply_collected(nid: str, rid: str, request: Request,
+                          reply_handle: str | None = Header(default=None, alias="X-Reply-Handle", max_length=200),
+                          client: Client = Depends(require(Scope.read))) -> Response:
+    """The waiter printed this reply (notify-wait calls it): the claim never hands it out again."""
+    service(request).replies.mark_collected(client, nid, rid, reply_handle)
+    return Response(status_code=204)
+
+
 @router.get("/v1/notifications/{nid}/replies", tags=["replies"])
 @_errors
 async def list_replies(nid: str, request: Request,

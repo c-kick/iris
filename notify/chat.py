@@ -128,20 +128,23 @@ def history_frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: 
 
 
 def _quote_body(text: str) -> list[str]:
-    """The author's text as quoted lines. A line that starts with an opening bracket gets it turned into '(', so a
-    quoted body cannot carry a copy of a real frame line."""
+    """The author's text as quoted lines. A line that starts like a frame line gets its bracket turned into '(', so
+    a quoted body cannot carry a copy of a real frame line."""
     out = []
     for line in _clean(text, keep_newlines=True).split("\n"):
         rest = line.lstrip()
-        # any opening bracket, also a lookalike (full-width, mathematical, CJK) or another letter case of the frame
-        # words: matching only the exact words would let `[HNL-notify` or `［hnl-notify` through
-        if rest and (rest[0] in _BRACKETS or unicodedata.normalize("NFKC", rest[0]) == "["):
-            line = line[:len(line) - len(rest)] + "(" + rest[1:]
+        # frame vocabulary in any letter case, after NFKC, behind any bracket lookalike (`[HNL-notify`,
+        # `［hnl-notify`, `⟦end `): ordinary brackets (JSON, TOML, [INFO], markdown links) stay as written
+        if rest and rest[0] in _BRACKETS:
+            probe = "[" + unicodedata.normalize("NFKC", rest[1:40]).casefold()
+            if probe.startswith(_FRAME_WORDS):
+                line = line[:len(line) - len(rest)] + "(" + rest[1:]
         out.append(QUOTE + line)
     return out
 
 
 _BRACKETS = frozenset("[［⟦⟨〔【〖〘〚⦋⦍⦏⁅")
+_FRAME_WORDS = ("[hnl-notify", "[hnl notify", "[end ", "[history")
 
 
 def normalise_folder(folder: str) -> str:
@@ -729,6 +732,10 @@ class Chat:
                 else:
                     sql += " AND rowid > ?"
                     params.append((cur["last_read_rowid"] if cur else 0) or 0)
+                    # the read mark cannot pass an older message still owed, so leave out what already arrived
+                    sql += (" AND NOT EXISTS (SELECT 1 FROM chat_wakes w WHERE w.message_id=chat_messages.id"
+                            " AND w.member_id=? AND w.state='delivered')")
+                    params.append(member["id"])
                 sql += " AND author_member_id IS NOT ?"
                 params.append(member["id"])
             more = False
@@ -742,7 +749,8 @@ class Chat:
             for i in range(0, len(ids), 500):
                 part = ids[i:i + 500]
                 c.execute("UPDATE chat_wakes SET state='skipped', reason='read', waiter_id=NULL, finished_at=?"
-                          " WHERE member_id=? AND state IN ('pending', 'claimed') AND message_id IN"
+                          " WHERE member_id=? AND (state IN ('pending', 'claimed') OR (state='skipped' AND reason='paused'))"
+                          " AND message_id IN"
                           f" ({','.join('?' * len(part))})", (iso(self.now()), member["id"], *part))
             c.execute("UPDATE chat_members SET last_read_rowid=MAX(COALESCE(last_read_rowid, 0),"
                       " (SELECT COALESCE(MAX(rowid), 0) FROM chat_messages WHERE group_id=?)) WHERE id=?",

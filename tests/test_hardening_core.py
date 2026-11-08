@@ -289,7 +289,7 @@ def test_a6_short_outage_does_not_disable_a_subscription(server_factory, fake):
     sub = live.service.db.one("SELECT * FROM subscriptions WHERE id=?", (sid,))
     assert sub["consecutive_failures"] >= 2 and sub["active"] == 1
     with live.service.db.tx() as c:  # it has now been down for two days
-        c.execute("UPDATE subscriptions SET created_at='2000-01-01T00:00:00.000000Z' WHERE id=?", (sid,))
+        c.execute("UPDATE subscriptions SET failing_since='2000-01-01T00:00:00.000000Z' WHERE id=?", (sid,))
     submit(live)
     wait_for(lambda: live.service.db.one("SELECT active FROM subscriptions WHERE id=?", (sid,))["active"] == 0)
 
@@ -299,3 +299,17 @@ def test_a6_short_outage_does_not_disable_a_subscription(server_factory, fake):
 def test_b1_data_is_capped(live, fake):
     assert submit(live, data={"x": "y" * 20000}).status_code == 422
     assert submit(live, data={"x": "y" * 1000}).status_code == 202
+
+
+# ------------------------------------------------------------------ stage 6 latent fixes
+
+def test_latent_interrupted_cancelled_send_ends_cancelled(live, fake):
+    gate = gate_sends(live)
+    nid = submit(live).json()["id"]
+    wait_for(lambda: delivery(live, nid)["state"] == "sending")
+    with live.service.db.tx() as c:
+        c.execute("UPDATE deliveries SET cancel_requested=1, attempts=max_attempts,"
+                  " lease_until='2000-01-01T00:00:00.000000Z' WHERE notification_id=?", (nid,))
+    live.call(live.service.recover_leases)
+    assert delivery(live, nid)["state"] == "cancelled"
+    gate.set()

@@ -43,6 +43,7 @@ async def join(body: JoinIn, request: Request, client: Client = Depends(require(
 async def leave(request: Request, body: LeaveIn | None = None,
                 handle: str = Header(alias="X-Member-Handle", max_length=200),
                 client: Client = Depends(require(Scope.chat))) -> Response:
+    service(request).chat.check_handle_host(client, handle)  # same host binding as the MCP tools
     service(request).chat.leave(handle, body.reason if body else "ended")
     return Response(status_code=204)
 

@@ -120,6 +120,17 @@ def _mask_decision(url: str | None) -> str | None:
     return url
 
 
+def _mask_tree(v: Any) -> Any:
+    """Decision codes also sit in the request summaries of the attempt log (the push's url and actions)."""
+    if isinstance(v, str):
+        return _DECISION_CODE.sub(r"\1hidden", v) if "/admin/decide" in v else v
+    if isinstance(v, list):
+        return [_mask_tree(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _mask_tree(x) for k, x in v.items()}
+    return v
+
+
 MAX_SUBSCRIPTIONS_PER_CLIENT = 20
 MAX_SUBSCRIPTIONS_PER_NOTIFICATION = 5
 WEBHOOK_DISABLE_AFTER_SECONDS = 86400  # failures alone never disable a subscription before a day without success
@@ -667,6 +678,10 @@ class NotifyService:
         for d in rows:
             try:
                 with self.db.tx() as c:
+                    if d["cancel_requested"]:  # cancelled while in flight: never queue it again
+                        self._transition(c, d, CANCELLED, {}, {"reason": "cancelled while a send attempt was"
+                                                                         " in progress (send interrupted)"})
+                        continue
                     if d["attempts"] >= d["max_attempts"]:  # a crash loop must not resend without limit
                         self._transition(c, d, FAILED, {"last_error": "send interrupted on every attempt"},
                                          {"reason": f"send interrupted {d['attempts']} times (lease expired or restart);"
@@ -1000,10 +1015,12 @@ class NotifyService:
                     continue
             if d["state"] in (DISPATCHED, DELIVERED):
                 results.append(await self._recall(d, n, f"provider alert cancelled by {client.id}"))
+            elif d["state"] in (FAILED, EXPIRED) and self._maybe_sent(d):
+                results.append(await self._recall_unseen(d, n))
             else:
                 results.append({"delivery": did, "result": "not_cancellable", "reason": f"already {d['state']}"})
         self._after_commit()
-        if not any(r["result"] in ("cancelled", "cancel_requested") for r in results):
+        if not any(r["result"] in ("cancelled", "cancel_requested", "recalled") for r in results):
             raise Conflict("nothing to cancel", results)
         return {"notification": self.get(client, nid, detail=False), "results": results}
 
@@ -1026,6 +1043,26 @@ class NotifyService:
                     self._transition(c, cur, CANCELLED, {}, {"reason": reason})
         return {"delivery": d["id"], "result": "cancelled" if res.outcome == "success" else "error",
                 "error": res.error}
+
+    def _maybe_sent(self, d: sqlite3.Row) -> bool:
+        """A failed delivery may still have reached the phone: an attempt whose answer was lost."""
+        return bool(self.db.scalar("SELECT 1 FROM attempts WHERE delivery_id=? AND kind='send'"
+                                   " AND error LIKE '%outcome unknown%' LIMIT 1", (d["id"],)))
+
+    async def _recall_unseen(self, d: sqlite3.Row, n: sqlite3.Row) -> dict[str, Any]:
+        """Stop an emergency alert we never got a receipt for (by its tag, the notification id). The delivery
+        keeps its state: whether it rang is unknown."""
+        provider = self.providers.get(d["provider"])
+        if not (provider and provider.can_cancel_after_dispatch(Severity(n["severity"]))):
+            return {"delivery": d["id"], "result": "not_cancellable", "reason": f"already {d['state']}"}
+        res = await provider.cancel("", tag=n["id"])
+        with self.db.tx() as c:
+            c.execute("INSERT INTO attempts(delivery_id, attempt_no, kind, started_at, finished_at, outcome,"
+                      " http_status, response_body, error) VALUES (?,?,?,?,?,?,?,?,?)",
+                      (d["id"], d["attempts"], "cancel", now_iso(), now_iso(), res.outcome,
+                       res.http_status, res.response_body, res.error))
+        return {"delivery": d["id"], "result": "recalled" if res.outcome == "success" else "error",
+                "note": "an attempt's outcome was unknown: any alert it raised was cancelled", "error": res.error}
 
     async def cancel_after_dispatch(self, delivery_id: str) -> None:
         """The worker's follow-up when a cancel arrived while the send was in flight (no scope check: the
@@ -1118,7 +1155,7 @@ class NotifyService:
             out["attempt_log"] = [{
                 "attempt": a["attempt_no"], "kind": a["kind"], "started_at": a["started_at"],
                 "finished_at": a["finished_at"], "outcome": a["outcome"], "http_status": a["http_status"],
-                "request": loads(a["request_json"]), "response": a["response_body"], "error": a["error"],
+                "request": _mask_tree(loads(a["request_json"])), "response": a["response_body"], "error": a["error"],
             } for a in attempts]
         return out
 
@@ -1417,20 +1454,23 @@ class NotifyService:
             if ok:
                 c.execute("UPDATE webhook_deliveries SET state='delivered', attempts=?, last_status=?, delivered_at=?,"
                           " last_error=NULL WHERE id=?", (attempts, status, iso(now), item["wid"]))
-                c.execute("UPDATE subscriptions SET consecutive_failures=0, last_success_at=? WHERE id=?",
+                c.execute("UPDATE subscriptions SET consecutive_failures=0, failing_since=NULL, last_success_at=? WHERE id=?",
                           (iso(now), item["sid"]))
                 return
             final = attempts >= s.webhook_max_attempts
             nxt = now + timedelta(seconds=min(600, 5 * 3 ** (attempts - 1)))
             c.execute("UPDATE webhook_deliveries SET state=?, attempts=?, last_status=?, last_error=?, next_attempt_at=?"
                       " WHERE id=?", ("failed" if final else "pending", attempts, status, error, iso(nxt), item["wid"]))
+            c.execute("UPDATE subscriptions SET failing_since=COALESCE(failing_since, ?) WHERE id=?", (iso(now), item["sid"]))
             c.execute("UPDATE subscriptions SET consecutive_failures=consecutive_failures+1, last_failure_at=?,"
                       " last_error=? WHERE id=?", (iso(now), error, item["sid"]))
-            sub = c.execute("SELECT consecutive_failures, last_success_at, created_at FROM subscriptions WHERE id=?",
+            sub = c.execute("SELECT consecutive_failures, failing_since FROM subscriptions WHERE id=?",
                             (item["sid"],)).fetchone()
-            # a short outage with a backlog fails many deliveries at once: disable only when it also lasted a day
-            ok_since = parse_iso(sub["last_success_at"] or sub["created_at"]) if sub else None
-            long_down = ok_since is None or now - ok_since >= timedelta(seconds=WEBHOOK_DISABLE_AFTER_SECONDS)
+            # a short outage with a backlog fails many deliveries at once: disable only when the failures have also
+            # lasted a day (measured from the first failure of this streak, not the last success: a quiet
+            # subscription may not have succeeded for days)
+            since = parse_iso(sub["failing_since"]) if sub else None
+            long_down = since is None or now - since >= timedelta(seconds=WEBHOOK_DISABLE_AFTER_SECONDS)
             if sub and sub[0] >= s.webhook_disable_after_failures and long_down:
                 c.execute("UPDATE subscriptions SET active=0, last_error=? WHERE id=?",
                           (f"disabled after {sub[0]} consecutive failures: {error}", item["sid"]))

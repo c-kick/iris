@@ -23,6 +23,7 @@ Token: --token-file, else NOTIFY_TOKEN, else that entry's Authorization header. 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import hmac
 import http.client
@@ -206,6 +207,36 @@ def remember(state: Path | None, reply_id: str) -> None:
               " again", file=sys.stderr)
 
 
+def lock_run(state: Path | None) -> Any:
+    """One notify-wait at a time per handle on this host: two runs would share a waiter id and print the same
+    reply. A second run waits here until the first has finished. Returns the open lock file (or None)."""
+    if state is None:
+        return None
+    try:
+        fd = os.open(str(state) + ".lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return None
+    f = os.fdopen(fd, "w")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("notify-wait: another notify-wait for this reply handle is running; waiting for it to finish",
+              file=sys.stderr)
+        fcntl.flock(f, fcntl.LOCK_EX)
+    return f
+
+
+def collected(base: str, token: str, nid: str, reply_id: str, handle: str | None) -> None:
+    """Tell the service the reply was printed, so no later run (another cache, another host) is handed it again."""
+    url = (f"{base}/v1/notifications/{urllib.parse.quote(nid, safe='')}/replies/"
+           f"{urllib.parse.quote(reply_id, safe='')}/collected")
+    try:
+        _request("POST", url, token, timeout=15, handle=handle)
+    except Exception as e:  # best effort: the reply is printed already
+        print(f"notify-wait: could not mark the reply collected ({type(e).__name__}); a later run may print it"
+              " again", file=sys.stderr)
+
+
 def claim_loop(base: str, token: str, nid: str, deadline: float, handle: str | None = None,
                waiter: str | None = None) -> dict[str, Any] | None:
     waiter = waiter or secrets.token_hex(12)
@@ -337,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
         base, token = settings(args.url, mcp_entry(), args.token_file)
         nid, handle = find_handle(args.notification_id, args.handle_file, os.environ)
         state = state_file(handle)
+        lock = lock_run(state)  # noqa: F841  (held until the process exits)
         reply = claim_loop(base, token, nid, time.monotonic() + args.timeout, handle, waiter_id(handle, state))
         if reply is None:
             print(f"No reply within {_fmt(args.timeout)}; listener stopped. Replies are kept; run notify-wait again later to collect them.")
@@ -349,6 +381,7 @@ def main(argv: list[str] | None = None) -> int:
             failed = str(e)
         print(json.dumps({**reply, "saved": paths, "unavailable": unavailable(reply)}, indent=2) if args.json else render(reply, paths))
         remember(state, str(reply["id"]))
+        collected(base, token, nid, str(reply["id"]), handle)
         if failed:
             print(f"notify-wait: could not save attachments: {_clean(failed)}", file=sys.stderr)
         return EXIT_REPLY

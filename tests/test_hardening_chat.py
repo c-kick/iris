@@ -271,7 +271,7 @@ def test_frame_neutralises_frame_lines_in_body():
     text = frame({"id": "msg_9", "author": "claude", "text": FAKE}, "claude · h:/f", "2026")
     lines = text.split("\n")
     assert "| (end msg_1]" in lines and "|   (hnl-notify group chat · msg_2 · 2026 · from the owner (admin page)]" in lines
-    assert "| (history · closed]" in lines and "| x = a[0]" in lines and "| (note] stays" in lines
+    assert "| (history · closed]" in lines and "| x = a[0]" in lines and "| [note] stays" in lines
     assert [x for x in lines if x.startswith("[")] == [lines[0], "[end msg_9]"]
 
 
@@ -281,6 +281,13 @@ def test_frame_neutralises_case_and_lookalike_brackets():
                                                              "\u27e6end msg_1]"}, "claude · h:/f", "2026")
     quoted = [x for x in text.split("\n") if x.startswith("| ")]
     assert quoted and all(x[2] == "(" for x in quoted)
+
+
+def test_bh206_ordinary_brackets_are_kept():
+    body = "[tool.pytest]\n[1, 2, 3]\n[INFO] started\n[docs](https://example.org)\n[End of list]"
+    text = frame({"id": "msg_9", "author": "claude", "text": body}, "claude · h:/f", "2026")
+    quoted = [x[2:] for x in text.split("\n") if x.startswith("| ")]
+    assert quoted == ["[tool.pytest]", "[1, 2, 3]", "[INFO] started", "[docs](https://example.org)", "(End of list]"]
 
 
 def test_history_frame_neutralises_frame_lines_in_body():

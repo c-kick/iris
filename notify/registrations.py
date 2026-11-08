@@ -323,13 +323,13 @@ def _check_code(request: Request, rid: str, code: str | None) -> Any:
         app.state.decide_throttle = Throttle()
     throttle = app.state.decide_throttle
     key = f"decide:{request.client.host if request.client else '?'}"
-    throttle.check(key)
     db = app.state.service.db
     expire_stale(db)
     r = db.one("SELECT * FROM registrations WHERE id=?", (rid,))
     ok = (r is not None and code and r["status"] == "pending" and r["decision_sha256"]
           and hmac.compare_digest(hash_token(code), r["decision_sha256"]))
-    if not ok:
+    if not ok:  # only misses are throttled: junk probes must not lock out the owner's valid link
+        throttle.check(key)
         throttle.fail(key)
         return None
     throttle.ok(key)

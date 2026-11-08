@@ -15,6 +15,7 @@ import re
 import sqlite3
 import ssl
 import threading
+import time
 from email.message import EmailMessage
 from typing import TYPE_CHECKING, Any
 
@@ -198,7 +199,7 @@ class ImapMailbox:
             self.close()
 
 
-async def run_locked(lock: asyncio.Lock, make: Any) -> Any:
+async def run_locked(lock: asyncio.Lock, make: Any, on_cancel: Any = None) -> Any:
     """Run `make()` (returns an awaitable) holding `lock`; on cancellation the lock is kept until it has finished,
     because it may be driving a thread that still uses the IMAP session. The call is created under the lock, so a
     caller cancelled while queued leaves no un-awaited coroutine."""
@@ -209,6 +210,8 @@ async def run_locked(lock: asyncio.Lock, make: Any) -> Any:
             try:
                 await asyncio.wait({task})
             except asyncio.CancelledError:
+                if not cancelled and on_cancel is not None:
+                    on_cancel()  # ask the work to stop at its next safe point
                 cancelled = True
         if cancelled:
             if not task.cancelled():
@@ -219,7 +222,9 @@ async def run_locked(lock: asyncio.Lock, make: Any) -> Any:
 
 async def poll_once(svc: NotifyService, provider: EmailProvider, mailbox: Any) -> dict[str, int]:
     # no cleanup step or connection test runs in between
-    return await run_locked(svc.mailbox_lock(provider.name), lambda: _poll_locked(svc, provider, mailbox))
+    stop = threading.Event()
+    return await run_locked(svc.mailbox_lock(provider.name), lambda: _poll_locked(svc, provider, mailbox, stop),
+                            on_cancel=stop.set)
 
 
 MAX_UID_FAILURES = 3
@@ -238,6 +243,10 @@ def _failures(provider: EmailProvider) -> dict[bytes, list[Any]]:
     return got
 
 
+def _known(v: Verdict | None) -> tuple[Any, Any]:
+    return (v.delivery, v.notification) if v is not None else (None, None)
+
+
 def skipped_note(provider: EmailProvider) -> str | None:
     """For the poller's last_error: the messages the last pass skipped because they failed too often."""
     skipped: list[bytes] = getattr(provider, "_uid_skipped", None) or []
@@ -248,14 +257,21 @@ def skipped_note(provider: EmailProvider) -> str | None:
     return f"skipped message UID {uids} after {MAX_UID_FAILURES} failed attempts (last: {last})"[:300]
 
 
-async def _poll_locked(svc: NotifyService, provider: EmailProvider, mailbox: Any) -> dict[str, int]:
+async def _poll_locked(svc: NotifyService, provider: EmailProvider, mailbox: Any,
+                       stop: threading.Event | None = None) -> dict[str, int]:
     stats = {"accepted": 0, "quarantined": 0, "duplicates": 0}
+    started = time.monotonic()
+    budget = float(getattr(mailbox, "timeout", SESSION_SECONDS))
     fails = _failures(provider)
     skipped: list[bytes] = []
     provider._uid_skipped = skipped  # type: ignore[attr-defined]
     await asyncio.to_thread(mailbox.open)
     try:
         for uid, size in await asyncio.to_thread(mailbox.list):
+            # each message gets a full session budget (re-armed below), but a pass starts no new message after a
+            # stop request or once the session limit has passed: a stop waits for at most one message
+            if (stop is not None and stop.is_set()) or time.monotonic() - started >= budget:
+                break
             if fails.get(uid, [0])[0] >= MAX_UID_FAILURES:
                 log.warning("reply message skipped: it failed too often",
                             extra={"uid": uid.decode(errors="replace"), "error": fails[uid][1]})
@@ -284,6 +300,7 @@ async def _handle(svc: NotifyService, provider: EmailProvider, mailbox: Any, uid
     raw_headers = await asyncio.to_thread(mailbox.fetch_headers, uid)
     head = EmailMessage()
     key: str | None = None
+    verdict: Verdict | None = None
     try:
         # Parsed inside the try: a header Python's parser chokes on (deeply nested comments raise RecursionError)
         # is quarantined instead of ending every later pass at this message.
@@ -323,10 +340,11 @@ async def _handle(svc: NotifyService, provider: EmailProvider, mailbox: Any, uid
         log.warning("reply headers could not be parsed", extra={"uid": uid.decode(errors="replace")})
         verdict = Verdict("quarantine", "malformed_headers")
     except replyparse.TooComplex:
-        verdict = Verdict("quarantine", "too_complex")
+        # the header verdict already tied it to a conversation: keep that, so the agent hears it was refused
+        verdict = Verdict("quarantine", "too_complex", *_known(verdict))
     except Exception:
         log.exception("reply could not be read", extra={"uid": uid.decode(errors="replace")})
-        verdict = Verdict("quarantine", "unreadable")
+        verdict = Verdict("quarantine", "unreadable", *_known(verdict))
     if verdict.action == "quarantine":
         replies.quarantine(head, verdict, key)
         stats["quarantined"] += 1

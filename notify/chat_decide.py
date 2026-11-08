@@ -39,13 +39,13 @@ def _check_code(request: Request, rid: str, code: str | None) -> Any:
         app.state.decide_throttle = Throttle()
     throttle = app.state.decide_throttle
     key = f"decide:{request.client.host if request.client else '?'}"
-    throttle.check(key)
     svc = app.state.service
     svc.chat.expire_history()
     r = svc.db.one("SELECT * FROM chat_history_requests WHERE id=?", (rid,))
     ok = (r is not None and code and r["state"] == "pending" and r["decision_sha256"]
           and hmac.compare_digest(hash_token(code), r["decision_sha256"]))
-    if not ok:
+    if not ok:  # only misses are throttled: behind a proxy junk probes must not lock out the owner's valid link
+        throttle.check(key)
         throttle.fail(key)
         return None
     throttle.ok(key)
