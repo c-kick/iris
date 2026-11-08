@@ -169,3 +169,9 @@ def test_name_reuse_window(svc, monkeypatch):
         c.execute("UPDATE chat_members SET joined_at=?", (iso(svc.chat.now() - timedelta(days=8)),))
     seen = {join(svc, f"t{i}")["name"] for i in range(2)}
     assert seen == {"Wren", "Fern"}
+
+
+def test_iris_is_not_a_member_name():
+    """Iris is the service (system notices say "Notice from Iris."): no member may be called that."""
+    for n in ("Iris", "iris", "IRIS"):
+        assert not chat_names.valid_name(n)

@@ -56,5 +56,8 @@ def test_technical_identifiers_are_kept():
     assert sum(ln.count('b"hnl-notify"') for ln in code) == 2  # encryption AAD: a format identifier, never changed
     compose = (ROOT / "compose.yaml").read_text()
     assert "container_name: iris" in compose and "image: iris:" in compose
-    assert "name: hnl-notify" in compose  # compose project identity pinned: no second stack after the rename
+    # no project name in the tracked file: a worktree or second clone must never become the production project
+    assert not any(ln.startswith("name:") for ln in compose.splitlines())
+    up = (ROOT / "docs/upgrading.md").read_text()
+    assert "COMPOSE_PROJECT_NAME=hnl-notify" in up and "worktree" in up
     assert "\n  notify:\n" in compose  # service key kept

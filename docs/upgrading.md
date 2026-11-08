@@ -23,13 +23,22 @@ Kept on purpose (renaming them would break running clients or stored data for no
 | System client id `hnl-notify`, reserved client names, event sources such as `hnl-notify/device-check` | stored history and attribution; no rewrite of old rows |
 | Encryption associated data `b"hnl-notify"` | a format identifier of the stored secrets, never changed |
 | `~/.config/hnl-notify/`, `~/.cache/hnl-notify-chat`, `~/.cache/hnl-notify-wait`, script names | hosts already have them |
-| Compose project name `hnl-notify` (now pinned in `compose.yaml`), service key `notify` | the new container replaces the old one in the same stack, whatever the checkout directory is called |
+| Compose project name `hnl-notify` (from the checkout directory), service key `notify` | the new container replaces the old one in the same stack |
 | Hostnames, browser enrollments, service worker scope, VAPID keys, chat membership handles | browsers and sessions keep working |
 
 **Upgrade.** Take a database backup, then from the existing checkout: `git pull` (after the repository rename,
 `git remote set-url origin https://github.com/c-kick/iris.git`) and `docker compose up -d --build`. Compose stops
 and removes the `hnl-notify` container and starts `iris` with the same mounts; run `docker ps` afterwards: there
 must be exactly one. Commands that named the container change: `docker logs iris`, `docker exec iris …`.
+
+The project name stays `hnl-notify` because Compose takes it from the checkout directory, which keeps its name. If you
+move or re-clone the checkout under another name (for example `iris`), first put `COMPOSE_PROJECT_NAME=hnl-notify` in
+that checkout's `.env` (git-ignored, host-local), or Compose starts a second stack beside the old one. Never put the
+name in `compose.yaml` and never run `docker compose` for production from a worktree or another clone: a copy with the
+production project name would replace the running container with one on its own (empty) `data/` and `secrets/`.
+
+A mail provider saved in the admin UI usually stored the old default sender name `hnl-notify` explicitly; change
+**From name** under Providers if mails should say Iris.
 
 **Agents.** New MCP registrations use the name `iris` (`claude mcp add --transport http iris …/mcp`). An existing
 `hnl-notify` registration keeps working; do not register both in one scope. `notify-wait` reads the `iris` entry

@@ -1,7 +1,6 @@
-# Iris (formerly hnl-notify). The Compose project keeps its old name, so the stack, its network and the container it
-# replaces stay one project however the checkout directory is called; the service key stays `notify`.
-name: hnl-notify
-
+# Iris (formerly hnl-notify). The Compose project name comes from the checkout directory (or COMPOSE_PROJECT_NAME),
+# never from this file: a worktree or second clone must not become the production project. A checkout moved away from
+# its old directory sets COMPOSE_PROJECT_NAME in its own .env (see docs/upgrading.md). The service key stays `notify`.
 services:
   notify:
     build: .

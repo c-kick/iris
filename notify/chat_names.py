@@ -3,7 +3,7 @@
 A member keeps its name for as long as it is a member; the member id stays the key everywhere. Names are unique
 within a group (case-insensitively) and, where possible, not reused in the same host + folder for a week, so
 "Wren" in today's transcript is not yesterday's Wren. The list avoids common English verbs (an agent might write
-"@rush" by accident) and the frame words (hnl, end, history).
+"@rush" by accident) and the frame words (iris, hnl, end, history).
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ NAMES: tuple[str, ...] = (
 
 # owner renames: one word of letters (and digits after the first), so a name can never forge a frame header
 NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]{1,19}$")
-RESERVED = frozenset({"all", "owner", "system", "everyone", "hnl", "end", "history", "notify", "claude", "codex"})
+RESERVED = frozenset({"all", "owner", "system", "everyone", "iris", "hnl", "end", "history", "notify", "claude", "codex"})
 
 
 def valid_name(name: str) -> bool:
