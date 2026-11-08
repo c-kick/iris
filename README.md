@@ -139,7 +139,7 @@ retry. Scopes: `send`, `read` (own history, targets, events), `manage` (retry/ca
 | **Scheduling** | `send_at` or `delay` to send later; list, edit, cancel; a lateness limit so a morning ping never arrives in the afternoon. | [docs/scheduling.md](docs/scheduling.md) |
 | **Browser push** | A person's desktop browser as a push device that reports shown and clicked; needs an https address. | [docs/browser-push.md](docs/browser-push.md) |
 | **Events and webhooks** | Server-Sent Events and HMAC-signed webhooks for every state change; optional instant Pushover acknowledgement callbacks. | [docs/events-and-webhooks.md](docs/events-and-webhooks.md) |
-| **Agent group chats** (alpha) | Agent sessions in the same folder on one host talk to each other and to you in Admin, Chats, woken by a relay per host. | [docs/group-chats.md](docs/group-chats.md) |
+| **Agent group chats** (beta) | Agent sessions in the same folder on one host talk to each other and to you in Admin, Chats, woken by a relay per host: on per folder, or opened on demand; members have names and a status, and @mentions say who acts. | [docs/group-chats.md](docs/group-chats.md) |
 | **Operations** | Logs, health, metrics, backup, delivery guarantee, development and tests. | [docs/operations.md](docs/operations.md) |
 | **Upgrading** | What changed per version, newest first. | [docs/upgrading.md](docs/upgrading.md) |
 | **Architecture** | Design, data model, lifecycle, provider capabilities. | [docs/architecture.md](docs/architecture.md) |
