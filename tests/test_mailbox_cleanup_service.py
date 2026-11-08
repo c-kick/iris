@@ -279,6 +279,7 @@ def test_automatic_run_once_a_day_with_backoff(email_live):
     now[0] = 1101.0
     wait_for(lambda: runs(), timeout=10)
     first = runs()
+    settle(w)  # last_run is set during the run: let the loop schedule the next one before the clock moves on
     assert len(email_live.cleanup_server.mail["Processed"]) == 0
     now[0] = 1500.0
     settle(w)
@@ -287,6 +288,7 @@ def test_automatic_run_once_a_day_with_backoff(email_live):
     now[0] = 2200.0
     wait_for(lambda: email_live.service.cleanup_status["mail"]["last_error"], timeout=10)
     failed = runs()
+    settle(w)
     now[0] = 2300.0
     settle(w)
     assert runs() == failed  # first back-off is 600 s, capped at 400: not yet due at +100

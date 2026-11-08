@@ -272,6 +272,14 @@ def test_b5_subscriptions_are_capped_per_client(live, fake):
     assert c.post("/v1/subscriptions", json={"url": "http://hooks.test/x"}).status_code == 422
 
 
+def test_b5_subscriptions_per_notification_are_capped_too(live, fake):
+    nid = submit(live).json()["id"]
+    c = live.client()
+    codes = [c.post("/v1/subscriptions", json={"url": f"http://hooks.test/{i}", "notification_id": nid}).status_code
+             for i in range(6)]
+    assert codes[:5] == [201] * 5 and codes[5] == 422
+
+
 def test_a6_short_outage_does_not_disable_a_subscription(server_factory, fake):
     live = server_factory(webhook_disable_after_failures=2)
     fake.webhook_status = 500

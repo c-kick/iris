@@ -16,7 +16,7 @@ from .db import dumps, now_iso
 from .device_check import check_devices, record_check
 from . import attachments
 from .providers.base import ProviderError, SendResult
-from .providers.email_inbound import mask_secret, poll_once
+from .providers.email_inbound import mask_secret, poll_once, skipped_note
 
 log = logging.getLogger("notify.worker")
 
@@ -229,7 +229,7 @@ class Workers:
                 try:
                     mailbox = svc.open_mailbox(p) if svc.open_mailbox else p.mailbox()  # type: ignore[attr-defined]
                     status["last_stats"] = await poll_once(svc, p, mailbox)  # type: ignore[arg-type]
-                    status.update(last_success=now_iso(), last_error=None)
+                    status.update(last_success=now_iso(), last_error=skipped_note(p))  # skipped UIDs stay visible
                     failures[name] = 0
                 except Exception as e:
                     failures[name] = failures.get(name, 0) + 1

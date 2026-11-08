@@ -63,6 +63,9 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
     """`config` seeds an empty database (tests); otherwise the database is authoritative and
     NOTIFY_CONFIG (YAML) is imported only when the database has no configuration yet."""
     db = Database(db_path or os.environ.get("NOTIFY_DB", "/data/notify.sqlite3"))
+    from .providers.pushover import redact_callback_secrets
+    if redact_callback_secrets(db):  # older attempt rows kept the callback URL, secret included
+        log.warning("removed the callback secret from stored attempt rows")
     store = ConfigStore(db, MasterKey(key_path or os.environ.get("NOTIFY_KEY_FILE", "/secrets/master.key")))
     config = store.load(seed=config, seed_path=os.environ.get("NOTIFY_CONFIG", "/config/notify.yaml"))
     holder: dict[str, Any] = {}

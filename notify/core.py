@@ -121,6 +121,7 @@ def _mask_decision(url: str | None) -> str | None:
 
 
 MAX_SUBSCRIPTIONS_PER_CLIENT = 20
+MAX_SUBSCRIPTIONS_PER_NOTIFICATION = 5
 WEBHOOK_DISABLE_AFTER_SECONDS = 86400  # failures alone never disable a subscription before a day without success
 
 
@@ -1013,7 +1014,7 @@ class NotifyService:
         if not (provider and d["receipt"] and provider.can_cancel_after_dispatch(sev)):
             return {"delivery": d["id"], "result": "not_cancellable",
                     "reason": f"{d['provider']} cannot recall a message already dispatched at severity {sev.value}"}
-        res = await provider.cancel(d["receipt"])
+        res = await provider.cancel(d["receipt"], tag=n["id"])  # by tag: also stops a duplicate of the alert
         with self.db.tx() as c:
             c.execute("INSERT INTO attempts(delivery_id, attempt_no, kind, started_at, finished_at, outcome,"
                       " http_status, response_body, error) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -1356,9 +1357,18 @@ class NotifyService:
     def create_subscription(self, client: Client, req: SubscriptionIn) -> dict[str, Any]:
         if req.notification_id:
             self._notification_row(client, req.notification_id)
-        if not client.admin and (self.db.scalar("SELECT COUNT(*) FROM subscriptions WHERE client_id=? AND notification_id IS NULL", (client.id,))
-                                 or 0) >= MAX_SUBSCRIPTIONS_PER_CLIENT:
-            raise Invalid(f"at most {MAX_SUBSCRIPTIONS_PER_CLIENT} subscriptions per client; delete one first")
+        if not client.admin:
+            if req.notification_id:  # per notification: its submit webhook plus a few more
+                used = self.db.scalar("SELECT COUNT(*) FROM subscriptions WHERE client_id=? AND notification_id=?",
+                                      (client.id, req.notification_id)) or 0
+                cap = MAX_SUBSCRIPTIONS_PER_NOTIFICATION
+            else:
+                used = self.db.scalar("SELECT COUNT(*) FROM subscriptions WHERE client_id=? AND notification_id IS NULL",
+                                      (client.id,)) or 0
+                cap = MAX_SUBSCRIPTIONS_PER_CLIENT
+            if used >= cap:
+                raise Invalid(f"at most {cap} subscriptions {'per notification' if req.notification_id else 'per client'};"
+                              " delete one first")
         sid = new_id("sub")
         secret = req.secret or secrets.token_urlsafe(32)
         with self.db.tx() as c:

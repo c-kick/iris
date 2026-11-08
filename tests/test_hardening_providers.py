@@ -145,12 +145,12 @@ def _dk(*headers: str) -> bool:
                           "mx.example.org", "example.org")
 
 
-def test_split_opendkim_opendmarc_pair_passes():
-    assert _dk("mx.example.org; dmarc=pass header.from=example.org",
-               "mx.example.org; dkim=pass header.d=example.org")
-    assert _dk("mx.example.org; dkim=pass header.d=example.org",
-               "mx.example.org; spf=pass smtp.mailfrom=alex@example.org",
-               "mx.example.org; dmarc=pass header.from=example.org")
+def test_split_headers_are_never_combined():
+    # E.5 ruled out after review: the receiving server may not strip forged headers, so a lower header with the
+    # trusted id must never supply a method the server's own (first) header did not report
+    assert not _dk("mx.example.org; dkim=pass header.d=example.org",
+                   "mx.example.org; dmarc=pass header.from=example.org")
+    assert _dk("mx.example.org; dkim=pass header.d=example.org; dmarc=pass header.from=example.org")
 
 
 def test_trusted_fail_is_never_overridden_by_a_lower_pass():
@@ -369,6 +369,14 @@ def test_reply_to_a_non_reply_follow_up_reaches_the_conversation(email_live):
     v = email_live.service.replies.classify(rp.parse_headers(split_headers(only)), split_headers(only),
                                             "mx.example.org", "mail")
     assert v.action == "quarantine" and v.reason == "not_reply_enabled" and v.delivery["id"] == did2
+
+
+def test_thread_match_never_uses_another_providers_delivery(email_live):
+    nid, did = send(email_live)
+    raw = reply_raw(did)
+    head = rp.parse_headers(split_headers(raw))
+    v = email_live.service.replies.classify(head, split_headers(raw), "mx.example.org", "other-mail")
+    assert v.action == "quarantine" and v.reason == "no_thread" and v.delivery is None
 
 
 # --- C13 (E.9): what the reply checks prove ---------------------------------------------------------------------

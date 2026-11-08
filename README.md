@@ -163,7 +163,7 @@ curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' $N
   other route) get 413.
 - URL attachments are **disabled until an admin allows hosts**: *Settings →
   Hosts allowed for attachment URLs* (`homeassistant.lan:8123`, a host name,
-  or an IP/CIDR for URLs that use an IP address). Redirects are re-checked,
+  or an IP/CIDR for URLs that use an IP address: ports 80/443 only, `cidr:port` for another one). Redirects are re-checked,
   loopback and link-local addresses are always refused, and the URL (which
   may hold a token) is never stored or logged.
 - Pushover shows the first image up to 5 MiB; other attachments are listed in
@@ -220,8 +220,9 @@ found in the newest message. Enter the one your mail server writes as
 `mx.example.org`); it is never filled in for you. Replies are accepted only when
 the mail server itself reports `dkim=pass` and `dmarc=pass` for the sender's
 domain, so this must be a server you trust to add that header (with DKIM and DMARC
-results) to every inbound message. Only the server's own headers at the top count (one, or a
-DKIM and a DMARC header written separately); a lower header never overrides them.
+results) to every inbound message. Only the topmost `Authentication-Results` header counts, and it must
+carry both results: a server that writes DKIM and DMARC in separate headers is not supported, because a
+forged lower header could otherwise supply the missing one.
 
 **Sending.** Add `"reply": true` and an email kind:
 
@@ -471,6 +472,38 @@ notification is released (payload gains `scheduled: true`), followed by the usua
 Subscribers to `*` or `notification.*` therefore start receiving `notification.scheduled`,
 `notification.updated` and `notification.missed`.
 
+### Upgrading to 0.13.1
+
+A hardening release (hostile review, fixes and a bug hunt). No schema change. What behaves differently:
+
+- **Cancelling during a send works**: the alert is recalled once the send finishes (an emergency alert by its tag, so a
+  duplicate stops too), and a cancelled delivery is never retried.
+- **Provider settings are for the signed-in admin page only** (create, edit, delete, *Test*, enrollment links): an
+  `admin` bearer token gets 403. Changing a provider's server, port, security or user needs the password again.
+- **Password change** needs the signed-in page and is throttled like the login. **Logout** needs the `X-Notify-Admin`
+  header (the admin page sends it).
+- **Request bodies without a valid token** are at most 64 KiB (401 above); above 1 MiB, `POST /v1/notifications` needs a
+  token with `send` (403). `data` is at most 16 KiB as JSON.
+- **Limits per client**: 20 standing webhook subscriptions (5 per notification) and 5 open SSE streams; admin tokens are
+  exempt from the subscription cap. A subscription is disabled only after its failures *and* a day without success.
+- **Webhooks** are never sent to loopback, link-local or unspecified addresses, and `last_error` is coarse
+  (`connection failed`, `timeout`, `HTTP 5xx`, `address not allowed`).
+- **Attachment URLs**: compressed responses are refused; a bare CIDR in *Hosts allowed* covers ports 80 and 443 only;
+  write `10.0.0.5/32:8123` for another port.
+- **Self-registration** refuses a name an earlier (deleted) client used, and never auto-approves a request that came
+  through a proxy (`X-Forwarded-For`, `Forwarded`, `X-Real-IP`). Deleting a client disables its webhooks.
+- **Listings never show decision codes** (access and history request links are shown with `k=hidden`).
+- **History**: `since` must be an ISO time (422 otherwise) and is compared as a time; an unknown `before` id is a 422.
+  `GET /v1/events?types=` advances its cursor over events the filter skipped.
+- Deliveries of a removed provider fail ("no longer configured") instead of waiting forever; a send interrupted on
+  every attempt fails after `max_attempts`; abandoned receipt tracking ends `expired`.
+- **Replies**: header parsing errors and mails with more than 200 MIME parts are quarantined (`malformed_headers`,
+  `too_complex`) instead of stopping the poller; the polled folder is never expunged as a whole; a reply finds its
+  conversation through a later non-reply mail of the thread. The callback secret is no longer kept in attempt logs
+  (old rows are cleaned at start).
+- Group chats and the scripts: see *Agent group chats* (pause holds queued wakes, posting delivers them, a silent relay
+  no longer removes members) and `notify-wait` (always asks once, a killed run's reply reaches the next run).
+
 ### Upgrading to 0.13.0
 
 - Adds agent group chats (see *Agent group chats*). The schema goes to version 3 (tables `chat_groups`,
@@ -653,7 +686,9 @@ ok = hmac.compare_digest(v1, hmac.new(secret.encode(), f"{t}.".encode() + body, 
 ```
 
 Webhooks retry with backoff (10 attempts) from a durable outbox; a subscription
-is disabled after 50 consecutive failures (visible in `GET /v1/subscriptions`).
+is disabled after 50 consecutive failures once it has also gone a day without a success (visible in
+`GET /v1/subscriptions`). At most 20 standing subscriptions per client; webhooks never go to loopback or
+link-local addresses.
 
 Event types: `notification.created`, `notification.status_changed`,
 `delivery.queued`, `delivery.attempt_failed`, `delivery.dispatched`,

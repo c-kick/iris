@@ -92,14 +92,13 @@ class Replies:
         first: tuple[sqlite3.Row | None, sqlite3.Row | None] = (None, None)
         for did in ids:
             d = db.one("SELECT * FROM deliveries WHERE id=?", (did,))
-            if d is None:
-                continue
+            if d is None or (provider is not None and d["provider"] != provider):
+                continue  # only deliveries this mailbox's provider sent: never another provider's, not even as a reason
             n = db.one("SELECT * FROM notifications WHERE id=?", (d["notification_id"],))
             if first[0] is None:
                 first = (d, n)
             if (n is not None and n["reply_wanted"] and sender
-                    and sender == (d["recipient_address"] or "").strip().lower()
-                    and (provider is None or d["provider"] == provider)):
+                    and sender == (d["recipient_address"] or "").strip().lower()):
                 return d, n
         return first
 

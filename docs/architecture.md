@@ -377,15 +377,15 @@ poll, never as a second reply.
 5. **DKIM** → `dkim_fail`. `Authentication-Results` headers are read from the top,
    because the receiving server prepends its own and anything below may have been
    written by the sender (checked against the deployment's mail server: forged
-   headers claiming its authserv-id are not removed). Only the leading run of headers
-   whose authserv-id equals the admin-entered `authserv_id` counts; the first header
-   with another id ends it. That combines a split OpenDKIM + OpenDMARC pair. For each
-   of DKIM and DMARC the topmost header in the run that reports the method decides,
-   so a lower header can never override it. RFC 8601 comments and quoted strings are
+   headers claiming its authserv-id are not removed). Only the **first** header counts,
+   and its authserv-id must equal the admin-entered `authserv_id`. Headers are never
+   combined: since forged ones are not removed, a lower header could otherwise supply a
+   method the server's own header did not report (a split OpenDKIM + OpenDMARC pair is
+   therefore not supported; reviewed and decided 2026-11). RFC 8601 comments and quoted strings are
    stripped before parsing, so `;` and tokens inside them cannot forge a verdict.
    `dkim=pass` must be the method token of a result, with a standalone `header.d`
    property (containing a dot) equal to or a parent of the From domain, **and** the
-   deciding DMARC header must show `dmarc=pass` with `header.from` equal to the From domain.
+   same header must show `dmarc=pass` with `header.from` equal to the From domain.
    DMARC is the server's own reading of the From header (it fails on multiple From
    headers), which binds the signature to the address compared in step 4. A mail
    server that does not run DMARC therefore accepts no replies.
