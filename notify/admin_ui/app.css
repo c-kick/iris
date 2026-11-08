@@ -446,6 +446,13 @@ details.delivery summary:hover { color: var(--ink); }
 }
 .chat-row:hover { background: color-mix(in srgb, var(--surface) 65%, transparent); }
 .chat-row.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--action); }
+/* new activity in a chat that is not open: warm wash and edge, one soft pulse when it lights up */
+.chat-row.lit { background: var(--warn-wash); box-shadow: inset 3px 0 0 var(--warn); }
+.chat-row.lit .name { font-weight: 600; }
+@media (prefers-reduced-motion: no-preference) {
+  .chat-row.lit.fresh { animation: chat-lit 1.6s ease-out 1; }
+  @keyframes chat-lit { 0% { background: color-mix(in srgb, var(--warn) 30%, transparent); } 100% { background: var(--warn-wash); } }
+}
 .chat-row:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
 .chat-row .t { display: flex; justify-content: space-between; gap: .5rem; font-weight: 600; font-size: .92rem; }
 .chat-row .name { display: flex; align-items: center; gap: .5rem; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: .86rem; font-weight: 500; }

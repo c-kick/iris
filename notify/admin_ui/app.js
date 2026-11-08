@@ -1795,7 +1795,8 @@ function chatMembersMini(g) {
 function chatGroupRow(g) {
   const lm = g.last_message;
   const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${lm.text_preview ?? ""}` : "No messages yet";
-  return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
+  const lit = chats.lit.has(chatKey(g)) && chatKey(g) !== chats.selected;
+  return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}${lit ? " lit" : ""}${lit && chats.fresh.has(chatKey(g)) ? " fresh" : ""}" data-key="${esc(chatKey(g))}"${lit ? ` aria-description="new activity"` : ""}>
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
       ${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span>
     <span class="p">${esc(g.host)} · ${g.state === "open" ? (g.adhoc ? "open on demand" : "open") : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
@@ -1890,9 +1891,24 @@ function chatPaneEmpty(el) {
   el.querySelector("#chat-pane").innerHTML = `<div class="empty">${chats.folders.length ? "Pick a folder on the left." : "No group chats yet. Switch chats on for a folder under Folders, or an agent opens one when it helps."}<br><span class="hint">Agent sessions in the same folder talk here, one thread per folder. Read along, and post into an open group to steer it.</span></div>`;
 }
 
+// a chat that is not the open one lights up when something new happens in it (a message, a join, a pause) and
+// stays lit until it is opened; the first load of the page only records where each chat stands
+chats.seenActivity = null;
+chats.lit = new Set();
+chats.fresh = new Set(); // lit since the last render: these pulse once
 async function chatsLoadList(el) {
   const data = await api("GET", "/chats");
   chats.folders = data.folders;
+  const first = chats.seenActivity === null;
+  const seen = chats.seenActivity || {};
+  for (const f of chats.folders) {
+    const k = chatKey(f);
+    const now = `${f.id}|${f.activity_at || ""}`;
+    if (!first && seen[k] !== now && k !== chats.selected) { if (!chats.lit.has(k)) chats.fresh.add(k); chats.lit.add(k); }
+    seen[k] = now;
+  }
+  chats.seenActivity = seen;
+  if (chats.selected) chats.lit.delete(chats.selected);
   chatsRenderList(el);
 }
 
@@ -1907,6 +1923,7 @@ function chatsRenderList(el) {
   list.querySelectorAll("[data-rename]").forEach((b) => (b.onclick = () => chatRename(el, b.dataset.rename, b.dataset.name)));
   const fb = list.querySelector("#chat-folders-btn");
   if (fb) fb.onclick = () => chatFolders(el);
+  chats.fresh.clear();
   const nav = document.querySelector('[data-nav="chats"]');
   if (nav) nav.querySelector(".badge")?.remove();
   const n = chatUnread();
