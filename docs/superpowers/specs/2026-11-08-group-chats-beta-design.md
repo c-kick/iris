@@ -210,9 +210,19 @@ hook needs no handle). The call is fire-and-forget with a 2 s timeout and never 
 derives a fourth, shown state: **busy?** when `status='busy'` and `active_at` (or `status_at`) is
 more than 5 minutes old. Agents see it as `busy (no activity for N min)`.
 
-**Codex** (0.167.0): see open question Q1. Planned mapping, pending a live spike: `UserPromptSubmit`
-→ busy, `PreToolUse` → active, `PermissionRequest` → waiting, `Stop` → free, `Interrupt` → free.
-Until the spike confirms these, Codex members show `unknown` (pid alive, no status reports).
+**Codex** (0.167.0, confirmed by the live spike of 2026-11-08, see Q1):
+
+| hook | status |
+|---|---|
+| `UserPromptSubmit` (also for a `codex queue` wake, which runs as its own turn) | busy |
+| `PreToolUse` | `active` ping (same throttle as Claude) |
+| `PermissionRequest` (fires when the approval prompt appears) | waiting |
+| `Stop` (end of a turn) | free |
+| `Interrupt` (Esc during a turn, and declining an approval prompt with Esc; `Stop` does not fire then) | free |
+
+Codex needs no "busy?" fallback: an interrupt is reported. Like `SessionStart`, the hooks need the one-time
+"Trust all and continue" per hook set. After an interrupt a queued wake waits until the owner types; it then runs
+right after that turn (status stays free meanwhile, which is accurate).
 
 **Shown to:** the owner (member list, §7) and agents: `group_read` returns `members: [{name, kind,
 status, since, intent}]` (status as words with age, no ids beyond what it returns today). The rules
@@ -376,12 +386,13 @@ owner's OK) followed by the live test.
 
 ## Open questions (answered by the owner, 2026-11-08)
 
-- **Q1 Codex status hooks:** run the ~15-minute live spike in a scratch project (project-level `.codex/hooks.json`,
-  global config untouched) before build step 2. Static evidence from the 0.167.0 binary: hook events
-  `PreModelRequest, PreToolUse, PermissionRequest, PostToolUse, PreCompact, PostCompact, SessionStart, SessionEnd,
-  SubagentStart, SubagentStop, Interrupt`, plus `UserPromptSubmit` and `Stop`; legacy `notify` has
-  `agent-turn-complete` and `approval-requested`. Unknown: whether `Interrupt` fires on Esc and `PermissionRequest`
-  on every approval prompt.
+- **Q1 Codex status hooks:** answered by a live spike on 2026-11-08 (codex-cli 0.167.0, TUI in tmux, an isolated
+  `CODEX_HOME` in a scratch folder; the global config was not touched). Fired in order for a plain turn:
+  `SessionStart` (first prompt only), `UserPromptSubmit`, `PreModelRequest`, `Stop`. With a tool call:
+  `PreToolUse`, `PostToolUse`. An approval prompt fires `PermissionRequest` as it appears; declining it with Esc ends
+  the turn with `Interrupt` and no `Stop`. Esc during a running command fires `Interrupt` (no `Stop`). A
+  `codex queue` wake runs as its own turn (`UserPromptSubmit` … `Stop`), but after an interrupt only once the owner
+  has typed. Every payload carries `session_id` and `turn_id`. Mapping in §6.
 - **Q2 Claude "waiting":** permission prompts and questions to the owner only; `idle_prompt` shows as free.
 - **Q3 Invited sessions:** a one-line intro only, no plan.
 - **Q4 Presence:** track every interactive session on the host (pid + folder, no tokens).
