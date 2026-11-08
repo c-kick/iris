@@ -595,7 +595,9 @@ async def delete_client(name: str, request: Request, _: Client = Depends(admin))
     with svc.db.tx() as c:
         stamp = now_iso()
         # its standing webhooks stop too: they would otherwise fire for a later client of the same name
-        c.execute("UPDATE subscriptions SET active=0, last_error=? WHERE client_id=? AND active=1",
+        # and they are re-owned to a tombstone no client name can match ('#' is not allowed in names), so a later client
+        # of the same name can neither see nor re-enable them
+        c.execute("UPDATE subscriptions SET active=0, last_error=?, client_id=client_id || '#deleted' WHERE client_id=?",
                   ("the API client was deleted", name))
         for n in c.execute("SELECT * FROM notifications WHERE client_id=? AND status='scheduled'", (name,)).fetchall():
             c.execute("UPDATE notifications SET status='cancelled', released_at=?, updated_at=? WHERE id=?",

@@ -320,6 +320,9 @@ class Database:
                                   # 0.13.2: bumped by every claim, never reset (a retry resets attempts)
                                   "deliveries": {"lease_no": "INTEGER NOT NULL DEFAULT 0"},
                                   "replies": {"collected_at": "TEXT"}})  # 0.13.1: a waiter printed it  # 0.13.1: start of a failure streak
+        # 0.13.2: webhooks of clients deleted before tombstoning are re-owned the same way (see admin delete_client)
+        self.conn.execute("UPDATE subscriptions SET client_id=client_id || '#deleted' WHERE active=0"
+                          " AND last_error='the API client was deleted' AND client_id NOT LIKE '%#deleted'")
         # members from before 0.13.0's read cursor owe nothing: start them at their group's newest message
         self.conn.execute("UPDATE chat_members SET last_read_rowid=(SELECT COALESCE(MAX(rowid), 0) FROM chat_messages"
                           " WHERE group_id=chat_members.group_id) WHERE last_read_rowid IS NULL")

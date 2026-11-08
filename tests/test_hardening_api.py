@@ -123,6 +123,9 @@ def test_b6_deleting_a_client_stops_its_webhooks(live):
     b = setup_admin(live)
     assert b.delete("/admin/api/clients/reader", headers=H).status_code == 200
     assert live.service.db.one("SELECT active FROM subscriptions WHERE id=?", (sid,))["active"] == 0
+    # 0.13.2: re-owned to a tombstone, so neither the admin nor a later client of that name can turn it back on
+    assert live.service.db.one("SELECT client_id FROM subscriptions WHERE id=?", (sid,))["client_id"] == "reader#deleted"
+    assert live.client("admin").post(f"/v1/subscriptions/{sid}/enable").status_code == 404
 
 
 def test_b6_registration_refuses_a_name_with_history(live):
