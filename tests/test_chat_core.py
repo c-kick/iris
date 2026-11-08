@@ -26,6 +26,7 @@ def build(tmp_path, **server):
     cfg["clients"]["agent"] = {"token_sha256": "a" * 64, "scopes": ["chat"], "chat_host": "host-a"}
     cfg["clients"]["agent-b"] = {"token_sha256": "b" * 64, "scopes": ["chat"], "chat_host": "host-b"}
     cfg["clients"]["nohost"] = {"token_sha256": "c" * 64, "scopes": ["chat"]}
+    cfg["clients"]["agent-a2"] = {"token_sha256": "d" * 64, "scopes": ["chat"], "chat_host": "host-a"}
     db = Database(tmp_path / "n.sqlite3")
     return NotifyService(NotifyConfig.model_validate(cfg), db,
                          {"pushover": SlowProvider("pushover", {}, None)})  # type: ignore[arg-type]
@@ -78,6 +79,14 @@ def test_rejoin_same_folder_same_member(svc):
         svc.chat.post(a["member_handle"], "old handle")
     svc.chat.post(b["member_handle"], "new handle")
     assert svc.db.scalar("SELECT COUNT(*) FROM chat_members") == 1
+
+
+def test_rejoin_by_another_client_refused(svc):
+    """Knowing a session id is not enough: only the client that joined may take the member over."""
+    a = join(svc, "s1")
+    with pytest.raises(Forbidden):
+        join(svc, "s1", client=Client("agent-a2", frozenset({Scope.chat})))
+    svc.chat.post(a["member_handle"], "still mine")  # the original handle keeps working
 
 
 def test_other_host_other_group(svc):
@@ -336,6 +345,25 @@ def test_retention_prunes_closed_groups(tmp_path):
     assert s.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE group_id=?", (c1["group_id"],)) >= 1
     assert s.db.scalar("SELECT COUNT(*) FROM chat_members WHERE group_id=?", (c2["group_id"],)) == 1
     assert s.db.scalar("SELECT COUNT(*) FROM events WHERE type LIKE 'group.%'") >= 1
+    s.db.close()
+
+
+def test_retention_prunes_closed_group_with_history_request(tmp_path):
+    """History requests reference the group and its member (foreign keys on): retention removes them first."""
+    from datetime import timedelta
+
+    from notify.db import iso, utcnow
+    s = build(tmp_path, retention_days=7)
+    a, b = join(s, "s1", folder="/srv/old"), join(s, "s2", folder="/srv/old")
+    s.chat.history(a["member_handle"], "need the earlier decision")
+    s.chat.leave(a["member_handle"])
+    s.chat.leave(b["member_handle"])
+    with s.db.tx() as c:
+        c.execute("UPDATE chat_groups SET closed_at=? WHERE id=?", (iso(utcnow() - timedelta(days=30)), a["group_id"]))
+    assert s.db.scalar("SELECT COUNT(*) FROM chat_history_requests") == 1
+    s.retention_sweep()  # raised IntegrityError before
+    assert s.db.scalar("SELECT COUNT(*) FROM chat_history_requests") == 0
+    assert s.db.scalar("SELECT COUNT(*) FROM chat_groups WHERE id=?", (a["group_id"],)) == 0
     s.db.close()
 
 

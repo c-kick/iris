@@ -214,6 +214,8 @@ class Chat:
                             " WHERE g.host=? AND g.state='open' AND g.folder=? AND m.kind=? AND m.session_id=?"
                             " AND m.left_at IS NULL", (host, folder, kind, session_id)).fetchone()
             if row is not None:  # same session again: fresh handle, same member
+                if row["client_id"] != client.id:  # only the client that joined it may take the member over
+                    raise Forbidden("this session is in the group under another client")
                 group_id, member_id = row["group_id"], row["id"]
                 handle, sha = new_handle(member_id)
                 c.execute("UPDATE chat_members SET handle_sha256=?, pid=?, pid_start=?, client_id=?, last_seen_at=?"

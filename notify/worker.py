@@ -295,10 +295,13 @@ class Workers:
         async def once() -> None:
             nonlocal last_retention
             if time.monotonic() - last_retention >= 3600:
-                removed = self.service.retention_sweep()
-                if removed:
-                    log.info("retention sweep", extra={"removed": removed})
                 last_retention = time.monotonic()
+                try:  # a failing retention must not stop the chat sweep below
+                    removed = self.service.retention_sweep()
+                    if removed:
+                        log.info("retention sweep", extra={"removed": removed})
+                except Exception:
+                    log.exception("retention sweep failed; retried in an hour")
             self.service.chat.sweep()  # chat liveness must be checked well within STALE_SECONDS
             await asyncio.sleep(30)
         await self._guard("sweeper", once, 60.0)
