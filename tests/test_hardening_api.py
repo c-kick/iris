@@ -306,3 +306,11 @@ def test_latent_junk_decide_probes_do_not_lock_out_the_valid_link(server_factory
     for i in range(8):
         httpx.get(f"{live.url}/admin/decide/{rid}", params={"k": f"junk{i}"})
     assert httpx.get(f"{live.url}/admin/decide/{rid}", params={"k": code}).status_code == 200
+
+
+def test_bearer_admin_cannot_set_trusted_proxies(live):
+    """0.13.2: who may pass on a client address is decided on the signed-in page only."""
+    r = live.client("admin").put("/admin/api/server", json={"trusted_proxies": ["0.0.0.0/0"]})
+    assert r.status_code == 403
+    assert live.service.config.server.trusted_proxies == []
+    assert live.client("admin").put("/admin/api/server", json={"chat_cap": 12}).status_code == 200

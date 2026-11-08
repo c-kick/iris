@@ -27,6 +27,7 @@ from .webpush_crypto import generate_vapid_keys
 from .core import Client, Conflict, Invalid, NotFound, NotifyService, external_base
 from .models import NotificationIn, ScheduleUpdate, Scope, Severity
 from .providers import REGISTRY
+from .clientip import client_ip
 from .configops import commit_config
 from .cleanup_service import record_event
 from .device_check import clear_flag
@@ -80,7 +81,7 @@ def _svc(request: Request) -> NotifyService:
 
 
 def _ip(request: Request) -> str:
-    return request.client.host if request.client else "?"
+    return client_ip(request)
 
 
 def admin(request: Request) -> Client:
@@ -625,10 +626,14 @@ class ServerIn(BaseModel):
     attachment_url_hosts: list[str] | None = None
     chat_cap: int | None = None
     chat_alert_targets: list[str] | None = None
+    trusted_proxies: list[str] | None = None
 
 
 @router.put("/api/server")
-async def put_server(body: ServerIn, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
+async def put_server(body: ServerIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    if body.trusted_proxies is not None:
+        require_session(client)  # decides whose forwarded address the throttles believe: signed-in page only
+
     def mutate(data: dict[str, Any]) -> None:
         s = data["server"]
         s["public_base_url"] = (body.public_base_url or "").rstrip("/") or None
@@ -648,6 +653,8 @@ async def put_server(body: ServerIn, request: Request, _: Client = Depends(admin
             s["chat_cap"] = body.chat_cap
         if body.chat_alert_targets is not None:
             s["chat_alert_targets"] = [t.strip() for t in body.chat_alert_targets if t.strip()]
+        if body.trusted_proxies is not None:
+            s["trusted_proxies"] = [t.strip() for t in body.trusted_proxies if t.strip()]
     return _commit(request, mutate)
 
 

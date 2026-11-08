@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse
 from .admin import _throttle
 from .auth import hash_token
 from .config import ConfigError
+from . import clientip
 from .configops import commit_config
 from .core import external_base
 from .device_check import clear_flag
@@ -51,9 +52,9 @@ def _origin(url: str) -> tuple[str, str, int] | None:
 
 
 def host_guard(request: Request) -> None:
-    """404 unless the request arrived on server.external_url (X-Forwarded-Proto and Host honoured)."""
+    """404 unless the request arrived on server.external_url (Host honoured; X-Forwarded-Proto only from server.trusted_proxies)."""
     base = external_base(request.app.state.config)
-    scheme = (request.headers.get("x-forwarded-proto") or request.url.scheme).split(",")[0].strip()
+    scheme = clientip.scheme(request)  # X-Forwarded-Proto only from a trusted proxy
     host = request.headers.get("host") or ""
     if not base or _origin(base) is None or _origin(f"{scheme}://{host}") != _origin(base):
         seen = f"{scheme}://{host}"[:200]
@@ -65,7 +66,7 @@ def host_guard(request: Request) -> None:
 
 
 def _ip(request: Request) -> str:
-    return request.client.host if request.client else "?"
+    return clientip.client_ip(request)
 
 
 def _label(user_agent: str) -> str:

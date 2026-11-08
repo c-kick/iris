@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .auth import hash_token, new_token
 from .config import RESERVED_CLIENT_NAMES, _NAME_RE, ConfigError
+from .clientip import client_ip, via_trusted_proxy
 from .configops import commit_config
 from .core import SYSTEM_CLIENT, Client, Invalid
 from .db import dumps, iso, loads, new_id, now_iso, parse_iso, utcnow
@@ -219,7 +220,7 @@ async def request_access(body: RegistrationIn, request: Request) -> dict[str, An
         raise HTTPException(403, "self-registration is turned off; ask the administrator for a token")
     db = app.state.service.db
     expire_stale(db)
-    ip = request.client.host if request.client else None
+    ip = client_ip(request) if request.client else None
     hour_ago = iso(utcnow() - timedelta(hours=1))
     recent = db.scalar("SELECT COUNT(*) FROM registrations WHERE source_ip IS ? AND created_at >= ?", (ip, hour_ago))
     if recent >= PER_ADDRESS_PER_HOUR:
@@ -245,7 +246,7 @@ async def request_access(body: RegistrationIn, request: Request) -> dict[str, An
                    hash_token(decision_code)))
     log.info("registration requested", extra={"registration_id": rid, "client": body.name, "source_ip": ip})
 
-    proxied = any(request.headers.get(h) for h in ("x-forwarded-for", "forwarded", "x-real-ip"))
+    proxied = via_trusted_proxy(request) or any(request.headers.get(h) for h in ("x-forwarded-for", "forwarded", "x-real-ip"))
     auto = (not proxied  # behind a reverse proxy the source address is the proxy's: never trust it
             and _in_subnets(ip, cfg.registration.auto_approve_subnets)
             and set(body.scopes) <= set(cfg.registration.auto_approve_scopes))
@@ -322,7 +323,7 @@ def _check_code(request: Request, rid: str, code: str | None) -> Any:
     if not hasattr(app.state, "decide_throttle"):
         app.state.decide_throttle = Throttle()
     throttle = app.state.decide_throttle
-    key = f"decide:{request.client.host if request.client else '?'}"
+    key = f"decide:{client_ip(request)}"
     db = app.state.service.db
     expire_stale(db)
     r = db.one("SELECT * FROM registrations WHERE id=?", (rid,))

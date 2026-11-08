@@ -16,6 +16,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from .auth import hash_token
+from .clientip import client_ip
 from .chat import _clean_desc
 from .core import Conflict
 from .registrations import _page, _when
@@ -38,7 +39,7 @@ def _check_code(request: Request, rid: str, code: str | None) -> Any:
     if not hasattr(app.state, "decide_throttle"):
         app.state.decide_throttle = Throttle()
     throttle = app.state.decide_throttle
-    key = f"decide:{request.client.host if request.client else '?'}"
+    key = f"decide:{client_ip(request)}"
     svc = app.state.service
     svc.chat.expire_history()
     r = svc.db.one("SELECT * FROM chat_history_requests WHERE id=?", (rid,))

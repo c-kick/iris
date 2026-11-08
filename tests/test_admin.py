@@ -503,3 +503,11 @@ def test_two_providers_cannot_share_one_reply_mailbox(fresh):
         "host": "smtp.example.org", "from_address": "n2@example.org", "password": "x", **box,
         "reply_inbox": "Other"}}, headers=H)
     assert r.status_code == 200, r.text  # another folder of the same account is fine
+
+
+def test_trusted_proxies_signed_in_page_only(fresh):
+    srv = fresh()
+    b = setup_admin(srv)
+    st = b.put("/admin/api/server", json={"trusted_proxies": ["10.0.0.2", "10.1.0.0/16"]}, headers=H)
+    assert st.status_code == 200 and st.json()["config"]["server"]["trusted_proxies"] == ["10.0.0.2/32", "10.1.0.0/16"]
+    assert b.put("/admin/api/server", json={"trusted_proxies": ["proxy.lan"]}, headers=H).status_code == 422

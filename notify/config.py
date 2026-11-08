@@ -63,6 +63,22 @@ class ServerConfig(_Strict):
     attachment_retention_days: int = Field(default=7, ge=1, le=90)
     chat_cap: int = Field(default=10, ge=2, le=100, description="Agent messages in a row before a group chat pauses")
     chat_alert_targets: list[str] = Field(default_factory=list, description="Who is pushed when a group chat pauses")
+    trusted_proxies: list[str] = Field(default_factory=list, description="Reverse proxy addresses/CIDRs whose X-Forwarded-For and X-Forwarded-Proto are believed; empty = none")
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _proxies(cls, v: list[str]) -> list[str]:
+        import ipaddress
+        out = []
+        for h in v:
+            h = h.strip()
+            if not h:
+                continue
+            try:
+                out.append(str(ipaddress.ip_network(h, strict=False)))
+            except ValueError:
+                raise ValueError(f"{h!r} is not an IP address or CIDR") from None
+        return out
 
     @field_validator("attachment_url_hosts")
     @classmethod

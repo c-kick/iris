@@ -783,6 +783,9 @@ const VIEWS = {
           ${fieldHtml({ name: "chat_alert_targets", label: "Group chat alerts", kind: "checks", value: s.chat_alert_targets || [],
                         options: [...targetOptions(), ...Object.keys(cfg().channels).map((n) => [`channel:${n}`, `${n} (channel)`])],
                         help: "Who is pushed when a group pauses, e.g. user:alex. Nothing ticked: nobody." })}
+          ${fieldHtml({ name: "trusted_proxies", label: "Trusted reverse proxies", kind: "textarea",
+                        value: (s.trusted_proxies || []).join("\n"),
+                        help: "One address or network per line, for example 10.0.0.2. Only requests from these may pass on the client's address and https (X-Forwarded-For, X-Forwarded-Proto). Empty: none." })}
           <div class="form-error" role="alert"></div>
           <div class="form-actions"><button class="btn primary" type="submit">Save settings</button></div>
         </form></div>`;
@@ -811,8 +814,10 @@ const VIEWS = {
       const v = readForm(form, [{ name: "max_attempts", kind: "int" }, { name: "retention_days", kind: "int" },
                                 { name: "external_url", kind: "url" }, { name: "public_base_url", kind: "url" },
                                 { name: "attachment_retention_days", kind: "int" }, { name: "attachment_url_hosts", kind: "textarea" },
-                                { name: "chat_cap", kind: "int" }, { name: "chat_alert_targets", kind: "checks" }]);
+                                { name: "chat_cap", kind: "int" }, { name: "chat_alert_targets", kind: "checks" },
+                                { name: "trusted_proxies", kind: "textarea" }]);
       v.attachment_url_hosts = v.attachment_url_hosts.split("\n").map((x) => x.trim()).filter(Boolean);
+      v.trusted_proxies = v.trusted_proxies.split("\n").map((x) => x.trim()).filter(Boolean);
       try { await mutate("PUT", "/server", v, "Settings saved"); } catch (ex) { err.textContent = ex.message; }
     };
   },
