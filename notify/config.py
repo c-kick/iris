@@ -57,7 +57,7 @@ class ServerConfig(_Strict):
     webhook_max_attempts: int = Field(default=10, ge=1, le=50)
     webhook_timeout_seconds: float = Field(default=10, gt=0, le=60)
     webhook_disable_after_failures: int = Field(default=50, ge=1)
-    # links in notifications sent by hnl-notify itself (e.g. access requests); falls back to NOTIFY_EXTERNAL_URL
+    # links in notifications sent by Iris itself (e.g. access requests); falls back to NOTIFY_EXTERNAL_URL
     external_url: str | None = None
     attachment_url_hosts: list[str] = Field(default_factory=list, description="hosts, host:port, CIDRs (ports 80/443) or cidr:port URL attachments may be fetched from; empty = disabled")
     attachment_retention_days: int = Field(default=7, ge=1, le=90)

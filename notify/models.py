@@ -221,7 +221,7 @@ class NotificationIn(BaseModel):
     max_late_seconds: int | None = Field(default=None, ge=60, le=86400,
                                          description="Scheduled: how late it may still go out after a missed send time (default 3600)")
     _auto_submitted: bool = PrivateAttr(default=False)  # internal: the service's own automatic replies
-    _internal: bool = PrivateAttr(default=False)  # internal: hnl-notify's own submissions, exempt from the handle
+    _internal: bool = PrivateAttr(default=False)  # internal: Iris' own submissions, exempt from the handle
 
     @field_validator("kinds")
     @classmethod

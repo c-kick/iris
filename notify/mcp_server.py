@@ -18,7 +18,7 @@ from .schedule import local_zone
 SCOPE_KEY = "notify.client"
 
 _INSTRUCTIONS = """\
-hnl-notify is the household notification service. Send notifications to logical
+Iris is the household notification service. Send notifications to logical
 targets (user:NAME, device:NAME, group:NAME, channel:NAME) — call list_targets
 first to see what exists and what each device can observably report.
 
@@ -33,7 +33,7 @@ through a group or channel that lists them. To send to a user's usual devices
 and a direct-only one, list both targets, e.g. ["user:alex", "device:alex-mail2"].
 
 attachments: send files with a notification, preferably by url (only from hosts
-an admin allowed; hnl-notify fetches them once) or inline as base64 (at most
+an admin allowed; Iris fetches them once) or inline as base64 (at most
 256 KiB over MCP). Up to 10 files, 10 MiB in total. Email carries every file;
 push (Pushover) shows the first image (image/*, at most 5 MiB) as a picture in
 the notification. Anything a device cannot carry is listed in capability_gaps.
@@ -152,7 +152,7 @@ def _compact(n: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_mcp(get_service: Any) -> FastMCP:
-    mcp = FastMCP("hnl-notify", instructions=instructions(local_zone().key), stateless_http=True, json_response=True,
+    mcp = FastMCP("Iris", instructions=instructions(local_zone().key), stateless_http=True, json_response=True,
                   streamable_http_path="/mcp", host="0.0.0.0")
 
     def svc() -> NotifyService:

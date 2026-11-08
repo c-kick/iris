@@ -46,6 +46,8 @@ class MasterKey:
             log.warning("generated new master key", extra={"path": str(self.path)})
         self._aead = AESGCM(raw)
 
+    # AAD b"hnl-notify" is a format identifier of the stored secrets, not branding: it stays after the rename to
+    # Iris (changing it would make every stored secret undecryptable without a designed migration).
     def encrypt(self, plaintext: str) -> str:
         nonce = secrets.token_bytes(12)
         return base64.b64encode(nonce + self._aead.encrypt(nonce, plaintext.encode(), b"hnl-notify")).decode()

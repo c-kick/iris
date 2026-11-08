@@ -159,7 +159,7 @@ def translate(p: dict[str, Any], targets: list[str]) -> NotificationIn:
     elif event == "ApplicationUpdate":
         lines.append(f"{p.get('previousVersion', '?')} → {p.get('newVersion', '?')}")
     elif event == "Test":
-        lines.append(f"{app} can reach hnl-notify.")
+        lines.append(f"{app} can reach Iris.")
     else:
         lines.append(subject or p.get("message") or event)
         lines += _details(p)

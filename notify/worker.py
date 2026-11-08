@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from . import __version__
 from .core import Client, Conflict, NotifyService
 from .db import dumps, now_iso
 from .device_check import check_devices, record_check
@@ -288,7 +289,7 @@ class Workers:
             async with sem:
                 body = dumps(item["event"]).encode()
                 ts = int(time.time())
-                headers = {"Content-Type": "application/json", "User-Agent": "hnl-notify",
+                headers = {"Content-Type": "application/json", "User-Agent": f"iris/{__version__}",
                            "X-Notify-Event": item["event"]["type"], "X-Notify-Event-Id": str(item["event"]["id"]),
                            "X-Notify-Signature": sign(item["secret"], ts, body)}
                 try:

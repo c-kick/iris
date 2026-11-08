@@ -1,4 +1,4 @@
-// hnl-notify management UI. Vanilla JS, no build step.
+// Iris management UI. Vanilla JS, no build step.
 
 const root = document.getElementById("root");
 const dialog = document.getElementById("dialog");
@@ -306,7 +306,7 @@ function showToken(title, name, token) {
       <p>Copy this token for <strong>${esc(name)}</strong> now. It is stored only as a fingerprint and will not be shown again.</p>
       <div class="secret-box"><code id="tok">${esc(token)}</code><button class="btn" id="copy">Copy</button></div>
       <div><strong>Use it as a header</strong><pre class="snippet">Authorization: Bearer ${esc(token)}</pre></div>
-      <div><strong>Connect an agent (MCP)</strong><pre class="snippet">claude mcp add --transport http hnl-notify ${esc(base)}/mcp \\
+      <div><strong>Connect an agent (MCP)</strong><pre class="snippet">claude mcp add --transport http iris ${esc(base)}/mcp \\
   --header "Authorization: Bearer ${esc(token)}"</pre></div>
       <div class="form-actions"><button class="btn primary" id="done">I've saved it</button></div>
     </div>`;
@@ -324,9 +324,9 @@ function renderGate(mode, message = "") {
   const setup = mode === "setup";
   root.innerHTML = `
     <main class="gate"><div class="panel">
-      <div class="brand">${logo}<h1>hnl-notify</h1></div>
+      <div class="brand">${logo}<h1>Iris</h1></div>
       <h2>${setup ? "Set up the admin password" : "Sign in"}</h2>
-      ${setup ? `<p class="hint">Find the setup code in the container log:<br><code>docker logs hnl-notify 2>&1 | grep "setup code"</code></p>` : ""}
+      ${setup ? `<p class="hint">Find the setup code in the container log:<br><code>docker logs iris 2>&1 | grep "setup code"</code></p>` : ""}
       <form class="stack" novalidate>
         ${setup ? fieldHtml({ name: "code", label: "Setup code", kind: "text", placeholder: "abc123-def456-789abc" }) : ""}
         ${fieldHtml({ name: "password", label: setup ? "New password" : "Password", kind: "secret",
@@ -382,7 +382,7 @@ function render() {
   root.innerHTML = `
     <div class="shell">
       <aside class="side">
-        <div class="top"><div class="brand">${logo}<div><h1>hnl-notify</h1><span class="sub">notification desk</span></div></div><button class="btn quiet signout" data-signout>Sign out</button></div>
+        <div class="top"><div class="brand">${logo}<div><h1>Iris</h1><span class="sub">notification desk</span></div></div><button class="btn quiet signout" data-signout>Sign out</button></div>
         <nav class="nav" aria-label="Sections">${nav}</nav>
         <div class="foot"><span>v${esc(state.version)}</span><button class="btn quiet" data-signout>Sign out</button></div>
       </aside>
@@ -495,7 +495,7 @@ const VIEWS = {
           <div class="name"><span class="lamp ${senderLamp}"></span><span class="label">${clients.length} API ${clients.length === 1 ? "client" : "clients"}</span></div>
           <div class="note">${clients.length ? esc(clients.slice(0, 3).join(", ")) + (clients.length > 3 ? "…" : "") : `<button class="btn quiet" style="padding:0" data-go="access">Create a token</button>`}</div></div>
         <div class="hop" style="${wire(coreLamp)}"><div class="kind">Queue</div>
-          <div class="name"><span class="lamp ${coreLamp}"></span><span class="label">hnl-notify</span></div>
+          <div class="name"><span class="lamp ${coreLamp}"></span><span class="label">Iris</span></div>
           <div class="note">${pending ? `${pending} waiting` : "Nothing waiting"}</div></div>
         <div class="hop" style="${wire(provLamp)}"><div class="kind">${provs.length > 1 ? "Providers" : "Provider"}</div>
           <div class="hop-list">${provs.length ? provs.map(([n, p]) => `
@@ -604,7 +604,7 @@ const VIEWS = {
     main.innerHTML = `
       <p class="crumb"><button class="btn quiet" data-back>Back to Providers</button></p>
       <div class="section-head"><h2>Reply mailbox</h2>
-        <p>hnl-notify moves every handled reply to one folder and every rejected mail to another, and keeps them there until it cleans up. Old mail is deleted for good, about once a day, by age first and by folder size as a safety net. Your inbox is never touched.</p></div>
+        <p>Iris moves every handled reply to one folder and every rejected mail to another, and keeps them there until it cleans up. Old mail is deleted for good, about once a day, by age first and by folder size as a safety net. Your inbox is never touched.</p></div>
       <div id="mb"><div class="empty">Reading the mailbox…</div></div>`;
     main.querySelector("[data-back]").onclick = () => goTo("providers");
     loadMailbox(main.querySelector("#mb"));
@@ -634,7 +634,7 @@ const VIEWS = {
   people(main) {
     const c = cfg();
     main.innerHTML = `
-      <div class="section-head"><h2>People & groups</h2><p>Services send to a person or a group; hnl-notify picks the devices.</p></div>
+      <div class="section-head"><h2>People & groups</h2><p>Services send to a person or a group; Iris picks the devices.</p></div>
       <div class="block"><h3>People</h3><div class="rows">${Object.entries(c.users).map(([n, u]) => `
         <div class="row"><div class="grow"><div class="title">${esc(u.display_name || n)}</div>
           <div class="sub">user:${esc(n)}</div>
@@ -773,7 +773,7 @@ const VIEWS = {
           ${fieldHtml({ name: "retention_days", label: "Keep history for (days)", kind: "int", value: s.retention_days })}
           ${fieldHtml({ name: "external_url", label: "Address of this service on your network", kind: "url", value: s.external_url || "",
                         placeholder: "http://notify.lan:8930",
-                        help: "Used for links in notifications hnl-notify sends you, such as access requests." })}
+                        help: "Used for links in notifications Iris sends you, such as access requests." })}
           ${fieldHtml({ name: "public_base_url", label: "Public address for instant acknowledgements (optional)", kind: "url", value: s.public_base_url || "",
                         placeholder: "https://notify.example.org",
                         help: "Only if Pushover can reach this service from the internet. Without it, acknowledgements of critical alerts are checked every 30 seconds." })}
@@ -908,7 +908,7 @@ function providerForm(name, newType) {
   const pushover = type === "pushover";
   openForm({
     title: p ? `Edit ${name === type ? t.label : name}` : pushover ? "Connect Pushover" : `Add ${t.label}`,
-    intro: pushover ? `Create an application at <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">pushover.net/apps/build</a> (name it hnl-notify), then paste its API token.` : "",
+    intro: pushover ? `Create an application at <a href="https://pushover.net/apps/build" target="_blank" rel="noopener">pushover.net/apps/build</a> (name it Iris), then paste its API token.` : "",
     fields: Object.entries(t.settings)
       .filter(([k]) => type !== "webpush" || (k !== "vapid_private_key" && (k !== "vapid_public_key" || p))) // the key pair is generated, never typed
       .map(([k, s]) => ({ name: k, label: s.label, kind: s.kind, help: s.help, options: s.options, readonly: k === "vapid_public_key",
@@ -1821,7 +1821,7 @@ const chatAuthorHtml = (author, name) => author === "owner" || !name ? esc(CHAT_
   : `${esc(name)} <span class="kind">${esc(CHAT_WHO[author] || author)}</span>`;
 
 // one dot on the owner's own messages: orange until an agent has read or claimed it, then green
-// ("read" = it reached the agent's session and the agent made a group call since; hnl-notify cannot see more)
+// ("read" = it reached the agent's session and the agent made a group call since; Iris cannot see more)
 function chatTicksHtml(id, r, author) {
   if (author !== "owner" || !r || r.state === "none") return `<span class="ticks" data-ticks="${esc(id)}"></span>`;
   const done = r.claimed || r.read > 0;

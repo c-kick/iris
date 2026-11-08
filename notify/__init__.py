@@ -1,3 +1,3 @@
-"""hnl-notify: unified notification service."""
+"""Iris (formerly hnl-notify): unified notification service. The Python module keeps the name `notify`."""
 
-__version__ = "0.14.7"
+__version__ = "0.15.0"

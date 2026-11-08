@@ -58,7 +58,7 @@ def _alert(svc: NotifyService, device: str, problem: str) -> None:
     req = NotificationIn(
         targets=targets, title=f"Device {device} no longer works", severity=Severity.normal,
         message=(f"{problem}. Pushes to {device} fail until this is fixed: re-add the device at the provider, "
-                 "correct its name in hnl-notify, or disable it."),
+                 "correct its name in Iris, or disable it."),
         tags=["device-check"], source="hnl-notify/device-check")
     base = svc.config.server.external_url or os.environ.get("NOTIFY_EXTERNAL_URL")
     if base:

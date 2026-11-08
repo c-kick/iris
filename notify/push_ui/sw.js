@@ -17,7 +17,7 @@ self.addEventListener("push", (event) => {
   try { m = event.data.json(); } catch (e) { return; }
   const data = { u: m.u, r: m.r, k: m.k, id: m.id };
   event.waitUntil(
-    self.registration.showNotification(m.t || "Notification", {
+    self.registration.showNotification(m.t || "Iris", {
       body: m.b, tag: m.id, requireInteraction: !!m.ri, data,
     }).then(() => report(data, "shown"))
   );

@@ -923,7 +923,7 @@ class Chat:
         """Read receipts per agent/owner message, like ticks in a messenger. Recipients are the members present
         when the message was posted, minus its author. reached: the wake was delivered into the session (or the
         member read it with group_read). read: reached, and the member made a group call afterwards (group_read,
-        group_post, group_claim, group_unclaim, group_history), so it was active in the chat since. hnl-notify
+        group_post, group_claim, group_unclaim, group_history), so it was active in the chat since. Iris
         cannot see a model read a message; this is the closest observable fact."""
         members = self.db.query("SELECT id, joined_at, left_at, last_read_rowid, acted_rowid FROM chat_members"
                                 " WHERE group_id=?", (group_id,))
@@ -1177,7 +1177,7 @@ class Chat:
 
     # ------------------------------------------------------------------ history on owner approval
     def _system_wake(self, c: sqlite3.Connection, group_id: str, member_id: str, text: str) -> None:
-        """A notice from hnl-notify that wakes exactly one member (system lines elsewhere wake nobody)."""
+        """A notice from Iris that wakes exactly one member (system lines elsewhere wake nobody)."""
         mid = self._add_message(c, group_id, "system", None, text)
         if c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL", (member_id,)).fetchone():
             c.execute("INSERT INTO chat_wakes(id, message_id, member_id, state) VALUES (?, ?, ?, 'pending')",

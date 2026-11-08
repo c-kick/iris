@@ -739,7 +739,7 @@ class TestIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     targets: list[str] = Field(min_length=1)
     severity: Severity = Severity.normal
-    title: str | None = "Test from hnl-notify"
+    title: str | None = "Test from Iris"
     message: str = Field(default="If you can read this, delivery works.", min_length=1)
     kinds: list[Literal["push", "email"]] | None = None
 

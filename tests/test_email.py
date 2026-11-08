@@ -43,7 +43,7 @@ def parsed(m: OutboundMessage, p: EmailProvider | None = None):
 def test_headers_and_parts():
     em = parsed(msg(severity=Severity.high, url="https://x.example/a?b=1&c=2"))
     assert em["Subject"] == "[home] Door"
-    assert em["From"] == "hnl-notify <hnl@example.org>"
+    assert em["From"] == "Iris <hnl@example.org>"
     assert em["To"] == "alex@example.org"
     assert em["Message-ID"] == "<dlv_1@example.org>"
     assert em["Importance"] == "high" and em["X-Priority"] == "1"

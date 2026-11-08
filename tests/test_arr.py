@@ -40,7 +40,7 @@ def test_upgrade_grab_and_test_events():
     assert grab.message.splitlines() == ["Dune: Part Two (2024)", "WEBDL-2160p · NTb · 20.0 GB",
                                          "via NZBgeek (SABnzbd)"]
     test = translate({"eventType": "Test", "instanceName": "Radarr 4K", "movie": {"title": "Test Title"}}, T)
-    assert (test.title, test.message, test.idempotency_key) == ("Radarr 4K: Test", "Radarr 4K can reach hnl-notify.", None)
+    assert (test.title, test.message, test.idempotency_key) == ("Radarr 4K: Test", "Radarr 4K can reach Iris.", None)
 
 
 def test_sonarr_episodes():

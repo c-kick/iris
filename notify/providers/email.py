@@ -108,7 +108,7 @@ class EmailProvider(Provider):
         "username": {"label": "Username", "kind": "text", "help": "Leave empty if the server needs no login."},
         "password": {"label": "Password", "kind": "secret"},
         "from_address": {"label": "From address", "kind": "text"},
-        "from_name": {"label": "From name", "kind": "text", "default": "hnl-notify"},
+        "from_name": {"label": "From name", "kind": "text", "default": "Iris"},
         "subject_prefix": {"label": "Subject prefix", "kind": "text", "help": "Optional, e.g. [home]."},
         "timeout_seconds": {"label": "Give up a send after (seconds)", "kind": "int", "default": 60},
         "verify_tls": {"label": "Check the server's TLS certificate", "kind": "check", "default": True},
@@ -136,7 +136,7 @@ class EmailProvider(Provider):
         self.username = str(settings.get("username") or "")
         self.password = str(settings.get("password") or "")
         self.from_address = str(settings.get("from_address") or "").strip()
-        self.from_name = str(settings.get("from_name") if settings.get("from_name") is not None else "hnl-notify")
+        self.from_name = str(settings.get("from_name") if settings.get("from_name") is not None else "Iris")
         self.subject_prefix = str(settings.get("subject_prefix") or "")
         self.timeout = max(10, min(300, _int(settings.get("timeout_seconds", 60), 60)))
         self.verify_tls = bool(settings.get("verify_tls", True))

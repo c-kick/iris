@@ -72,7 +72,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
     holder: dict[str, Any] = {}
     mcp = build_mcp(lambda: holder["service"])
 
-    app = FastAPI(title="hnl-notify", version=__version__,
+    app = FastAPI(title="Iris", version=__version__,
                   description="Unified notification service: provider-agnostic REST + MCP.")
 
     def apply_config(cfg: NotifyConfig) -> None:
@@ -88,7 +88,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         http = httpx.AsyncClient(transport=transport, timeout=httpx.Timeout(20.0, connect=10.0),
-                                 headers={"User-Agent": f"hnl-notify/{__version__}"},
+                                 headers={"User-Agent": f"iris/{__version__}"},
                                  limits=httpx.Limits(max_connections=10, max_keepalive_connections=4))
         cfg = app.state.config
         providers = {name: build_provider(name, p.model_dump(), http) for name, p in cfg.providers.items()}
@@ -98,7 +98,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
         # webhooks get their own client: every connect is checked against the deny list (netguard), never via a proxy
         service.webhook_http = httpx.AsyncClient(transport=transport or GuardedTransport(), trust_env=False,
                                                  timeout=httpx.Timeout(20.0, connect=10.0),
-                                                 headers={"User-Agent": f"hnl-notify/{__version__}"})
+                                                 headers={"User-Agent": f"iris/{__version__}"})
         holder["service"] = service
         app.state.loop = asyncio.get_running_loop()
         service.loop = app.state.loop  # lets reconfigure() wake the dispatcher from a worker thread
@@ -115,7 +115,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
         if workers:
             workers.start()
             workers.check_devices()
-        log.info("hnl-notify started", extra={"version": __version__, "devices": list(cfg.devices),
+        log.info("Iris started", extra={"version": __version__, "devices": list(cfg.devices),
                                               "providers": list(providers), "clients": list(cfg.clients)})
         async with mcp.session_manager.run():
             try:
@@ -126,7 +126,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
                 await http.aclose()
                 await service.webhook_http.aclose()
                 db.close()
-                log.info("hnl-notify stopped")
+                log.info("Iris stopped")
 
     app.router.lifespan_context = lifespan
 

@@ -1,8 +1,12 @@
+# Iris (formerly hnl-notify). The Compose project keeps its old name, so the stack, its network and the container it
+# replaces stay one project however the checkout directory is called; the service key stays `notify`.
+name: hnl-notify
+
 services:
   notify:
     build: .
-    image: hnl-notify:0.14.7
-    container_name: hnl-notify
+    image: iris:0.15.0
+    container_name: iris
     restart: unless-stopped
     stop_grace_period: 130s  # a stop waits for a running mailbox poll/cleanup step (IMAP session limit 120 s)
     user: "1026:1026"
@@ -10,7 +14,7 @@ services:
       NOTIFY_DB: /data/notify.sqlite3
       NOTIFY_KEY_FILE: /secrets/master.key
       NOTIFY_LOG_LEVEL: INFO
-      # Base URL for links in alerts hnl-notify sends you (e.g. access requests). Set it here,
+      # Base URL for links in alerts Iris sends you (e.g. access requests). Set it here,
       # in a local compose.override.yaml (git-ignored), or under Settings in the admin UI:
       # NOTIFY_EXTERNAL_URL: http://notify.lan:8930
       TZ: Europe/Amsterdam

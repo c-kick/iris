@@ -1,4 +1,4 @@
-"""Run hnl-notify locally against a fake Pushover (nothing leaves the host).
+"""Run Iris locally against a fake Pushover (nothing leaves the host).
 
     .venv/bin/python scripts/dev_server.py --dir /tmp/notify-dev --port 18931 [--demo] [--password PW]
 
@@ -204,7 +204,7 @@ def main() -> None:
             seed_chats(app)
         if args.demo:
             asyncio.create_task(keep_demo_chats_alive(app))
-        print(f"hnl-notify dev server on http://127.0.0.1:{args.port}/admin", flush=True)
+        print(f"Iris dev server on http://127.0.0.1:{args.port}/admin", flush=True)
         await task
 
     asyncio.run(run())

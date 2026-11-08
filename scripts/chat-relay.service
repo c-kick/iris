@@ -3,9 +3,9 @@
 #   cp chat-relay.service ~/.config/systemd/user/ && systemctl --user daemon-reload
 #   systemctl --user enable --now chat-relay
 # The service URL comes from ~/.config/hnl-notify/url and the token from ~/.config/hnl-notify/chat-token
-# (no secrets belong in this file). `codex` and `claude` must be on the unit's PATH.
+# (no secrets belong in this file; the paths keep their name from before the rename to Iris). `codex` and `claude` must be on the unit's PATH.
 [Unit]
-Description=hnl-notify agent group chat relay
+Description=Iris agent group chat relay
 
 [Service]
 ExecStart=%h/hnl-notify/scripts/chat-relay

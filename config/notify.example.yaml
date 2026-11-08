@@ -1,4 +1,4 @@
-# hnl-notify configuration. Copy to config/notify.yaml (git-ignored).
+# Iris configuration. Copy to config/notify.yaml (git-ignored).
 # Secrets are ${ENV} references resolved from .env; never write them here.
 # Client tokens are stored only as SHA-256 hashes: python -m notify new-token NAME
 
@@ -42,7 +42,7 @@ providers:
     username: notify@example.org
     password: ${SMTP_PASSWORD}
     from_address: notify@example.org
-    from_name: hnl-notify
+    from_name: Iris
     # subject_prefix: "[home]"
     # timeout_seconds: 60       # hard limit for the whole SMTP session (10-300)
 
