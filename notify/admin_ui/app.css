@@ -536,7 +536,19 @@ details.delivery summary:hover { color: var(--ink); }
 .cm .act { font-size: .76rem; color: var(--warn); margin-top: .15rem; }
 .cm .act.claimed { color: var(--muted); }
 .cm .release-btn { font-size: .76rem; padding: 0 .35rem; min-height: 0; }
-.chat-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; padding: .7rem; border-top: 1px solid var(--line); background: var(--surface); align-items: end; }
+.chat-compose { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .5rem; padding: .7rem; border-top: 1px solid var(--line); background: var(--surface); align-items: end; }
+.fyi-toggle { display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem; color: var(--muted); padding: .45rem .55rem; border: 1px solid var(--line); border-radius: var(--radius-s); cursor: pointer; user-select: none; min-height: 40px; }
+.fyi-toggle:has(input:checked) { color: var(--ink); border-color: var(--action); background: var(--action-wash); }
+.fyi-toggle:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 1px; }
+.chat-at { position: absolute; left: .7rem; bottom: calc(100% - .4rem); z-index: 5; margin: 0; padding: .25rem; list-style: none; min-width: 12rem; max-width: calc(100% - 1.4rem); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-s); box-shadow: var(--shadow-float); }
+.chat-at[hidden] { display: none; }
+.chat-at li { padding: .3rem .5rem; border-radius: 5px; cursor: pointer; font-size: .86rem; }
+.chat-at li small { color: var(--faint); margin-left: .3rem; }
+.chat-at li.on { background: var(--action-wash); color: var(--ink); }
+.kind-tag { font: 500 .68rem var(--font); letter-spacing: .02em; padding: .05rem .4rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.kind-tag.fyi { color: var(--waiting); border-color: color-mix(in srgb, var(--waiting) 40%, var(--line)); }
+.kind-tag.all { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.kind-tag.for { color: var(--action); border-color: color-mix(in srgb, var(--action) 40%, var(--line)); }
 .chat-compose[hidden], .chat-paused[hidden], .chat-watch[hidden], #chat-pausebtn[hidden], .chat-readonly[hidden] { display: none; }
 .chat-compose textarea {
   font: inherit; font-size: .92rem; color: var(--ink); background: var(--sunken); resize: vertical; min-height: 44px; max-height: 40vh;

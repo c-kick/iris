@@ -948,7 +948,11 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
         for w in svc.db.query("SELECT state, COUNT(*) AS n FROM chat_wakes WHERE message_id=? GROUP BY state",
                               (r["id"],)):
             wakes["pending" if w["state"] in ("pending", "claimed") else w["state"]] += w["n"]
-        m = {"id": r["id"], "author": r["author"], "created_at": r["created_at"], "wakes": wakes}
+        m = {"id": r["id"], "author": r["author"], "created_at": r["created_at"], "wakes": wakes, "kind": r["kind"]}
+        if r["author"] != "system" and r["kind"] == "request":
+            named = [x["name"] or x["id"] for x in svc.chat.mentioned(r["id"])]
+            if named:
+                m["mentions"] = named
         hr = svc.db.one("SELECT id, state, reason FROM chat_history_requests WHERE message_id=?", (r["id"],))
         if hr is not None:
             m["history_request"] = {"id": hr["id"], "state": hr["state"]}
@@ -988,6 +992,7 @@ class ChatPostIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     text: str
     in_reply_to: str | None = None
+    fyi: bool = False
 
 
 @router.post("/api/chats/{group_id}/messages", status_code=201)
@@ -999,7 +1004,7 @@ async def chat_post(group_id: str, body: ChatPostIn, request: Request,
     if _chat_group(svc, group_id)["state"] != "open":
         raise HTTPException(409, "group is closed")
     try:
-        return svc.chat.post_owner(group_id, body.text, body.in_reply_to)
+        return svc.chat.post_owner(group_id, body.text, body.in_reply_to, body.fyi)
     except NotFound as e:
         raise HTTPException(404, str(e)) from e
     except Invalid as e:

@@ -1839,10 +1839,13 @@ function chatMessageHtml(m, canReply = false) {
   const quote = m.in_reply_to
     ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(m.reply_excerpt)}`}</div>`
     : "";
+  const tag = m.kind === "fyi" ? `<span class="kind-tag fyi" title="Everyone reads it, nobody acts on it">heads-up</span>`
+    : m.kind === "all" ? `<span class="kind-tag all" title="Each member acts on it">for everyone</span>`
+    : m.mentions && m.mentions.length ? `<span class="kind-tag for" title="Only they act; the others read it">for ${esc(m.mentions.join(", "))}</span>` : "";
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
-  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${chatTicksHtml(m.id, m.receipt)}</div>
+  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${tag}${chatTicksHtml(m.id, m.receipt)}</div>
     ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}</div>`;
 }
@@ -1893,6 +1896,56 @@ function chatsRenderList(el) {
   if (nav) nav.querySelector(".badge")?.remove();
   const n = chatUnread();
   if (nav && n) nav.insertAdjacentHTML("beforeend", ` <span class="badge" aria-label="${n} unread">${n}</span>`);
+}
+
+// "@" in the composer: a list of the members' names (and all) to pick from, filtered as you type
+function chatAtPicker(el, ta, list) {
+  let hits = [], pick = 0, start = -1;
+  const close = () => { list.hidden = true; hits = []; start = -1; ta.removeAttribute("aria-activedescendant"); };
+  const names = () => {
+    const f = chatFolderOf(chats.selected);
+    const here = f ? f.members.filter((m) => !m.left_at && m.name) : [];
+    return [...here.map((m) => ({ name: m.name, kind: CHAT_WHO[m.kind] || m.kind })), { name: "all", kind: "everyone acts" }];
+  };
+  const draw = () => {
+    list.innerHTML = hits.map((h, i) => `<li role="option" id="chat-at-${i}" data-i="${i}" aria-selected="${i === pick}" class="${i === pick ? "on" : ""}">@${esc(h.name)} <small>${esc(h.kind)}</small></li>`).join("");
+    list.hidden = !hits.length;
+    if (hits.length) ta.setAttribute("aria-activedescendant", `chat-at-${pick}`);
+  };
+  const choose = (i) => {
+    const h = hits[i];
+    if (!h) return;
+    const end = ta.selectionStart;
+    ta.value = `${ta.value.slice(0, start)}@${h.name} ${ta.value.slice(end)}`;
+    const pos = start + h.name.length + 2;
+    close();
+    ta.focus();
+    ta.setSelectionRange(pos, pos);
+    ta.dispatchEvent(new Event("input"));
+  };
+  const update = () => {
+    const before = ta.value.slice(0, ta.selectionStart ?? 0);
+    const m = /(^|[\s(\[{<"'])@([A-Za-z0-9]*)$/.exec(before);
+    if (!m) { close(); return; }
+    start = before.length - m[2].length - 1;
+    const q = m[2].toLowerCase();
+    hits = names().filter((h) => h.name.toLowerCase().startsWith(q)).slice(0, 8);
+    pick = Math.min(pick, Math.max(0, hits.length - 1));
+    draw();
+  };
+  ta.addEventListener("input", update);
+  ta.addEventListener("click", update);
+  ta.addEventListener("blur", () => setTimeout(close, 150));
+  list.onmousedown = (e) => { const li = e.target.closest("[data-i]"); if (li) { e.preventDefault(); choose(+li.dataset.i); } };
+  return {
+    key(e) {
+      if (list.hidden || !hits.length) return false;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); pick = (pick + (e.key === "ArrowDown" ? 1 : hits.length - 1)) % hits.length; draw(); return true; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); choose(pick); return true; }
+      if (e.key === "Escape") { e.preventDefault(); close(); return true; }
+      return false;
+    },
+  };
 }
 
 // a click on a member: "@Name " at the cursor in the composer
@@ -1950,7 +2003,9 @@ async function chatOpen(el, key, keep = false) {
     <form class="chat-compose" id="chat-compose" hidden>
       <div class="chat-replying" id="chat-replying" hidden><span class="rq"></span><button type="button" class="btn quiet" id="chat-reply-cancel" aria-label="Cancel reply">✕</button></div>
       <label class="sr" for="chat-text">Message this group</label>
-      <textarea id="chat-text" rows="2" placeholder="Message this group…"></textarea>
+      <textarea id="chat-text" rows="2" placeholder="Message this group… @Name hands it to one member, @all to everyone" aria-autocomplete="list" aria-controls="chat-at"></textarea>
+      <ul class="chat-at" id="chat-at" role="listbox" aria-label="Members to mention" hidden></ul>
+      <label class="fyi-toggle" title="A heads-up: everyone reads it, nobody acts on it"><input type="checkbox" id="chat-fyi"> FYI</label>
       <button type="submit" class="btn primary">Send</button>
       <div class="form-error" role="alert"></div>
     </form>
@@ -2001,19 +2056,27 @@ async function chatOpen(el, key, keep = false) {
   const grow = () => { ta.style.height = "auto"; if (ta.value) ta.style.height = `${ta.scrollHeight + 2}px`; };
   ta.oninput = () => { chats.composeDraft = ta.value; grow(); };
   grow();
-  ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } };
+  const at = chatAtPicker(el, ta, form.querySelector("#chat-at"));
+  const fyi = form.querySelector("#chat-fyi");
+  ta.onkeydown = (e) => {
+    if (at.key(e)) return;
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
+  };
   form.onsubmit = async (e) => {
     e.preventDefault();
     const text = ta.value.trim();
     if (!text) return;
     const err = form.querySelector(".form-error");
-    const btn = form.querySelector("button");
+    const btn = form.querySelector("button[type=submit]");
     btn.disabled = true;
     err.textContent = "";
     try {
       const payload = chats.replyTo ? { text, in_reply_to: chats.replyTo } : { text };
-      await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/messages`, payload);
+      if (fyi.checked) payload.fyi = true;
+      const res = await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/messages`, payload);
+      if (res && res.unknown_mentions && res.unknown_mentions.length) toast(`Nobody here is called ${res.unknown_mentions.map((n) => `@${n}`).join(", ")}: sent as plain text`);
       setReply(null);
+      fyi.checked = false;
       ta.value = "";
       chats.composeDraft = "";
       grow();

@@ -314,7 +314,8 @@ class Database:
         self._add_chat_history()
         self._add_missing_columns({"chat_wakes": {"attempts": "INTEGER NOT NULL DEFAULT 0", "retry_after": "TEXT"},
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT"},
-                                  "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT"},
+                                  "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT",
+                                                    "kind": "TEXT NOT NULL DEFAULT 'request'"},  # 0.14.0: request, fyi, all
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
                                                    "name": "TEXT", "status": "TEXT", "status_at": "TEXT",
                                                    "active_at": "TEXT"},  # 0.14.0
@@ -328,6 +329,9 @@ class Database:
         # members from before 0.13.0's read cursor owe nothing: start them at their group's newest message
         self.conn.execute("UPDATE chat_members SET last_read_rowid=(SELECT COALESCE(MAX(rowid), 0) FROM chat_messages"
                           " WHERE group_id=chat_members.group_id) WHERE last_read_rowid IS NULL")
+        with self.tx() as c:  # 0.14.0: who a message @mentions
+            c.execute("CREATE TABLE IF NOT EXISTS chat_mentions (message_id TEXT NOT NULL REFERENCES chat_messages(id),"
+                      " member_id TEXT NOT NULL REFERENCES chat_members(id), PRIMARY KEY(message_id, member_id))")
         self._name_open_members()
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")
