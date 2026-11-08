@@ -448,7 +448,8 @@ details.delivery summary:hover { color: var(--ink); }
 .chat-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-pane > .empty { margin: auto; text-align: center; max-width: 30ch; }
 .chat-head { display: flex; align-items: center; gap: .5rem; padding: .65rem 1rem; border-bottom: 1px solid var(--line); background: var(--surface); }
-.chat-head .grow { min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.chat-head { flex-wrap: wrap; }
+.chat-head .grow { flex: 1 1 11rem; min-width: 0; display: flex; flex-direction: column; overflow-wrap: anywhere; }
 .chat-head .grow strong { font: 500 .92rem var(--mono); }
 .chat-head .back { display: none; }
 .chat-paused { padding: .45rem 1rem; color: var(--warn); background: var(--warn-wash); border-bottom: 1px solid var(--line); font-size: .86rem; }
@@ -469,7 +470,7 @@ details.delivery summary:hover { color: var(--ink); }
 }
 .cm.sys {
   align-self: center; max-width: 94%; font-size: .8rem; color: var(--muted); border: 1px dashed var(--line); background: transparent;
-  padding: .15rem .7rem; text-align: center; border-radius: 999px;
+  padding: .2rem .8rem; text-align: center; border-radius: 14px;
 }
 .cm.sys.ask { padding: .55rem .8rem; border-radius: var(--radius-m); background: var(--surface); border-style: solid; border-left: 3px solid var(--warn); }
 .chat-earlier { align-self: stretch; }

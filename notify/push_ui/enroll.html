@@ -5,19 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Enable notifications</title>
 <style>
-  body { font: 16px/1.5 system-ui, sans-serif; max-width: 34rem; margin: 3rem auto; padding: 0 1rem; }
-  button { font: inherit; padding: .6rem 1rem; }
+  :root { color-scheme: light dark; --ink: #1A2427; --muted: #566569; --bg: #EDF0F1; --card: #FBFCFC; --line: #D2DADC; --action: #0D6A71; }
+  @media (prefers-color-scheme: dark) { :root { --ink: #E3EBEC; --muted: #9AABAF; --bg: #0F1517; --card: #182124; --line: #28363A; --action: #4DB7BD; } }
+  body { font: 16px/1.55 system-ui, sans-serif; color: var(--ink); background: var(--bg); margin: 0; padding: 1rem; min-height: 100vh; }
+  main { max-width: 34rem; margin: 3rem auto; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1.75rem; }
+  h1 { font-size: 1.4rem; margin: 0 0 .75rem; letter-spacing: -.01em; }
+  button { font: inherit; font-weight: 600; padding: .6rem 1.1rem; min-height: 44px; border-radius: 7px; border: 1px solid var(--action); background: var(--action); color: var(--bg); cursor: pointer; }
+  button:focus-visible { outline: 3px solid #2A74C6; outline-offset: 2px; }
   #status { margin-top: 1rem; }
-  small { color: #666; display: block; margin-top: 1.5rem; }
+  small { color: var(--muted); display: block; margin-top: 1.5rem; }
 </style>
 </head>
 <body data-key="{{KEY}}">
+<main>
 <h1>Enable notifications</h1>
 <p>This links this browser to your household notifications. It works once; the link is then used up.</p>
 <button id="enable" type="button">Enable notifications on this browser</button>
 <p id="status" role="status"></p>
 <small>Chrome and Edge only receive notifications while the browser runs: keep "continue running background apps
 when closed" turned on in the browser settings. Firefox must stay open.</small>
+</main>
 <script src="/push/enroll.js"></script>
 </body>
 </html>
