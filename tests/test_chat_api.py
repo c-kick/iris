@@ -39,7 +39,7 @@ def chatlive(tmp_path, fake):
 
 def join(srv, who="hosta", sid="s1", folder=FOLDER):
     r = srv.client(who).post("/v1/chat/join", json={"kind": "claude", "session_id": sid, "folder": folder,
-                                                    "pid": 5, "pid_start": "x"})
+                                                    "pid": 5, "pid_start": f"x-{sid}"})
     assert r.status_code == 201, r.text
     return r.json()
 

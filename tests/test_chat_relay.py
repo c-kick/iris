@@ -234,10 +234,10 @@ def test_relay_version_warning(env, chatlive):
 
 
 def test_relay_failed_wake_does_not_block_others(env, chatlive):
-    me = spawn()
-    try:
+    me, other = spawn(), spawn()  # one process per session of a kind (0.14.0: a new session id from the same
+    try:                          # process replaces the old member)
         st = pid_start_of(me.pid)
-        sender = join(chatlive, "codex", "t-sender", me.pid, st)
+        sender = join(chatlive, "codex", "t-sender", other.pid, pid_start_of(other.pid))
         a = join(chatlive, "claude", "s-a", me.pid, st)  # no socket: undeliverable
         b = join(chatlive, "codex", "t-b", me.pid, st)
         chatlive.service.chat.post(sender["member_handle"], "hello")
@@ -246,8 +246,9 @@ def test_relay_failed_wake_does_not_block_others(env, chatlive):
         assert wa["state"] == "pending" and wa["attempts"] == 1
         assert wb["state"] == "delivered"
     finally:
-        me.kill()
-        me.wait()
+        for proc in (me, other):
+            proc.kill()
+            proc.wait()
 
 
 def test_relay_claude_pid_reused(env, chatlive):

@@ -33,7 +33,9 @@ MESSAGE_MAX_BYTES = 8192
 QUOTE = "| "
 FOLDER_MAX = 1024
 KINDS = ("claude", "codex")
-LEAVE_REASONS = ("ended", "stale", "left")
+LEAVE_REASONS = ("ended", "stale", "left", "replaced")
+STALE_REJOIN_SECONDS = 3600  # a member swept as stale whose process turns out alive within this is taken back
+STALE_GROUP_SECONDS = 7 * 86400  # an open group in which nobody was seen for this long is closed
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 MAX_WAKE_ATTEMPTS = 5
 WATCH_SECONDS = 30  # the owner watching a thread suspends the cap for this long
@@ -421,6 +423,7 @@ class Chat:
         """Join the folder's group, opening it if needed. Callers decide whether the folder takes part (presence())."""
         host, folder = self._session_args(client, kind, session_id, folder)
         self._leave_other_folder(client, host, folder, kind, session_id)
+        self._replace_same_process(host, kind, session_id, pid, pid_start)
         now = iso(self.now())
         with self.db.tx() as c:  # BEGIN IMMEDIATE: a second joiner waits, then finds the group open
             row = c.execute("SELECT m.* FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
@@ -533,6 +536,7 @@ class Chat:
             out["context"] = self.join_context(folder, out, report_in=True)
             return out
         self._leave_other_folder(client, host, folder, kind, session_id)
+        self._replace_same_process(host, kind, session_id, pid, pid_start)
         now = iso(self.now())
         with self.db.tx() as c:
             pres = c.execute("SELECT * FROM chat_presence WHERE host=? AND kind=? AND session_id=?",
@@ -716,6 +720,20 @@ class Chat:
             c.execute("DELETE FROM chat_invites WHERE presence_id=?", (presence_id,))
             c.execute("DELETE FROM chat_presence WHERE id=?", (presence_id,))
 
+    def _replace_same_process(self, host: str, kind: str, session_id: str, pid: int | None,
+                              pid_start: str | None) -> None:
+        """Codex /new or /resume, Claude /clear: a new session id from the same process. Its earlier member (or
+        presence) on this host is that window's old session: it leaves (reason replaced) and the new one starts fresh."""
+        if not pid or not pid_start:
+            return
+        for r in self.db.query("SELECT m.id FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=?"
+                               " AND m.left_at IS NULL AND m.kind=? AND m.pid=? AND m.pid_start=? AND m.session_id<>?",
+                               (host, kind, pid, pid_start, session_id)):
+            self.remove_member(r["id"], "replaced")
+        for r in self.db.query("SELECT id FROM chat_presence WHERE host=? AND kind=? AND pid=? AND pid_start=?"
+                               " AND session_id<>?", (host, kind, pid, pid_start, session_id)):
+            self.remove_presence(r["id"])
+
     def remove_member(self, member_id: str, reason: str, by: str = "hnl-notify") -> bool:
         """Mark a member left (skipping its pending and claimed wakes); close the group when it was the last one.
         Returns False when the member had already left."""
@@ -725,14 +743,17 @@ class Chat:
             if m is None:
                 return False
             gid = m["group_id"]
-            c.execute("UPDATE chat_members SET left_at=?, leave_reason=?, marker=NULL WHERE id=?", (now, reason, member_id))
+            # a stale member may come back within the hour (rejoin_stale) with the same handle, name and marker
+            c.execute("UPDATE chat_members SET left_at=?, leave_reason=?, marker=CASE WHEN ?='stale' THEN marker END"
+                      " WHERE id=?", (now, reason, reason, member_id))
             c.execute("UPDATE chat_wakes SET state='skipped', reason='member gone', finished_at=?"
                       " WHERE member_id=? AND state IN ('pending', 'claimed')", (now, member_id))
             c.execute("UPDATE chat_history_requests SET state='expired', decision_sha256=NULL"
                       " WHERE member_id=? AND state IN ('pending', 'approved')", (member_id,))
             self._event(c, "group.member_left", by, {"group_id": gid, "member_id": member_id, "reason": reason})
             self._add_message(c, gid, "system", None, f"{who(m['kind'], m['name'], member_id)} left the chat"
-                              + (" (no longer running)" if reason == "stale" else ""))
+                              + {"stale": " (no longer running)",
+                                 "replaced": " (new session in the same window)"}.get(reason, ""))
             for held in c.execute("SELECT id FROM chat_messages WHERE claimed_by_member_id=? ORDER BY rowid",
                                   (member_id,)).fetchall():
                 c.execute("UPDATE chat_messages SET claimed_by_member_id=NULL, claimed_at=NULL WHERE id=?",
@@ -1427,10 +1448,14 @@ class Chat:
         now = iso(t)
         since, last = self.relay_seen.get(host, (t, t))
         self.relay_seen[host] = (since if t - last < timedelta(seconds=STALE_SECONDS) else t, t)
+        back: list[str] = []
         with self.db.tx() as c:
             for a in alive:
                 mid = a.get("member_id") if isinstance(a, dict) else None
                 if not isinstance(mid, str):
+                    continue
+                if self._rejoin_stale(c, host, mid, a, t):
+                    back.append(mid)
                     continue
                 c.execute("UPDATE chat_members SET last_seen_at=? WHERE id=? AND left_at IS NULL AND group_id IN"
                           " (SELECT id FROM chat_groups WHERE host=?)", (now, mid, host))
@@ -1438,11 +1463,63 @@ class Chat:
             rows = c.execute("SELECT m.id, m.kind, m.pid, m.pid_start FROM chat_members m"
                              " JOIN chat_groups g ON g.id=m.group_id WHERE g.host=? AND m.left_at IS NULL"
                              " ORDER BY m.joined_at, m.rowid", (host,)).fetchall()
-            # sessions present without a chat are checked the same way (the relay needs no change for them)
+            # sessions present without a chat are checked the same way (the relay needs no change for them), and
+            # so are members swept as stale in the last hour whose group is still open: alive means they come back
             rows += c.execute("SELECT id, kind, pid, pid_start FROM chat_presence WHERE host=? ORDER BY rowid",
                               (host,)).fetchall()
+            rows += c.execute("SELECT m.id, m.kind, m.pid, m.pid_start FROM chat_members m JOIN chat_groups g"
+                              " ON g.id=m.group_id WHERE g.host=? AND g.state='open' AND m.leave_reason='stale'"
+                              " AND m.left_at >= ? AND m.pid IS NOT NULL ORDER BY m.rowid",
+                              (host, iso(t - timedelta(seconds=STALE_REJOIN_SECONDS)))).fetchall()
+        if back:
+            self.svc._after_commit()
         return {"members": [{"member_id": r["id"], "kind": r["kind"], "pid": r["pid"], "pid_start": r["pid_start"]}
                             for r in rows]}
+
+    def _rejoin_stale(self, c: sqlite3.Connection, host: str, member_id: str, alive: dict[str, Any],
+                      t: datetime) -> bool:
+        """A member swept as stale is reported alive (same pid and start time) within the hour, its group still open:
+        it is taken back with its handle, name and marker. Wakes from its absence are not replayed."""
+        m = c.execute("SELECT m.*, g.state AS gstate, g.host AS ghost FROM chat_members m JOIN chat_groups g"
+                      " ON g.id=m.group_id WHERE m.id=? AND m.leave_reason='stale'", (member_id,)).fetchone()
+        if (m is None or m["ghost"] != host or m["gstate"] != "open" or not m["left_at"]
+                or m["left_at"] < iso(t - timedelta(seconds=STALE_REJOIN_SECONDS))
+                or alive.get("pid") != m["pid"] or str(alive.get("pid_start")) != str(m["pid_start"])):
+            return False
+        name = m["name"]
+        if name and c.execute("SELECT 1 FROM chat_members WHERE group_id=? AND left_at IS NULL AND lower(name)=lower(?)",
+                              (m["group_id"], name)).fetchone():
+            g = c.execute("SELECT host, folder FROM chat_groups WHERE id=?", (m["group_id"],)).fetchone()
+            name = self._pick_name(c, m["group_id"], g["host"], g["folder"])  # taken meanwhile: a new one
+        c.execute("UPDATE chat_members SET left_at=NULL, leave_reason=NULL, last_seen_at=?, name=?,"
+                  " marker=COALESCE(marker, ?) WHERE id=?", (iso(t), name, new_marker(name), member_id))
+        self._add_message(c, m["group_id"], "system", None, f"{who(m['kind'], name, member_id)} is back")
+        self._event(c, "group.member_rejoined", "hnl-notify", {"group_id": m["group_id"], "member_id": member_id})
+        return True
+
+    def close_quiet_groups(self, now: datetime) -> int:
+        """Open groups in which no member was seen for 7 days are closed (a relay gone for good never sweeps them).
+        An empty group the owner opened is closed 7 days after it opened."""
+        cutoff = iso(now - timedelta(seconds=STALE_GROUP_SECONDS))
+        n = 0
+        for g in self.db.query("SELECT id, opened_at FROM chat_groups WHERE state='open'"):
+            last = self.db.scalar("SELECT MAX(last_seen_at) FROM chat_members WHERE group_id=? AND left_at IS NULL",
+                                  (g["id"],))
+            if (last or g["opened_at"] or "") >= cutoff:
+                continue
+            with self.db.tx() as c:
+                self._add_message(c, g["id"], "system", None, "closed: nobody seen for 7 days")
+            members = self.db.query("SELECT id FROM chat_members WHERE group_id=? AND left_at IS NULL", (g["id"],))
+            for m in members:
+                self.remove_member(m["id"], "stale")
+            if not members:
+                with self.db.tx() as c:
+                    c.execute("UPDATE chat_groups SET state='closed', closed_at=? WHERE id=?", (iso(now), g["id"]))
+                    self._event(c, "group.closed", "hnl-notify", {"group_id": g["id"]})
+            n += 1
+        if n:
+            self.svc._after_commit()
+        return n
 
     def sweep(self, now: datetime | None = None) -> None:
         """(a) members with no heartbeat leave as stale (not until STALE_SECONDS after start-up, and only on a host
@@ -1450,6 +1527,7 @@ class Chat:
         (b) unconfirmed claims return to pending; (c) non-final wakes of members that left are skipped."""
         now = now or self.now()
         self.expire_history(now)
+        self.close_quiet_groups(now)
         stale_before = iso(now - timedelta(seconds=STALE_SECONDS))
         claim_before = iso(now - timedelta(seconds=CLAIM_TIMEOUT_SECONDS))
         window = timedelta(seconds=STALE_SECONDS)

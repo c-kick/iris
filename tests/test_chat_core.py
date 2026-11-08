@@ -41,7 +41,7 @@ def svc(tmp_path):
 
 
 def join(svc, sid, folder=FOLDER, client=AGENT, kind="claude"):
-    return svc.chat.join(client, kind=kind, session_id=sid, folder=folder, pid=100, pid_start="x")
+    return svc.chat.join(client, kind=kind, session_id=sid, folder=folder, pid=100, pid_start=f"x-{sid}")  # one process per session
 
 
 def wakes(svc, msg_id):

@@ -24,7 +24,7 @@ def run(coro):
 
 
 def pres(svc, sid, folder=FOLDER, client=AGENT, kind="claude", pid=100):
-    return svc.chat.presence(client, kind=kind, session_id=sid, folder=folder, pid=pid, pid_start="x")
+    return svc.chat.presence(client, kind=kind, session_id=sid, folder=folder, pid=pid, pid_start=f"x-{sid}")
 
 
 def groups(svc):
@@ -151,7 +151,7 @@ def test_presence_heartbeat_and_stale_sweep(svc):
     from datetime import timedelta
     a = pres(svc, "s1", pid=4242)
     hb = svc.chat.heartbeat(AGENT, [])
-    assert {"member_id": a["member_id"], "kind": "claude", "pid": 4242, "pid_start": "x"} in hb["members"]
+    assert {"member_id": a["member_id"], "kind": "claude", "pid": 4242, "pid_start": "x-s1"} in hb["members"]
     t0 = svc.chat.now()
     svc.chat.started_at = t0 - timedelta(hours=1)
     svc.chat.relay_seen["host-a"] = (t0 - timedelta(minutes=10), t0)
@@ -228,7 +228,7 @@ def test_migration_keeps_open_group_as_adhoc(tmp_path):
 def test_rest_presence_and_compat_join(chatlive, tmp_path):  # noqa: F811
     chatlive.service.chat.auto_enable = False
     c = chatlive.client("hosta")
-    body = {"kind": "claude", "session_id": "s1", "folder": FOLDER, "pid": 5, "pid_start": "x"}
+    body = {"kind": "claude", "session_id": "s1", "folder": FOLDER}
     r = c.post("/v1/chat/presence", json=body)
     assert r.status_code == 201 and r.json()["state"] == "present"
     r = c.post("/v1/chat/join", json={**body, "session_id": "s2"})  # an old hook script
@@ -254,7 +254,7 @@ def test_mcp_group_open_and_join(chatlive):  # noqa: F811
     from tests.test_mcp import payload, run_session
     chatlive.service.chat.auto_enable = False
     c = chatlive.client("hosta")
-    body = {"kind": "claude", "session_id": "s1", "folder": FOLDER, "pid": 5, "pid_start": "x"}
+    body = {"kind": "claude", "session_id": "s1", "folder": FOLDER}
     a = c.post("/v1/chat/presence", json=body).json()
     b = c.post("/v1/chat/presence", json={**body, "session_id": "s2"}).json()
 

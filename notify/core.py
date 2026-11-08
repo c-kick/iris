@@ -1532,6 +1532,16 @@ class NotifyService:
             c.execute(f"DELETE FROM chat_messages WHERE group_id IN {old}", (cutoff,))
             c.execute(f"DELETE FROM chat_members WHERE group_id IN {old}", (cutoff,))
             c.execute("DELETE FROM chat_groups WHERE state='closed' AND closed_at < ?", (cutoff,))
+            # 0.14.0: open groups age out too, except messages someone holds a claim on, the group's first line and
+            # its newest message (so a rowid is never handed out again below a member's read mark)
+            aged = ("(SELECT x.id FROM chat_messages x JOIN chat_groups g ON g.id=x.group_id WHERE g.state='open'"
+                    " AND x.created_at < ? AND x.claimed_by_member_id IS NULL"
+                    " AND x.rowid > (SELECT MIN(rowid) FROM chat_messages WHERE group_id=x.group_id)"
+                    " AND x.rowid < (SELECT MAX(rowid) FROM chat_messages WHERE group_id=x.group_id))")
+            for t in ("chat_wakes", "chat_mentions"):
+                c.execute(f"DELETE FROM {t} WHERE message_id IN {aged}", (cutoff,))
+            c.execute(f"DELETE FROM chat_invites WHERE message_id IN {aged}", (cutoff,))
+            c.execute(f"DELETE FROM chat_messages WHERE id IN {aged}", (cutoff,))
             c.execute("DELETE FROM events WHERE type LIKE 'group.%' AND created_at < ?", (cutoff,))
         return len(ids)
 
