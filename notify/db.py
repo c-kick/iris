@@ -316,7 +316,8 @@ class Database:
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT"},
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT"},
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
-                                                   "name": "TEXT"},  # 0.14.0
+                                                   "name": "TEXT", "status": "TEXT", "status_at": "TEXT",
+                                                   "active_at": "TEXT"},  # 0.14.0
                                   "subscriptions": {"failing_since": "TEXT"},
                                   # 0.13.2: bumped by every claim, never reset (a retry resets attempts)
                                   "deliveries": {"lease_no": "INTEGER NOT NULL DEFAULT 0"},

@@ -26,6 +26,14 @@ class LeaveIn(BaseModel):
     reason: str = Field(default="ended", max_length=20)
 
 
+class StatusIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str = Field(max_length=20)
+    session_id: str = Field(max_length=200)
+    folder: str | None = Field(default=None, max_length=4096)  # informational; the session id finds the member
+    status: str = Field(max_length=20)
+
+
 class HeartbeatIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     alive: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
@@ -45,6 +53,14 @@ async def leave(request: Request, body: LeaveIn | None = None,
                 client: Client = Depends(require(Scope.chat))) -> Response:
     service(request).chat.check_handle_host(client, handle)  # same host binding as the MCP tools
     service(request).chat.leave(handle, body.reason if body else "ended")
+    return Response(status_code=204)
+
+
+@router.post("/status", status_code=204)
+@_errors
+async def status(body: StatusIn, request: Request, client: Client = Depends(require(Scope.chat))) -> Response:
+    """Status hooks: busy / waiting / free, or an "active" ping. 404 when the session is in no chat."""
+    service(request).chat.set_status(client, kind=body.kind, session_id=body.session_id, status=body.status)
     return Response(status_code=204)
 
 
