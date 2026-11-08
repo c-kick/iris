@@ -241,3 +241,34 @@ def test_no_stale_sweep_right_after_start(svc):
         svc.chat.heartbeat(AGENT, [])
     svc.chat.sweep()
     assert svc.db.scalar("SELECT COUNT(*) FROM chat_members WHERE left_at IS NULL") == 0
+
+
+def test_claim_cut_off_by_a_restart_is_redelivered(tmp_path):
+    """0.13.2 (instead of a 503 at shutdown): a claim whose response was lost in a restart is handed to the same
+    relay again at once, and a long-poll cancelled while waiting claims nothing."""
+    s1 = build(tmp_path)
+    a, b = two(s1)
+    s1.chat.post(a["member_handle"], "hello")
+    lost = run(s1.chat.claim_host(AGENT, "relay-host-a", 0))  # committed, but the relay never saw the answer
+    s1.db.close()
+
+    s2 = build(tmp_path)  # the service came back on the same database
+    try:
+        again = run(s2.chat.claim_host(AGENT, "relay-host-a", 0))
+        assert again["wake_id"] == lost["wake_id"] and again["text"] == lost["text"]
+        s2.chat.confirm(AGENT, again["wake_id"], "relay-host-a")
+        assert wake_state(s2, again["wake_id"])["state"] == "delivered"
+
+        async def cancelled_poll():
+            task = asyncio.create_task(s2.chat.claim_host(AGENT, "relay-host-a", 30))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        run(cancelled_poll())
+        assert s2.db.scalar("SELECT COUNT(*) FROM chat_wakes WHERE state='claimed'") == 0
+        s2.chat.post(b["member_handle"], "after the restart")
+        got = run(s2.chat.claim_host(AGENT, "relay-host-a", 0))
+        assert got is not None and got["member_id"] == a["member_id"]
+    finally:
+        s2.db.close()
