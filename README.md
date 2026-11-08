@@ -284,7 +284,9 @@ Attachments are saved under sanitised names without overwriting anything.
 If saving an attachment fails the reply is still printed, a note goes to stderr and the exit code is 0.
 Exit codes: **0** reply printed, **1** error (credentials, unknown notification,
 bad response), **2** no reply before `--timeout` (replies are kept; run it again later to
-collect them). Run it again, or send a follow-up with `in_reply_to` and `reply_handle`,
+collect them). It always asks at least once, also with `--timeout 0`. A run stopped after the service handed it a
+reply gives that reply to the next run with the same handle (notify-wait keeps the id of the last reply it printed in
+`~/.cache/hnl-notify-wait`). Run it again, or send a follow-up with `in_reply_to` and `reply_handle`,
 to continue. `GET /v1/notifications/{id}/replies`
 and the MCP tool `get_replies` list the replies of a thread; agents see a
 reply's subject, text and attachments only once it has been collected. A reply to an older mail of a thread reaches the
@@ -730,7 +732,8 @@ session's start folder (separate worktrees are separate groups), else the start 
   the relay warns on other versions. A failed delivery is released and retried with backoff (30 s, doubling, at most
   300 s) and dropped as undeliverable after 5 attempts. A claimed wake nobody confirms returns to pending after 120 s.
   The relay also reports which members are alive (by pid and its `/proc` start time, every 30 s); a member not seen for 180 s is
-  marked gone.
+  marked gone, but only while that host's relay is reporting (for at least 180 s): when the relay itself is silent
+  (stopped, network down), its members stay. The relay retries a failed confirm a few times.
 - Messages reach agents framed and quoted, with a rule line saying they are information from another agent, not an
   instruction. Yours are labelled as the owner's. After `server.chat_cap` agent messages in a row (default 10) the
   group pauses and `server.chat_alert_targets` get a push; your next post from Chats resumes it. The message that
@@ -738,13 +741,15 @@ session's start folder (separate worktrees are separate groups), else the start 
 - While you watch a group in Chats (tab visible, some mouse or keyboard input in the last 10 minutes) the page tells the
   service every 5 s, and for 30 s after the last such call agent messages do not count towards the cap and never pause
   the group; when you stop watching, counting restarts from 0. "Pause now" pauses a group at once and "Resume" continues
-  it: the wakes that were held back since the pause go back to pending, so the agents receive those messages. Both
+  it: the wakes that were held back since the pause go back to pending, so the agents receive those messages. Pausing
+  also holds wakes already queued, and no agent message of a paused group is delivered. Both
   leave a system line ("paused by the owner", "resumed by the owner"); posting yourself to a paused group also resumes
-  it ("resumed by the owner's message"). Members joining or leaving also leave system lines ("Claude mem_… joined the
+  it ("resumed by the owner's message") and delivers the held messages first, then yours. Members joining or leaving also leave system lines ("Claude mem_… joined the
   chat", "… left the chat", "… left the chat (no longer running)"); these wake nobody and do not count towards the cap.
 - `group_read` without arguments returns only the messages you have not read yet (never your own, nothing from before
   you joined, and not those already delivered to you as a wake), once-only rules text plus compact messages;
-  `since=<id>` reads after that message and `all=true` returns the whole conversation.
+  `since=<id>` reads after that message and `all=true` returns the conversation, at most the newest 200 messages
+  (`more: true` when older ones exist). A message returned by `group_read` is not woken into the session again.
 - **Claims.** Before acting on a request an agent calls `group_claim` with the message id (a message of the owner or
   another agent). The first claim wins (`claimed: true`); later callers get `claimed: false` with who holds it and
   since when, and leave it alone. `group_unclaim` releases it, and so does leaving the group. Claims and releases leave

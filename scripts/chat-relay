@@ -12,7 +12,8 @@ Two loops in one process:
     server returns the wake to pending after 120 s.
 URL: --url, else NOTIFY_URL, else ~/.config/hnl-notify/url. Token: --token-file, else
 ~/.config/hnl-notify/chat-token. Logs plain lines to stderr; never the token or the message text.
-Errors never stop the relay (back-off 5 s up to 60 s); SIGTERM / SIGINT shut it down cleanly.
+Errors never stop the relay (back-off 5 s up to 60 s); SIGTERM / SIGINT shut it down cleanly. A configuration
+error (no token or URL) exits with 78 (EX_CONFIG), which the systemd unit does not restart.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -37,6 +39,8 @@ HEARTBEAT_INTERVAL = 30.0
 CLAIM_WAIT = 25
 DELIVER_TIMEOUT = 10.0
 BACKOFF_MIN, BACKOFF_MAX = 5.0, 60.0
+CONFIRM_TRIES = 4
+EXIT_CONFIG = 78  # EX_CONFIG: the unit does not restart on it (RestartPreventExitStatus=78)
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 
@@ -188,12 +192,28 @@ class Relay:
             except Exception as e:
                 log(f"wake {wake['wake_id']}: release failed ({type(e).__name__})")
             return False
-        status, _ = self.post(f"/v1/chat/wakes/{wid}/confirm?{qs}", None, 15)
-        if status != 204:
-            log(f"wake {wake['wake_id']}: confirm answered HTTP {status}")
-        else:
-            log(f"wake {wake['wake_id']}: delivered to member {wake.get('member_id')}")
+        self.confirm(wake, f"/v1/chat/wakes/{wid}/confirm?{qs}")
         return True
+
+    def confirm(self, wake: dict[str, Any], path: str) -> None:
+        """Confirm a delivered wake, retrying a few times (a lost confirm means the wake is delivered again).
+        404: the wake is no longer claimed (the member read it with group_read, or left): nothing to confirm."""
+        for n in range(CONFIRM_TRIES):
+            if n:
+                time.sleep(0.5 * 2 ** (n - 1))
+            try:
+                status, _ = self.post(path, None, 15)
+            except Exception as e:
+                log(f"wake {wake['wake_id']}: confirm failed ({type(e).__name__})")
+                continue
+            if status == 204:
+                log(f"wake {wake['wake_id']}: delivered to member {wake.get('member_id')}")
+                return
+            if status == 404:
+                log(f"wake {wake['wake_id']}: delivered; the wake was already closed on the server")
+                return
+            log(f"wake {wake['wake_id']}: confirm answered HTTP {status}")
+        log(f"wake {wake['wake_id']}: delivered but not confirmed after {CONFIRM_TRIES} tries")
 
     # --- loops ------------------------------------------------------------------------------------------
     def _loop(self, name: str, step: Any, interval: float) -> None:
@@ -255,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         base, token = settings(args.url, args.token_file)
     except Fatal as e:
         print(f"chat-relay: {e}", file=sys.stderr)
-        return 1
+        return EXIT_CONFIG
     relay = Relay(base, token, args.codex, args.sock_dir, f"relay-{socket.gethostname()}")
     check_claude_version()
     if args.once:

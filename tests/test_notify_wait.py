@@ -27,6 +27,12 @@ def load():
 nw = load()
 
 
+@pytest.fixture(autouse=True)
+def _cache_home(tmp_path, monkeypatch):
+    """notify-wait notes collected replies under XDG_CACHE_HOME: never in the real home."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+
 def test_script_is_executable():
     assert os.access(SCRIPT, os.X_OK)
 

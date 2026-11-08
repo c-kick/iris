@@ -12,8 +12,9 @@ A reply that arrived while nobody was waiting is kept and collected later with t
 with a "Late reply (received ...) to: <title>" line first. Attachments the service no longer holds are listed as
 "<name>: not available any more".
 
-Long-polls POST /v1/notifications/{id}/replies/claim with one waiter id per run, so a retry after a
-lost response gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error (also: the notification was
+Long-polls POST /v1/notifications/{id}/replies/claim (at least once, also with --timeout 0) with a waiter id
+derived from the reply handle and the last reply printed on this host (kept in ~/.cache/hnl-notify-wait), so a
+retry after a lost response, or a new run after one that was killed before printing, gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error (also: the notification was
 cancelled, missed or never sent, so no reply can come), 2 no reply before --timeout.
 Base URL: --url, else NOTIFY_URL, else the url of the hnl-notify entry in ~/.claude.json without /mcp.
 Token: --token-file, else NOTIFY_TOKEN, else that entry's Authorization header. The token is never printed.
@@ -22,6 +23,8 @@ Token: --token-file, else NOTIFY_TOKEN, else that entry's Authorization header. 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import http.client
 import json
 import os
@@ -119,7 +122,7 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # a 3xx surfaces as HTTPError; the bearer token never follows a redirect
 
 
-_OPENER = urllib.request.build_opener(_NoRedirect)
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)  # never via a proxy
 
 
 def _request(method: str, url: str, token: str, timeout: float, handle: str | None = None) -> tuple[int, bytes]:
@@ -161,13 +164,58 @@ def find_handle(positional: str | None, handle_file: str | None, env: dict[str, 
     return nid, handle
 
 
-def claim_loop(base: str, token: str, nid: str, deadline: float, handle: str | None = None) -> dict[str, Any] | None:
-    waiter = secrets.token_hex(12)
+def state_file(handle: str | None) -> Path | None:
+    """Where this host notes the last reply it printed for a conversation (named by a hash of the handle; holds
+    only a reply id). None without a handle or when the cache folder cannot be used."""
+    if not handle:
+        return None
+    d = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "hnl-notify-wait"
+    try:
+        d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError:
+        return None
+    return d / hashlib.sha256(handle.encode()).hexdigest()[:32]
+
+
+def waiter_id(handle: str | None, state: Path | None) -> str:
+    """With a reply handle: derived from its secret and the last reply this host printed, so a run that was
+    killed after the service handed it a reply gets that reply on the next run, and a run after a printed reply
+    waits for the next one. Without a handle (old plain notification ids) or a usable cache: a random id."""
+    secret = (handle or "").partition(":")[2]
+    if not secret or state is None:
+        return secrets.token_hex(12)
+    try:
+        last = state.read_text().strip()
+    except FileNotFoundError:
+        last = ""
+    except (OSError, UnicodeError):
+        return secrets.token_hex(12)
+    return hmac.new(secret.encode(), b"notify-wait-waiter:" + last.encode(), hashlib.sha256).hexdigest()[:48]
+
+
+def remember(state: Path | None, reply_id: str) -> None:
+    """Note the printed reply, so the next run uses a new waiter id."""
+    if state is None:
+        return
+    try:
+        fd = os.open(state, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "w") as f:
+            f.write(reply_id + "\n")
+    except OSError as e:
+        print(f"notify-wait: could not note the collected reply ({type(e).__name__}); the next run may print it"
+              " again", file=sys.stderr)
+
+
+def claim_loop(base: str, token: str, nid: str, deadline: float, handle: str | None = None,
+               waiter: str | None = None) -> dict[str, Any] | None:
+    waiter = waiter or secrets.token_hex(12)
     failures = 0
+    first = True
     while True:
         left = deadline - time.monotonic()
-        if left <= 0:
+        if left <= 0 and not first:  # always ask once, even with --timeout 0
             return None
+        first = False
         wait = int(max(0, min(50, left)))
         url = (f"{base}/v1/notifications/{urllib.parse.quote(nid, safe='')}/replies/claim"
                f"?wait={wait}&waiter={waiter}")
@@ -288,7 +336,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         base, token = settings(args.url, mcp_entry(), args.token_file)
         nid, handle = find_handle(args.notification_id, args.handle_file, os.environ)
-        reply = claim_loop(base, token, nid, time.monotonic() + args.timeout, handle)
+        state = state_file(handle)
+        reply = claim_loop(base, token, nid, time.monotonic() + args.timeout, handle, waiter_id(handle, state))
         if reply is None:
             print(f"No reply within {_fmt(args.timeout)}; listener stopped. Replies are kept; run notify-wait again later to collect them.")
             return EXIT_TIMEOUT
@@ -299,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
         except Fatal as e:  # the reply is already claimed by this run: print it anyway
             failed = str(e)
         print(json.dumps({**reply, "saved": paths, "unavailable": unavailable(reply)}, indent=2) if args.json else render(reply, paths))
+        remember(state, str(reply["id"]))
         if failed:
             print(f"notify-wait: could not save attachments: {_clean(failed)}", file=sys.stderr)
         return EXIT_REPLY

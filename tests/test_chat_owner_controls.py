@@ -83,7 +83,11 @@ def test_resume_requeues_only_wakes_since_the_pause(tmp_path):
     g = a["group_id"]
     s.chat.post(a["member_handle"], "1")
     first = s.chat.post(b["member_handle"], "2")  # cap pause, skipped
-    s.chat.post_owner(g, "go")  # owner post unpauses; the first skipped wake stays skipped
+    s.chat.post_owner(g, "go")  # owner post unpauses and sends the held wake
+    with s.db.tx() as c:  # a wake held by an earlier pause and never sent again (data from before that fix)
+        c.execute("UPDATE chat_wakes SET state='delivered'")
+        c.execute("UPDATE chat_wakes SET state='skipped', reason='paused' WHERE message_id=?", (first["message_id"],))
+    s.chat.post(a["member_handle"], "3")
     s.chat.pause_owner(g)
     s.chat.resume_owner(g)
     assert states(s, first["message_id"]) == ["skipped"]
@@ -128,6 +132,10 @@ def test_join_leave_system_lines(tmp_path):
     s.chat.leave(a["member_handle"])
     assert sys_lines(s)[-1] == f"Claude {a['member_id']} left the chat"
     clock = s.chat.now()
+    from tests.test_chat_core import AGENT
+    for t in range(0, 1001, 30):  # the relay keeps reporting, without the codex member
+        s.chat.now = lambda t=t: clock + td(seconds=t)
+        s.chat.heartbeat(AGENT, [])
     s.chat.now = lambda: clock + td(seconds=1000)
     s.chat.sweep()
     lines = sys_lines(s)

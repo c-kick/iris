@@ -165,10 +165,12 @@ def build_mcp(get_service: Any) -> FastMCP:
         except Conflict as e:
             raise ToolError(f"{e}: {json.dumps(e.detail, default=str)}") from e
 
-    async def _chat_call(fn: Any, handle: str, *a: Any) -> Any:
-        """Any bad or dead handle gives one fixed message (the value is never echoed)."""
+    async def _chat_call(client: Client, fn: Any, handle: str, *a: Any) -> Any:
+        """Any bad or dead handle gives one fixed message (the value is never echoed). A client with a chat host
+        may only use handles of members on that host."""
         if not isinstance(handle, str) or len(handle) > 200:
             raise ToolError(MEMBER_GONE)
+        await call(svc().chat.check_handle_host, client, handle)
         return await call(fn, handle, *a)  # call() turns MemberGone (a NotFound) into ToolError(MEMBER_GONE)
 
     @mcp.tool()
@@ -377,17 +379,18 @@ def build_mcp(get_service: Any) -> FastMCP:
         in_reply_to: a message id in your group, to answer that message."""
         client = _client(ctx)
         _need(client, Scope.chat)
-        return await _chat_call(svc().chat.post, member_handle, text, in_reply_to)
+        return await _chat_call(client, svc().chat.post, member_handle, text, in_reply_to)
 
     @mcp.tool()
     async def group_read(ctx: Context, member_handle: str, since: str | None = None,
                          all: bool = False) -> dict[str, Any]:  # noqa: A002
         """Read the group chat messages you have not read yet (oldest first; not your own) and the members. Messages
         reach you as they arrive, so without arguments this returns only unread ones. since: a message id; only later
-        ones. all=true: the whole conversation, including your own messages; use it only when you really need it."""
+        ones. all=true: the conversation including your own messages, at most the newest 200 (more=true when older ones
+        exist); use it only when you really need it."""
         client = _client(ctx)
         _need(client, Scope.chat)
-        return await _chat_call(svc().chat.read, member_handle, since, all)
+        return await _chat_call(client, svc().chat.read, member_handle, since, all)
 
     @mcp.tool()
     async def group_history(ctx: Context, member_handle: str, reason: str | None = None) -> dict[str, Any]:
@@ -395,7 +398,7 @@ def build_mcp(get_service: Any) -> FastMCP:
         Returns pending until the owner decides; after an approval, call it again once to read (one approval, one read)."""
         client = _client(ctx)
         _need(client, Scope.chat)
-        return await _chat_call(svc().chat.history, member_handle, reason)
+        return await _chat_call(client, svc().chat.history, member_handle, reason)
 
     @mcp.tool()
     async def group_claim(ctx: Context, member_handle: str, message_id: str) -> dict[str, Any]:
@@ -403,21 +406,21 @@ def build_mcp(get_service: Any) -> FastMCP:
         for the first claimer; otherwise it says who has it and you leave it to them."""
         client = _client(ctx)
         _need(client, Scope.chat)
-        return await _chat_call(svc().chat.claim, member_handle, message_id)
+        return await _chat_call(client, svc().chat.claim, member_handle, message_id)
 
     @mcp.tool()
     async def group_unclaim(ctx: Context, member_handle: str, message_id: str) -> dict[str, Any]:
         """Release a claim you hold, so someone else can take the request."""
         client = _client(ctx)
         _need(client, Scope.chat)
-        return await _chat_call(svc().chat.unclaim, member_handle, message_id)
+        return await _chat_call(client, svc().chat.unclaim, member_handle, message_id)
 
     @mcp.tool()
     async def group_leave(ctx: Context, member_handle: str) -> dict[str, Any]:
         """Leave your group chat."""
         client = _client(ctx)
         _need(client, Scope.chat)
-        await _chat_call(svc().chat.leave, member_handle, "left")
+        await _chat_call(client, svc().chat.leave, member_handle, "left")
         return {"left": True}
 
     @mcp.resource("notify://targets", mime_type="application/json")

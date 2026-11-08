@@ -138,7 +138,9 @@ def test_long_turn_not_stale(svc):
 def test_missing_heartbeat_stale(svc):
     a, b = two(svc)
     svc.chat.post(a["member_handle"], "hello")
-    svc.chat.now.advance(STALE_SECONDS - 1)
+    for _ in range(6):  # the relay reports every 30 s, only a
+        svc.chat.heartbeat(AGENT, [{"member_id": a["member_id"]}])
+        svc.chat.now.advance(30)
     svc.chat.heartbeat(AGENT, [{"member_id": a["member_id"]}])
     svc.chat.now.advance(2)
     svc.chat.sweep()
@@ -147,7 +149,9 @@ def test_missing_heartbeat_stale(svc):
     assert svc.db.one("SELECT state FROM chat_groups WHERE id=?", (a["group_id"],))["state"] == "open"
     w = svc.db.one("SELECT * FROM chat_wakes WHERE member_id=?", (b["member_id"],))
     assert (w["state"], w["reason"]) == ("skipped", "member gone")
-    svc.chat.now.advance(STALE_SECONDS)
+    for _ in range(7):  # the relay goes on reporting, now without a
+        svc.chat.now.advance(30)
+        svc.chat.heartbeat(AGENT, [])
     svc.chat.sweep()
     assert svc.db.one("SELECT state FROM chat_groups WHERE id=?", (a["group_id"],))["state"] == "closed"
 
@@ -180,7 +184,7 @@ def test_heartbeat_lists_members(svc):
     a, b = two(svc)
     out = svc.chat.heartbeat(AGENT, [])
     assert [m["member_id"] for m in out["members"]] == [a["member_id"], b["member_id"]]
-    assert set(out["members"][0]) == {"member_id", "kind", "session_id", "pid", "pid_start"}
+    assert set(out["members"][0]) == {"member_id", "kind", "pid", "pid_start"}  # no session ids (review D.5)
 
 
 def test_release_backoff_and_give_up(svc):
@@ -227,9 +231,13 @@ def test_no_stale_sweep_right_after_start(svc):
     started = svc.chat.started_at
     with svc.db.tx() as c:
         c.execute("UPDATE chat_members SET last_seen_at=?", (iso(started - timedelta(minutes=10)),))
-    svc.chat.now.t = started + timedelta(seconds=60)
+    for t in (0, 60):  # the relay reports, without these members
+        svc.chat.now.t = started + timedelta(seconds=t)
+        svc.chat.heartbeat(AGENT, [])
     svc.chat.sweep()
     assert svc.db.scalar("SELECT COUNT(*) FROM chat_members WHERE left_at IS NULL") == 2
-    svc.chat.now.t = started + timedelta(seconds=STALE_SECONDS + 1)
+    for t in (120, STALE_SECONDS + 1):
+        svc.chat.now.t = started + timedelta(seconds=t)
+        svc.chat.heartbeat(AGENT, [])
     svc.chat.sweep()
     assert svc.db.scalar("SELECT COUNT(*) FROM chat_members WHERE left_at IS NULL") == 0
