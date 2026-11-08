@@ -642,6 +642,8 @@ class ServerIn(BaseModel):
     attachment_url_hosts: list[str] | None = None
     chat_cap: int | None = None
     chat_alert_targets: list[str] | None = None
+    chat_paused_posts: int | None = None
+    chat_resume_wakes: int | None = None
     trusted_proxies: list[str] | None = None
 
 
@@ -669,6 +671,10 @@ async def put_server(body: ServerIn, request: Request, client: Client = Depends(
             s["chat_cap"] = body.chat_cap
         if body.chat_alert_targets is not None:
             s["chat_alert_targets"] = [t.strip() for t in body.chat_alert_targets if t.strip()]
+        if body.chat_paused_posts is not None:
+            s["chat_paused_posts"] = body.chat_paused_posts
+        if body.chat_resume_wakes is not None:
+            s["chat_resume_wakes"] = body.chat_resume_wakes
         if body.trusted_proxies is not None:
             s["trusted_proxies"] = [t.strip() for t in body.trusted_proxies if t.strip()]
     return _commit(request, mutate)
@@ -872,6 +878,7 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
     return {"id": gid, "host": g["host"], "folder": g["folder"], "state": g["state"], "opened_at": g["opened_at"],
             "closed_at": g["closed_at"], "paused": bool(g["paused"]), "members": members, "presences": presences,
             "adhoc": bool(g["adhoc"]), "enabled": svc.chat.folder_enabled(g["host"], g["folder"]),
+            "paused_posts": g["paused_posts"], "paused_posts_effective": svc.chat.paused_limit(g),
             "last_message": ({"author": last["author"], "text_preview": _preview(last["text"]) if show_text else None,
                               "created_at": last["created_at"]} if last else None),
             "unread": unread}
@@ -1134,6 +1141,26 @@ async def chat_rename_member(member_id: str, body: ChatRenameIn, request: Reques
         raise HTTPException(409, str(e)) from e
     except Invalid as e:
         raise HTTPException(422, str(e)) from e
+
+
+class ChatGroupSettingsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    paused_posts: int | None = None  # None: the server setting chat_paused_posts
+
+
+@router.put("/api/chats/{group_id}/settings")
+async def chat_group_settings(group_id: str, body: ChatGroupSettingsIn, request: Request,
+                              client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    _chat_group(svc, group_id)
+    try:
+        return svc.chat.set_paused_posts(group_id, body.paused_posts)
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
 
 
 @router.post("/api/chats/{group_id}/watching", status_code=204)

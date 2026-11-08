@@ -315,12 +315,13 @@ class Database:
         self._add_chat_history()
         self._add_missing_columns({"chat_wakes": {"attempts": "INTEGER NOT NULL DEFAULT 0", "retry_after": "TEXT"},
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT",
-                                                  "adhoc": "INTEGER NOT NULL DEFAULT 0"},
+                                                  "adhoc": "INTEGER NOT NULL DEFAULT 0", "paused_posts": "INTEGER"},
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT",
                                                     "kind": "TEXT NOT NULL DEFAULT 'request'"},  # 0.14.0: request, fyi, all
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
                                                    "name": "TEXT", "status": "TEXT", "status_at": "TEXT",
-                                                   "active_at": "TEXT", "marker": "TEXT", "intent": "TEXT"},  # 0.14.0
+                                                   "active_at": "TEXT", "marker": "TEXT", "intent": "TEXT",
+                                                   "paused_posts_used": "INTEGER NOT NULL DEFAULT 0"},  # 0.14.0
                                   "subscriptions": {"failing_since": "TEXT"},
                                   # 0.13.2: bumped by every claim, never reset (a retry resets attempts)
                                   "deliveries": {"lease_no": "INTEGER NOT NULL DEFAULT 0"},

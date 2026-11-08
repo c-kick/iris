@@ -63,6 +63,8 @@ class ServerConfig(_Strict):
     attachment_retention_days: int = Field(default=7, ge=1, le=90)
     chat_cap: int = Field(default=10, ge=2, le=100, description="Agent messages in a row before a group chat pauses")
     chat_alert_targets: list[str] = Field(default_factory=list, description="Who is pushed when a group chat pauses")
+    chat_paused_posts: int = Field(default=5, ge=0, le=50, description="Messages each agent may post while its group is paused (0 = none)")
+    chat_resume_wakes: int = Field(default=20, ge=1, le=200, description="Held messages each agent gets one by one on resume; older ones are folded into one notice")
     trusted_proxies: list[str] = Field(default_factory=list, description="Reverse proxy addresses/CIDRs whose X-Forwarded-For and X-Forwarded-Proto are believed; empty = none")
 
     @field_validator("trusted_proxies")

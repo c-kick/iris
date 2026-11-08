@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from . import __version__, arr
-from .core import Client, Conflict, Forbidden, Gone, Invalid, NotFound, NotifyService
+from .core import Client, Conflict, Forbidden, Gone, Invalid, NotFound, NotifyService, TooMany
 from .models import NotificationIn, ScheduleUpdate, Scope, SubscriptionIn, event_matches
 
 log = logging.getLogger("notify.api")
@@ -63,6 +63,8 @@ def _errors(fn):
             raise HTTPException(403, str(e)) from e
         except Gone as e:
             raise HTTPException(410, str(e)) from e
+        except TooMany as e:
+            raise HTTPException(429, str(e)) from e
         except Invalid as e:
             raise HTTPException(422, str(e)) from e
         except Conflict as e:

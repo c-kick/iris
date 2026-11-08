@@ -11,7 +11,7 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from .attachments import MCP_INLINE_MAX
 from .chat import MEMBER_GONE
-from .core import Client, Conflict, Forbidden, Gone, Invalid, NotFound, NotifyService
+from .core import Client, Conflict, Forbidden, Gone, Invalid, NotFound, NotifyService, TooMany
 from .models import NotificationIn, ScheduleUpdate, Scope
 from .schedule import local_zone
 
@@ -166,7 +166,7 @@ def build_mcp(get_service: Any) -> FastMCP:
             return res
         except NotFound as e:
             raise ToolError(str(e)) from e
-        except (Forbidden, Gone) as e:
+        except (Forbidden, Gone, TooMany) as e:
             raise ToolError(str(e)) from e
         except Invalid as e:
             raise ToolError(f"invalid request: {e}") from e

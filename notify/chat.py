@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from . import chat_names
 from .auth import hash_token
-from .core import SYSTEM_CLIENT, Client, Conflict, Forbidden, Invalid, NotFound, external_base
+from .core import SYSTEM_CLIENT, Client, Conflict, Forbidden, Invalid, NotFound, TooMany, external_base
 from .db import dumps, iso, new_id, now_iso, parse_iso, utcnow
 from .handles import handle_matches, new_handle, parse_handle
 from .models import ActionIn, NotificationIn
@@ -899,6 +899,13 @@ class Chat:
             if kind != "request":
                 named = []
             paused = bool(g["paused"])
+            if not owner and paused:  # a paused group: each agent may post a few more, then waits for the owner
+                limit = self.paused_limit(g)
+                used = c.execute("SELECT paused_posts_used FROM chat_members WHERE id=?", (member_id,)).fetchone()[0]
+                if (used or 0) >= limit:
+                    raise TooMany(f"group paused: wait for the owner (limit {limit} posts while paused)")
+                c.execute("UPDATE chat_members SET paused_posts_used=COALESCE(paused_posts_used, 0)+1 WHERE id=?",
+                          (member_id,))
             streak = g["agent_streak"]
             watching = bool(g["owner_watch_until"]) and g["owner_watch_until"] > now
             if owner:
@@ -997,15 +1004,52 @@ class Chat:
             self._repend_held(c, g)
         self.svc._after_commit()
 
-    @staticmethod
-    def _repend_held(c: sqlite3.Connection, g: sqlite3.Row) -> None:
-        """Unpause: the wakes held back since paused_at (skipped, reason 'paused') are queued again."""
-        if g["paused_at"]:
-            c.execute("UPDATE chat_wakes SET state='pending', finished_at=NULL, retry_after=NULL"
-                      " WHERE state='skipped' AND reason='paused' AND member_id IN"
-                      " (SELECT id FROM chat_members WHERE group_id=? AND left_at IS NULL) AND message_id IN"
-                      " (SELECT id FROM chat_messages WHERE group_id=? AND created_at >= ?)",
-                      (g["id"], g["id"], g["paused_at"]))
+    def _repend_held(self, c: sqlite3.Connection, g: sqlite3.Row) -> None:
+        """Unpause: the wakes held back since paused_at (skipped, reason 'paused') are queued again: per member the
+        newest chat_resume_wakes of them; older ones stay skipped ('paused, folded', still unread) and the member
+        gets one notice about them first. Every member may post its full allowance again at the next pause."""
+        c.execute("UPDATE chat_members SET paused_posts_used=0 WHERE group_id=?", (g["id"],))
+        if not g["paused_at"]:
+            return
+        keep = self.svc.config.server.chat_resume_wakes
+        for m in c.execute("SELECT id, kind, name FROM chat_members WHERE group_id=? AND left_at IS NULL"
+                           " ORDER BY joined_at, rowid", (g["id"],)).fetchall():
+            held = c.execute("SELECT w.id, w.message_id, x.rowid AS rid FROM chat_wakes w"
+                             " JOIN chat_messages x ON x.id=w.message_id WHERE w.member_id=? AND w.state='skipped'"
+                             " AND w.reason='paused' AND x.group_id=? AND x.created_at >= ? ORDER BY x.rowid",
+                             (m["id"], g["id"], g["paused_at"])).fetchall()
+            if len(held) <= keep:
+                for w in held:
+                    c.execute("UPDATE chat_wakes SET state='pending', finished_at=NULL, retry_after=NULL WHERE id=?",
+                              (w["id"],))
+                continue
+            folded, recent = held[:-keep], held[-keep:]
+            for w in folded:
+                c.execute("UPDATE chat_wakes SET reason='paused, folded' WHERE id=?", (w["id"],))
+            before = c.execute("SELECT id FROM chat_messages WHERE group_id=? AND rowid < ? ORDER BY rowid DESC"
+                               " LIMIT 1", (g["id"], folded[0]["rid"])).fetchone()
+            self._system_wake(c, g["id"], m["id"],
+                              f"{who(m['kind'], m['name'], m['id'])}: while the group was paused, {len(folded)}"
+                              " earlier messages arrived that are not delivered one by one. They count as unread:"
+                              " read them with group_read"
+                              + (f" (or group_read since={before['id']})" if before else "") + " if you need them.")
+            for w in recent:  # queued again after the notice, so the notice arrives first
+                c.execute("DELETE FROM chat_wakes WHERE id=?", (w["id"],))
+                c.execute("INSERT INTO chat_wakes(id, message_id, member_id, state) VALUES (?, ?, ?, 'pending')",
+                          (new_id("wak"), w["message_id"], m["id"]))
+
+    def paused_limit(self, g: sqlite3.Row) -> int:
+        return g["paused_posts"] if g["paused_posts"] is not None else self.svc.config.server.chat_paused_posts
+
+    def set_paused_posts(self, group_id: str, limit: int | None) -> dict[str, Any]:
+        """The owner's per-group override of chat_paused_posts (None: the server setting)."""
+        if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or not 0 <= limit <= 50):
+            raise Invalid("the limit is a whole number from 0 to 50, or empty for the setting")
+        with self.db.tx() as c:
+            self._open_group(c, group_id)
+            c.execute("UPDATE chat_groups SET paused_posts=? WHERE id=?", (limit, group_id))
+            g = c.execute("SELECT * FROM chat_groups WHERE id=?", (group_id,)).fetchone()
+        return {"paused_posts": limit, "effective": self.paused_limit(g)}
 
     def _push_pause(self, group_id: str, host: str, folder: str, streak: int, msg_id: str) -> None:
         targets = list(self.svc.config.server.chat_alert_targets)

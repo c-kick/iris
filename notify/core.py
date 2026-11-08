@@ -57,6 +57,10 @@ class Gone(Exception):
     """The thing can never happen any more (a reply to a conversation that will never be sent)."""
 
 
+class TooMany(Exception):
+    """A limit was reached; trying again later (or after the owner acts) may work. HTTP 429."""
+
+
 def external_base(cfg: Any) -> str | None:
     """This service's own base URL (server.external_url, else NOTIFY_EXTERNAL_URL), no trailing slash."""
     return (cfg.server.external_url or os.environ.get("NOTIFY_EXTERNAL_URL") or "").rstrip("/") or None

@@ -784,6 +784,10 @@ const VIEWS = {
                         help: "One per line: a host, host:port or network, for example ha.lan:8123. Empty: apps can only attach files directly, not by URL." })}
           ${fieldHtml({ name: "chat_cap", label: "Group chat cap", kind: "int", value: s.chat_cap ?? 10,
                         help: "Agent messages in a row before a group pauses." })}
+          ${fieldHtml({ name: "chat_paused_posts", label: "Messages while paused", kind: "int", value: s.chat_paused_posts ?? 5,
+                        help: "How many messages each agent may still post while its group is paused (0–50; 0: none). A group can override it." })}
+          ${fieldHtml({ name: "chat_resume_wakes", label: "Messages delivered on resume", kind: "int", value: s.chat_resume_wakes ?? 20,
+                        help: "On resume each agent gets at most this many held messages one by one (1–200); older ones arrive as one notice and stay unread." })}
           ${fieldHtml({ name: "chat_alert_targets", label: "Group chat alerts", kind: "checks", value: s.chat_alert_targets || [],
                         options: [...targetOptions(), ...Object.keys(cfg().channels).map((n) => [`channel:${n}`, `${n} (channel)`])],
                         help: "Who is pushed when a group pauses, e.g. user:alex. Nothing ticked: nobody." })}
@@ -819,6 +823,7 @@ const VIEWS = {
                                 { name: "external_url", kind: "url" }, { name: "public_base_url", kind: "url" },
                                 { name: "attachment_retention_days", kind: "int" }, { name: "attachment_url_hosts", kind: "textarea" },
                                 { name: "chat_cap", kind: "int" }, { name: "chat_alert_targets", kind: "checks" },
+                                { name: "chat_paused_posts", kind: "int" }, { name: "chat_resume_wakes", kind: "int" },
                                 { name: "trusted_proxies", kind: "textarea" }]);
       v.attachment_url_hosts = v.attachment_url_hosts.split("\n").map((x) => x.trim()).filter(Boolean);
       v.trusted_proxies = v.trusted_proxies.split("\n").map((x) => x.trim()).filter(Boolean);
@@ -2077,6 +2082,7 @@ async function chatOpen(el, key, keep = false) {
     <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Folders</button>
       <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span><span class="chat-mini" id="chat-mini"></span>
         <span class="hint chat-watch" id="chat-watch" hidden>You're watching: no auto-pause</span></div>
+      <button type="button" class="btn quiet" id="chat-limitbtn" hidden title="How many messages each agent may post while this group is paused"></button>
       <button type="button" class="btn" id="chat-pausebtn" hidden></button></div>
     <div class="chat-paused" id="chat-paused" hidden></div>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
@@ -2098,6 +2104,16 @@ async function chatOpen(el, key, keep = false) {
     finally { btn.disabled = false; }
   };
   pane.querySelector("#chat-back").onclick = () => { chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
+  pane.querySelector("#chat-limitbtn").onclick = () => {
+    const cur = chats.group || {};
+    openForm({
+      title: "Messages while paused",
+      intro: `How many messages each agent may still post while this group is paused. Empty: the setting (${esc(String(cur.paused_posts_effective ?? 5))} now, unless overridden here).`,
+      fields: [{ name: "paused_posts", label: "Per agent", kind: "int", value: cur.paused_posts ?? "", help: "0–50; 0: none. Beyond it an agent is told to wait for you." }],
+      submit: "Save",
+      onSubmit: async (v) => { await api("PUT", `/chats/${encodeURIComponent(chats.currentId)}/settings`, { paused_posts: v.paused_posts }); await chatTick(el); },
+    });
+  };
   const box = pane.querySelector("#chat-msgs");
   const earlier = info.groups.slice(0, -1); // oldest first, above the current group
   box.innerHTML = earlier.map(chatEarlierHtml).join("") + (data.messages.map((m) => chatMessageHtml(m, g.state === "open")).join("") || `<div class="empty">No messages yet.</div>`);
@@ -2184,13 +2200,17 @@ async function chatToggleEarlier(bar) {
 }
 
 function chatHeader(el, g, f) {
+  chats.group = g;
+  const lb = el.querySelector("#chat-limitbtn");
+  lb.hidden = g.state !== "open";
+  lb.textContent = `While paused: ${g.paused_posts_effective ?? "?"} each${g.paused_posts == null ? "" : " (this chat)"}`;
   el.querySelector("#chat-title").textContent = `${g.folder}`;
   // open: the members are listed under the thread (or as dots in the header on a phone); closed: when it closed
   el.querySelector("#chat-sub").textContent = g.state === "open" ? ` ${g.host}` : ` ${g.host} · ${chatMembersText(g)}`;
   el.querySelector("#chat-mini").innerHTML = chatMembersMini(g);
   const p = el.querySelector("#chat-paused");
   p.hidden = !(g.paused && g.state === "open");
-  p.textContent = "Paused. Post here or press Resume to let the agents continue.";
+  p.textContent = `Paused. Each agent may post ${g.paused_posts_effective ?? "a few"} more message${g.paused_posts_effective === 1 ? "" : "s"}; post here or press Resume to let them continue.`;
   const pb = el.querySelector("#chat-pausebtn");
   pb.hidden = g.state !== "open";
   pb.dataset.act = g.paused ? "resume" : "pause";
