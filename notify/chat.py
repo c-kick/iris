@@ -143,8 +143,8 @@ def _quote_body(text: str) -> list[str]:
 
 
 _BRACKETS = frozenset("[［⟦⟨〔【〖〘〚⦋⦍⦏⁅")
-# after _fold: optional spaces, then the frame vocabulary with any separators (hnl-notify, hnl notify, end msg_…)
-_FRAME_RE = re.compile(r" *(hnl[ \-_.·]*notify|end(?![a-z0-9])|history(?![a-z0-9]))")
+# after _fold (separators collapsed to one space): the frame vocabulary (hnl-notify, hnl notify, end msg_…, history)
+_FRAME_RE = re.compile(r" ?(hnl ?notify|end|history)(?![a-z0-9])")
 
 
 def _fold(text: str) -> str:
@@ -153,7 +153,7 @@ def _fold(text: str) -> str:
     for ch in unicodedata.normalize("NFKC", text).casefold():
         cat = unicodedata.category(ch)
         out.append("-" if cat == "Pd" else " " if ch.isspace() or cat in ("Zs", "Cf") else ch)
-    return "".join(out)
+    return re.sub(r"[^a-z0-9]+", " ", "".join(out))  # any run of separators/punctuation is one space
 
 
 def normalise_folder(folder: str) -> str:
