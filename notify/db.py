@@ -387,7 +387,12 @@ class Database:
                 self.conn.execute("ROLLBACK")
                 raise
             else:
-                self.conn.execute("COMMIT")
+                try:
+                    self.conn.execute("COMMIT")
+                except BaseException:
+                    if self.conn.in_transaction:  # e.g. disk full: never leave the shared connection mid-transaction
+                        self.conn.execute("ROLLBACK")
+                    raise
 
     def query(self, sql: str, params: Any = ()) -> list[sqlite3.Row]:
         with self._lock:

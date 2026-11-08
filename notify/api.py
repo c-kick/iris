@@ -5,7 +5,10 @@ from __future__ import annotations
 import functools
 import hmac
 import json
+import logging
 import re
+import time
+import weakref
 from typing import Any, AsyncIterator
 from urllib.parse import parse_qsl, quote
 
@@ -15,6 +18,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from . import __version__, arr
 from .core import Client, Conflict, Forbidden, Gone, Invalid, NotFound, NotifyService
 from .models import NotificationIn, ScheduleUpdate, Scope, SubscriptionIn, event_matches
+
+log = logging.getLogger("notify.api")
 
 router = APIRouter()
 
@@ -197,9 +202,13 @@ async def whoami(client: Client = Depends(require(Scope.send))) -> dict[str, Any
 async def events(request: Request, after: int = 0, notification_id: str | None = None, types: str | None = None,
                  source: str | None = None, limit: int = Query(default=100, ge=1, le=500),
                  client: Client = Depends(require(Scope.read))) -> dict[str, Any]:
-    items = service(request).events_after(client, after, notification_id=notification_id,
-                                           types=types.split(",") if types else None, source=source, limit=limit)
-    return {"items": items, "cursor": items[-1]["id"] if items else after}
+    items, cursor = service(request).events_page(client, after, notification_id=notification_id,
+                                                 types=types.split(",") if types else None, source=source, limit=limit)
+    return {"items": items, "cursor": cursor}
+
+
+MAX_STREAMS_PER_CLIENT = 5
+_streams: dict[str, int] = {}  # open SSE streams per client (one process, so in memory is exact)
 
 
 @router.get("/v1/events/stream", tags=["events"])
@@ -215,8 +224,25 @@ async def event_stream(request: Request, after: int | None = None, notification_
     else:
         cursor = svc.last_event_id()
     type_list = types.split(",") if types else None
+    if _streams.get(client.id, 0) >= MAX_STREAMS_PER_CLIENT:
+        raise HTTPException(429, f"at most {MAX_STREAMS_PER_CLIENT} event streams per client; close one first")
+    _streams[client.id] = _streams.get(client.id, 0) + 1
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if not released:
+            released = True
+            _streams[client.id] = max(0, _streams.get(client.id, 1) - 1)
 
     async def gen() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in _stream():
+                yield chunk
+        finally:
+            release()
+
+    async def _stream() -> AsyncIterator[bytes]:
         nonlocal cursor
         yield b"retry: 3000\n\n"
         idle = 0.0
@@ -237,7 +263,9 @@ async def event_stream(request: Request, after: int | None = None, notification_
                 idle = 0.0
                 yield b": keepalive\n\n"
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
+    body = gen()
+    weakref.finalize(body, release)  # a stream the server never started iterating is released too
+    return StreamingResponse(body, media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
@@ -285,6 +313,8 @@ async def ingest_arr(request: Request, response: Response,
                 {**body.model_dump(), "kinds": [k.strip() for k in kinds.split(",") if k.strip()]})
     except ValueError as e:  # includes pydantic ValidationError (e.g. no targets)
         raise HTTPException(422, str(e)) from e
+    except (TypeError, AttributeError, KeyError) as e:  # a field of an unexpected type in the app's payload
+        raise HTTPException(422, f"unexpected webhook payload: {type(e).__name__}") from e
     out, created = await service(request).submit_async(client, body)
     if not created:
         response.status_code = 200
@@ -300,11 +330,17 @@ async def ingest_arr(request: Request, response: Response,
 async def provider_callback(provider: str, secret: str, request: Request) -> Response:
     svc = service(request)
     expected = svc.config.server.callback_secret
-    if not expected or not hmac.compare_digest(secret, expected) or provider not in svc.providers:
+    if (not expected or not hmac.compare_digest(secret.encode(), expected.encode())
+            or provider not in svc.providers):
         return Response(status_code=404)
     raw = (await request.body()).decode(errors="replace")
     ctype = request.headers.get("content-type", "")
-    form = json.loads(raw) if "json" in ctype else dict(parse_qsl(raw))
+    try:
+        form = json.loads(raw) if "json" in ctype else dict(parse_qsl(raw))
+    except ValueError:
+        return Response(status_code=400)
+    if not isinstance(form, dict):
+        return Response(status_code=400)
     parsed = svc.providers[provider].parse_callback({k: str(v) for k, v in form.items()})
     if parsed is None:
         return Response(status_code=204)
@@ -322,6 +358,9 @@ async def live() -> dict[str, Any]:
     return {"status": "ok", "version": __version__}
 
 
+_last_write_probe = float("-inf")
+
+
 @router.get("/health/ready", tags=["ops"])
 async def ready(request: Request) -> JSONResponse:
     svc = service(request)
@@ -329,11 +368,15 @@ async def ready(request: Request) -> JSONResponse:
     checks: dict[str, Any] = {}
     try:
         svc.db.scalar("SELECT 1")
-        with svc.db.tx() as c:
-            c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('ready_probe', datetime('now'))")
+        global _last_write_probe
+        if time.monotonic() - _last_write_probe >= 5.0:  # unauthenticated: at most one probe write per 5 s
+            with svc.db.tx() as c:
+                c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('ready_probe', datetime('now'))")
+            _last_write_probe = time.monotonic()
         checks["database"] = "ok"
-    except Exception as e:
-        checks["database"] = f"error: {e}"
+    except Exception:
+        log.exception("readiness: database check failed")
+        checks["database"] = "error (see the service log)"
     age = workers.heartbeat_age("dispatcher") if workers else None
     checks["dispatcher"] = "ok" if age is not None and age < 30 else f"stale ({age})"
     problems = {n: p.config_problems() for n, p in svc.providers.items() if p.config_problems()}

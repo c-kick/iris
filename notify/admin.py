@@ -113,8 +113,11 @@ def _check_browser_mutation(request: Request) -> None:
         raise HTTPException(403, "cross-origin request refused")
 
 
-def _set_cookie(response: Response, sid: str) -> None:
-    response.set_cookie(COOKIE, sid, max_age=14 * 86400, httponly=True, samesite="strict", path="/admin")
+def _set_cookie(response: Response, sid: str, request: Request | None = None) -> None:
+    https = request is not None and (request.url.scheme == "https"
+                                     or request.headers.get("x-forwarded-proto", "").lower() == "https")
+    response.set_cookie(COOKIE, sid, max_age=14 * 86400, httponly=True, samesite="strict", path="/admin",
+                        secure=https)  # a session made over https is never sent over plain http
 
 
 # ------------------------------------------------------------------ page & session
@@ -147,12 +150,12 @@ async def setup(body: SetupIn, request: Request, response: Response) -> dict[str
     key = f"setup:{_ip(request)}"
     throttle = _throttle(request)
     throttle.check(key)
-    if not store.check_setup_code(body.code):
+    if not await asyncio.to_thread(store.check_setup_code, body.code):
         throttle.fail(key)
         raise HTTPException(403, "setup code is not valid; copy it from the container log")
     throttle.ok(key)
-    store.set_password(body.password)
-    _set_cookie(response, store.new_session())
+    await asyncio.to_thread(store.set_password, body.password)  # scrypt: off the event loop
+    _set_cookie(response, store.new_session(), request)
     return {"ok": True}
 
 
@@ -167,16 +170,17 @@ async def login(body: LoginIn, request: Request, response: Response) -> dict[str
     key = f"login:{_ip(request)}"
     throttle = _throttle(request)
     throttle.check(key)
-    if not store.check_password(body.password):
+    if not await asyncio.to_thread(store.check_password, body.password):
         throttle.fail(key)
         raise HTTPException(403, "wrong password")
     throttle.ok(key)
-    _set_cookie(response, store.new_session())
+    _set_cookie(response, store.new_session(), request)
     return {"ok": True}
 
 
 @router.post("/api/logout")
 async def logout(request: Request, response: Response) -> dict[str, Any]:
+    _check_browser_mutation(request)  # no forced sign-out from another page on the same site
     _store(request).end_session(request.cookies.get(COOKIE))
     response.delete_cookie(COOKIE, path="/admin")
     return {"ok": True}
@@ -189,12 +193,18 @@ class PasswordIn(BaseModel):
 
 @router.post("/api/password")
 async def change_password(body: PasswordIn, request: Request, response: Response,
-                          _: Client = Depends(admin)) -> dict[str, Any]:
+                          client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)  # a bearer token must not guess the password, nor turn itself into a session
     store = _store(request)
-    if not store.check_password(body.current):
+    key = f"password:{_ip(request)}"
+    throttle = _throttle(request)
+    throttle.check(key)
+    if not await asyncio.to_thread(store.check_password, body.current):
+        throttle.fail(key)
         raise HTTPException(403, "current password is wrong")
-    store.set_password(body.new)  # signs out every session
-    _set_cookie(response, store.new_session())
+    throttle.ok(key)
+    await asyncio.to_thread(store.set_password, body.new)  # signs out every session
+    _set_cookie(response, store.new_session(), request)
     return {"ok": True}
 
 
@@ -262,8 +272,26 @@ class ProviderIn(BaseModel):
     settings: dict[str, Any] = Field(default_factory=dict)
 
 
+_IDENTITY_HINTS = ("host", "port", "user", "security", "verify_tls", "api_base", "url")
+
+
+def _identity_fields(secret_key: str, schema: dict[str, Any]) -> list[str]:
+    """The settings that say *where* a secret is sent: change one and the stored secret is not carried over."""
+    imap = secret_key.startswith("imap_")
+    return [k for k, spec in schema.items() if spec.get("kind") != "secret"
+            and any(h in k for h in _IDENTITY_HINTS) and (k == "verify_tls" or k.startswith("imap_") == imap)]
+
+
+def _norm(v: Any, spec: dict[str, Any]) -> str:
+    """Compare as stored: an empty field means the setting's default."""
+    if v in (None, ""):
+        v = spec.get("default")
+    return "" if v is None else str(v).strip().lower()
+
+
 @router.put("/api/providers/{name}")
-async def put_provider(name: str, body: ProviderIn, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
+async def put_provider(name: str, body: ProviderIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)  # provider settings hold the secrets that unlock the mailbox: signed-in page only
     cls = REGISTRY.get(body.type)
     if cls is None:
         raise HTTPException(422, f"unknown provider type {body.type!r}")
@@ -277,7 +305,12 @@ async def put_provider(name: str, body: ProviderIn, request: Request, _: Client 
         for key, spec in cls.settings_schema.items():
             v = body.settings.get(key)
             kind = spec.get("kind")
-            if kind == "secret" and not v and old.get("type") == body.type:
+            if kind == "secret" and not v and old.get("type") == body.type and old.get(key):
+                moved = [k for k in _identity_fields(key, cls.settings_schema)
+                         if _norm(body.settings.get(k), cls.settings_schema[k]) != _norm(old.get(k), cls.settings_schema[k])]
+                if moved:  # never send a stored password to a server it was not entered for
+                    raise ConfigError(f"{spec['label']}: enter it again when changing "
+                                      f"{', '.join(cls.settings_schema[k]['label'] for k in moved)}")
                 v = old.get(key)  # blank secret field = keep the stored value
             if kind == "int" and v not in (None, ""):
                 try:
@@ -309,8 +342,9 @@ class EnrollmentIn(BaseModel):
 
 @router.post("/api/providers/{name}/enrollments")
 async def create_enrollment(name: str, body: EnrollmentIn, request: Request,
-                            _: Client = Depends(admin)) -> dict[str, Any]:
+                            client: Client = Depends(admin)) -> dict[str, Any]:
     """A single-use link that enrolls one browser as a device of `owner`."""
+    require_session(client)  # a new device receives decision links: signed-in page only
     cfg = request.app.state.config
     if cfg.providers.get(name) is None or cfg.providers[name].type != "webpush":
         raise HTTPException(404, f"{name} is not a browser push provider")
@@ -328,7 +362,8 @@ async def create_enrollment(name: str, body: EnrollmentIn, request: Request,
 
 
 @router.post("/api/providers/{name}/test")
-async def test_provider(name: str, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
+async def test_provider(name: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
     svc = _svc(request)
     provider = svc.providers.get(name)
     if provider is None:
@@ -338,7 +373,9 @@ async def test_provider(name: str, request: Request, _: Client = Depends(admin))
 
 
 @router.delete("/api/providers/{name}")
-async def delete_provider(name: str, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
+async def delete_provider(name: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+
     def mutate(data: dict[str, Any]) -> None:
         used = [d for d, dev in data["devices"].items() if dev["provider"] == name]
         if used:
@@ -557,6 +594,9 @@ async def delete_client(name: str, request: Request, _: Client = Depends(admin))
     cancelled = 0
     with svc.db.tx() as c:
         stamp = now_iso()
+        # its standing webhooks stop too: they would otherwise fire for a later client of the same name
+        c.execute("UPDATE subscriptions SET active=0, last_error=? WHERE client_id=? AND active=1",
+                  ("the API client was deleted", name))
         for n in c.execute("SELECT * FROM notifications WHERE client_id=? AND status='scheduled'", (name,)).fetchall():
             c.execute("UPDATE notifications SET status='cancelled', released_at=?, updated_at=? WHERE id=?",
                       (stamp, stamp, n["id"]))
@@ -685,14 +725,14 @@ async def send_test(body: TestIn, request: Request, client: Client = Depends(adm
 @router.get("/api/activity")
 async def activity(request: Request, limit: int = 25, client: Client = Depends(admin)) -> dict[str, Any]:
     svc = _svc(request)
-    admin_view = Client(client.id, frozenset({Scope.admin}))
+    admin_view = Client(client.id, frozenset({Scope.admin}), via_session=client.via_session)
     return {"notifications": svc.list(admin_view, limit=max(1, min(limit, 100))),
             "attention": svc.attention(admin_view), "timezone": local_zone().key}
 
 
 @router.get("/api/scheduled")
 async def scheduled(request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
-    admin_view = Client(client.id, frozenset({Scope.admin}))
+    admin_view = Client(client.id, frozenset({Scope.admin}), via_session=client.via_session)
     return {"items": _svc(request).list(admin_view, status="scheduled"), "timezone": local_zone().key}
 
 
@@ -759,7 +799,7 @@ async def timeline_view(request: Request, limit: int = 25, before: str | None = 
                         find: str | None = None, client: Client = Depends(admin)) -> dict[str, Any]:
     """Everything sent and received, newest first. `find` is one entry by exact id and ignores the rest."""
     svc = _svc(request)
-    admin_view = Client(client.id, frozenset({Scope.admin}))
+    admin_view = Client(client.id, frozenset({Scope.admin}), via_session=client.via_session)
     try:
         out = (timeline.find(svc, admin_view, find) if find is not None else
                timeline.page(svc, admin_view, limit=limit, before=before, after=after, direction=direction,

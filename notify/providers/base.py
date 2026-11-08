@@ -112,7 +112,7 @@ class Provider(ABC):
     # longest a single send may take; the dispatch lease is extended to cover it
     send_deadline_seconds: float | None = None
     # which stored attachment bytes a send loads: every one, or only the first image/* up to image_max_bytes
-    attachment_data: ClassVar[Literal["all", "first_image"]] = "all"
+    attachment_data: ClassVar[Literal["all", "first_image", "none"]] = "all"  # bytes the adapter needs
     image_max_bytes: ClassVar[int | None] = None
     # settings/address keys that are secrets: encrypted at rest, never returned by the admin API
     secret_settings: frozenset[str] = frozenset()

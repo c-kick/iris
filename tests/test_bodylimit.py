@@ -100,7 +100,8 @@ def test_large_body_needs_authorization_before_reading():
         await echo(scope, receive, send)
 
     async def run(headers: dict[str, str], content: Any) -> httpx.Response:
-        wrapped = BodyLimit(app, default=100, routes={("POST", "/v1/notifications"): 1000}, large=500)
+        wrapped = BodyLimit(app, default=100, routes={("POST", "/v1/notifications"): 1000}, large=500,
+                            unauthenticated_max=500)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=wrapped), base_url="http://t") as c:
             return await c.post("/v1/notifications", content=content, headers=headers)
     r = asyncio.run(run({}, b"a" * 600))
@@ -156,7 +157,8 @@ def test_large_body_credential_is_validated_before_reading():
         await echo(scope, receive, send)
 
     async def run(token: str) -> httpx.Response:
-        wrapped = BodyLimit(app, default=100, routes={("POST", "/x"): 1000}, large=500, get_auth=FakeAuth)
+        wrapped = BodyLimit(app, default=100, routes={("POST", "/x"): 1000}, large=500, get_auth=FakeAuth,
+                            unauthenticated_max=500)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=wrapped), base_url="http://t") as c:
             return await c.post("/x", content=b"a" * 600, headers={"Authorization": f"Bearer {token}"})
     r = asyncio.run(run("bogus"))

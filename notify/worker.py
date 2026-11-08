@@ -14,6 +14,7 @@ import httpx
 from .core import Client, Conflict, NotifyService
 from .db import dumps, now_iso
 from .device_check import check_devices, record_check
+from . import attachments
 from .providers.base import ProviderError, SendResult
 from .providers.email_inbound import mask_secret, poll_once
 
@@ -42,6 +43,17 @@ def reconcile_inbound(providers: dict[str, Any], status: dict[str, Any], failure
     for d in (status, failures, next_at, prints):
         for n in [n for n in d if n not in live]:
             del d[n]
+
+
+async def webhook_address_ok(url: str, resolve: Any) -> bool:
+    """Webhooks may go to any LAN host, but never to loopback, link-local or unspecified addresses (the
+    container itself, cloud metadata): the same deny list as attachment URLs."""
+    try:
+        host, _ = attachments._host_port(url)
+        ips = [host] if attachments._ip(host) is not None else list(await resolve(host))
+    except (attachments.AttachmentError, OSError):
+        return False
+    return bool(ips) and not any(attachments._denied(attachments._ip(x)) for x in ips)
 
 
 class Workers:
@@ -126,15 +138,19 @@ class Workers:
             except Exception:  # never skip claim_due
                 log.exception("report sweep failed")
             svc.recover_leases()
+            svc.fail_orphaned()
+            claimed_any = False
             for name, provider in svc.providers.items():
                 free = provider.max_concurrency - self._busy.setdefault(name, 0)
                 for d in svc.claim_due(name, free):
+                    claimed_any = True
                     self._busy[name] += 1
                     task = asyncio.create_task(self._send_one(d))
                     self._inflight.add(task)
                     task.add_done_callback(self._inflight.discard)
             nxt = svc.next_due_in()
-            timeout = 1.0 if nxt is None else min(1.0, max(0.05, nxt))
+            # nothing claimable now (e.g. every provider busy): a finishing send sets `wake`, so don't spin
+            timeout = 1.0 if nxt is None else min(1.0, max(0.05 if claimed_any else 1.0, nxt))
             try:
                 await asyncio.wait_for(svc.wake.wait(), timeout)
             except TimeoutError:
@@ -156,18 +172,19 @@ class Workers:
             else:
                 msg = svc.message_for(n, d["id"], d["provider"], with_data=True, device=d["device"])
                 try:
-                    result = await provider.send(msg, dev.address)
+                    async with asyncio.timeout(svc.send_timeout(d["provider"])):  # always inside the lease
+                        result = await provider.send(msg, dev.address)
+                except TimeoutError:
+                    result = SendResult(outcome="retryable",
+                                        error="send timed out; outcome unknown, may be duplicated")
                 except Exception as e:  # adapter bug: never lose the delivery
                     log.exception("provider send crashed", extra={"delivery_id": d["id"]})
                     result = SendResult(outcome="retryable", error=f"adapter error: {type(e).__name__}: {e}")
             svc.complete_send(d, result, started)
             if result.address_check is not None:
                 record_check(svc, d["device"], result.address_check)
-            if result.outcome == "success" and result.receipt and svc.cancel_requested_after_dispatch(d["id"]):
-                try:
-                    await svc.cancel(Client(n["client_id"], frozenset()), n["id"])
-                except Conflict:
-                    pass
+            if result.outcome == "success" and svc.cancel_requested_after_dispatch(d["id"]):
+                await svc.cancel_after_dispatch(d["id"])
         except Exception:
             log.exception("dispatch failed", extra={"delivery_id": d["id"]})
         finally:
@@ -180,7 +197,8 @@ class Workers:
             svc = self.service
             for d in svc.due_polls():
                 provider = svc.providers.get(d["provider"])
-                if provider is None:
+                if provider is None:  # never leave it in the queue: it would take a slot on every pass
+                    svc.abandon_receipt(d, f"provider {d['provider']!r} is no longer configured")
                     continue
                 try:
                     st = await provider.poll_receipt(d["receipt"])
@@ -273,12 +291,22 @@ class Workers:
                            "X-Notify-Event": item["event"]["type"], "X-Notify-Event-Id": str(item["event"]["id"]),
                            "X-Notify-Signature": sign(item["secret"], ts, body)}
                 try:
+                    if not await webhook_address_ok(item["url"], self.service.resolve):
+                        self.service.webhook_result(item, False, None, "address not allowed")
+                        return
                     resp = await self.http.post(item["url"], content=body, headers=headers,
                                                 timeout=self.service.config.server.webhook_timeout_seconds)
+                    if attachments._peer_denied(resp):  # e.g. DNS changed between the check and the connect
+                        self.service.webhook_result(item, False, None, "address not allowed")
+                        return
                     ok = 200 <= resp.status_code < 300
                     self.service.webhook_result(item, ok, resp.status_code, None if ok else f"HTTP {resp.status_code}")
                 except httpx.HTTPError as e:
-                    self.service.webhook_result(item, False, None, f"{type(e).__name__}: {e}")
+                    # the stored text is shown to the subscription's owner: keep it coarse (no port-scan oracle)
+                    log.info("webhook delivery failed", extra={"subscription_id": item["sid"],
+                                                               "error": f"{type(e).__name__}: {e}"[:300]})
+                    kind = "timeout" if isinstance(e, httpx.TimeoutException) else "connection failed"
+                    self.service.webhook_result(item, False, None, kind)
 
         async def once() -> None:
             items = self.service.claim_webhooks(limit=20)

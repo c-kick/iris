@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+
+
+MAX_DATA_BYTES = 16 * 1024
 
 
 class Severity(str, Enum):
@@ -242,6 +246,14 @@ class NotificationIn(BaseModel):
         for t in v:
             if not t or len(t) > 64:
                 raise ValueError("tags must be 1-64 characters")
+        return v
+
+    @field_validator("data")
+    @classmethod
+    def _data(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        # metadata, echoed into every event and webhook: a large blob would be copied on every read path
+        if v is not None and len(json.dumps(v, ensure_ascii=False, separators=(",", ":")).encode()) > MAX_DATA_BYTES:
+            raise ValueError(f"data must be at most {MAX_DATA_BYTES // 1024} KiB as JSON")
         return v
 
     @model_validator(mode="after")

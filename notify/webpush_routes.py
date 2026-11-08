@@ -94,9 +94,9 @@ def enroll_page(request: Request, c: str = "") -> Response:
     host_guard(request)
     throttle = _throttle(request)
     key = f"enroll:{_ip(request)}"
-    throttle.check(key)
     row = _enrollment(request.app.state.service.db, c)
-    if row is None:
+    if row is None:  # only misses are throttled: behind a proxy every client shares one address,
+        throttle.check(key)  # and a valid link must keep working while someone probes with bad ones
         throttle.fail(key)
         return HTMLResponse("<!doctype html><title>Link expired</title><p>This link was already used or has "
                             "expired. Ask for a new one.</p>", status_code=410, headers={"Content-Security-Policy": CSP})
@@ -140,7 +140,6 @@ def enroll(body: dict[str, Any], request: Request) -> dict[str, str]:
     db = app.state.service.db
     throttle = _throttle(request)
     key = f"enroll:{_ip(request)}"
-    throttle.check(key)
     sub = body.get("subscription") if isinstance(body.get("subscription"), dict) else {}
     keys = sub.get("keys") if isinstance(sub.get("keys"), dict) else {}
     endpoint, p256dh, auth = (str(sub.get("endpoint") or ""), str(keys.get("p256dh") or ""),
@@ -156,6 +155,7 @@ def enroll(body: dict[str, Any], request: Request) -> dict[str, str]:
     with _enroll_lock:  # check, write the device and burn the code as one step
         row = _enrollment(db, str(body.get("code") or ""))
         if row is None:
+            throttle.check(key)
             throttle.fail(key)
             raise HTTPException(410, "this link was already used or has expired")
         out: dict[str, str] = {}
@@ -182,15 +182,18 @@ def enroll(body: dict[str, Any], request: Request) -> dict[str, str]:
     return out
 
 
-def _rate_ok(ip: str) -> bool:
+def _rate_ok(key: str) -> bool:
     now = time.monotonic()
     with _reports_lock:
-        hits = [t for t in _reports.get(ip, []) if now - t < 60]
+        if len(_reports) > 2048:  # forget keys with no recent hit
+            for k in [k for k, v in _reports.items() if not v or now - v[-1] >= 60]:
+                del _reports[k]
+        hits = [t for t in _reports.get(key, []) if now - t < 60]
         if len(hits) >= _REPORT_PER_MINUTE:
-            _reports[ip] = hits
+            _reports[key] = hits
             return False
         hits.append(now)
-        _reports[ip] = hits
+        _reports[key] = hits
         return True
 
 
@@ -198,8 +201,6 @@ def _rate_ok(ip: str) -> bool:
 async def report(request: Request) -> Response:
     """The service worker says a push was shown or clicked. Always 204: nothing is revealed to a forger."""
     host_guard(request)
-    if not _rate_ok(_ip(request)):
-        return Response(status_code=204)
     try:
         body = await request.json()
         did, token, kind = str(body["d"]), str(body["k"]), body["e"]
@@ -209,6 +210,8 @@ async def report(request: Request) -> Response:
         svc = request.app.state.service
         row = svc.db.one("SELECT provider, device FROM deliveries WHERE id=?", (did,))
         provider = svc.providers.get(row["provider"]) if row else None
-        if isinstance(provider, WebPushProvider) and provider.report_ok(did, token):
+        # counted per delivery and only once the HMAC holds: junk from anyone (or every browser behind one
+        # proxy address) can never use up the budget of real reports
+        if isinstance(provider, WebPushProvider) and provider.report_ok(did, token) and _rate_ok(did):
             svc.apply_report(did, kind, row["device"])
     return Response(status_code=204)

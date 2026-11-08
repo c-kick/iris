@@ -46,8 +46,18 @@ def wp(tmp_path, fake):
     srv.stop()
 
 
+def admin_session(srv) -> httpx.Client:
+    """Provider settings and enrollment links are for the signed-in admin page only (not a bearer token)."""
+    if getattr(srv, "_admin_session", None) is None:
+        from tests.test_admin import H, setup_admin
+        b = setup_admin(srv)
+        b.headers.update(H)
+        srv._admin_session = b
+    return srv._admin_session
+
+
 def save_provider(srv):
-    r = srv.client("admin").put("/admin/api/providers/browser",
+    r = admin_session(srv).put("/admin/api/providers/browser",
                                 json={"type": "webpush", "settings": {"contact": "mailto:alex@example.org"}})
     assert r.status_code == 200, r.text
     return r
@@ -58,7 +68,7 @@ def web(srv) -> httpx.Client:
 
 
 def link(srv, owner="alex") -> str:
-    r = srv.client("admin").post("/admin/api/providers/browser/enrollments", json={"owner": owner})
+    r = admin_session(srv).post("/admin/api/providers/browser/enrollments", json={"owner": owner})
     assert r.status_code == 200, r.text
     url = r.json()["url"]
     assert url.startswith(EXTERNAL + "/push/enroll?c=")
@@ -114,7 +124,7 @@ def test_enroll_link_needs_https_external_url(tmp_path, fake):
     srv = build(tmp_path, fake, config(external=None))
     try:
         save_provider(srv)
-        r = srv.client("admin").post("/admin/api/providers/browser/enrollments", json={"owner": "alex"})
+        r = admin_session(srv).post("/admin/api/providers/browser/enrollments", json={"owner": "alex"})
         assert r.status_code == 409
     finally:
         srv.stop()
@@ -169,7 +179,7 @@ def test_report_forged_or_late_is_ignored(wp):
 def test_vapid_generated_once(wp):
     first = wp.service.config.providers["browser"].model_dump()
     assert first["vapid_private_key"] and first["vapid_public_key"]
-    r = wp.client("admin").put("/admin/api/providers/browser", json={
+    r = admin_session(wp).put("/admin/api/providers/browser", json={
         "type": "webpush", "settings": {"contact": "mailto:b@example.org", "vapid_public_key": "attacker"}})
     assert r.status_code == 200
     second = wp.service.config.providers["browser"].model_dump()

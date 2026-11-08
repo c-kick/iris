@@ -59,7 +59,7 @@ class ServerConfig(_Strict):
     webhook_disable_after_failures: int = Field(default=50, ge=1)
     # links in notifications sent by hnl-notify itself (e.g. access requests); falls back to NOTIFY_EXTERNAL_URL
     external_url: str | None = None
-    attachment_url_hosts: list[str] = Field(default_factory=list, description="hosts, host:port or CIDRs URL attachments may be fetched from; empty = disabled")
+    attachment_url_hosts: list[str] = Field(default_factory=list, description="hosts, host:port, CIDRs (ports 80/443) or cidr:port URL attachments may be fetched from; empty = disabled")
     attachment_retention_days: int = Field(default=7, ge=1, le=90)
     chat_cap: int = Field(default=10, ge=2, le=100, description="Agent messages in a row before a group chat pauses")
     chat_alert_targets: list[str] = Field(default_factory=list, description="Who is pushed when a group chat pauses")
@@ -77,6 +77,16 @@ class ServerConfig(_Strict):
                 continue
             except ValueError:
                 pass
+            m = re.fullmatch(r"([0-9a-f.:]+/\d{1,3}):(\d{1,5})", h)  # cidr:port, one port on a subnet
+            if m:
+                try:
+                    net = ipaddress.ip_network(m.group(1), strict=False)
+                except ValueError:
+                    raise ValueError(f"{h!r} is not a host, host:port or CIDR") from None
+                if not 0 < int(m.group(2)) < 65536:
+                    raise ValueError(f"{h!r}: port out of range")
+                out.append(f"{net}:{int(m.group(2))}")
+                continue
             m = re.fullmatch(r"[a-z0-9.-]+(?::(\d{1,5}))?", h)
             if not m or (m.group(1) and not 0 < int(m.group(1)) < 65536):
                 raise ValueError(f"{h!r} is not a host, host:port or CIDR")

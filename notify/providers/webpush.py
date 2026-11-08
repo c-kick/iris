@@ -61,6 +61,7 @@ class WebPushProvider(Provider):
     kind = "push"
     label = "Browser push"
     max_concurrency = 4
+    attachment_data = "none"  # a push payload carries no files
     secret_settings = frozenset({"vapid_private_key"})
     secret_address_fields = frozenset({"p256dh", "auth"})
     settings_schema = {

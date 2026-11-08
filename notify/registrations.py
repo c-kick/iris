@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .auth import hash_token, new_token
-from .config import _NAME_RE, ConfigError
+from .config import RESERVED_CLIENT_NAMES, _NAME_RE, ConfigError
 from .configops import commit_config
 from .core import SYSTEM_CLIENT, Client, Invalid
 from .db import dumps, iso, loads, new_id, now_iso, parse_iso, utcnow
@@ -61,6 +61,8 @@ class RegistrationIn(BaseModel):
         v = v.strip()
         if not _NAME_RE.match(v):
             raise ValueError("use lowercase letters, digits, '.', '_' or '-' (max 64), starting with a letter or digit")
+        if v in RESERVED_CLIENT_NAMES:
+            raise ValueError(f"{v!r} is reserved; choose another name")
         return v
 
     @field_validator("scopes")
@@ -224,6 +226,9 @@ async def request_access(body: RegistrationIn, request: Request) -> dict[str, An
         raise HTTPException(429, "too many access requests from this address; try again in an hour")
     if body.name in cfg.clients:
         raise HTTPException(409, f"{body.name!r} is already registered; choose another name or ask the administrator")
+    if db.one("SELECT 1 FROM notifications WHERE client_id=? LIMIT 1", (body.name,)):
+        # history, events and webhooks are owned by name: a newcomer must not inherit a deleted client's
+        raise HTTPException(409, f"{body.name!r} was used by an earlier client; choose another name")
     if db.one("SELECT 1 FROM registrations WHERE name=? AND status='pending'", (body.name,)):
         raise HTTPException(409, f"a request for {body.name!r} is already waiting for approval")
     if db.scalar("SELECT COUNT(*) FROM registrations WHERE status='pending'") >= MAX_PENDING:
@@ -240,7 +245,9 @@ async def request_access(body: RegistrationIn, request: Request) -> dict[str, An
                    hash_token(decision_code)))
     log.info("registration requested", extra={"registration_id": rid, "client": body.name, "source_ip": ip})
 
-    auto = (_in_subnets(ip, cfg.registration.auto_approve_subnets)
+    proxied = any(request.headers.get(h) for h in ("x-forwarded-for", "forwarded", "x-real-ip"))
+    auto = (not proxied  # behind a reverse proxy the source address is the proxy's: never trust it
+            and _in_subnets(ip, cfg.registration.auto_approve_subnets)
             and set(body.scopes) <= set(cfg.registration.auto_approve_scopes))
     if auto:
         reg = approve(app, rid, None, None, by="auto-approve")

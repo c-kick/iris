@@ -139,10 +139,20 @@ def _host_port(url: str) -> tuple[str, int]:
 
 
 def _allowed(host: str, port: int, allow: list[str]) -> bool:
-    """Hostnames match host / host:port entries only; CIDR entries match IP-literal hosts only."""
+    """Hostnames match host / host:port entries only; CIDR entries match IP-literal hosts only, on ports 80/443
+    (a `cidr:port` entry, e.g. 10.0.0.5/32:8123, allows that one port)."""
     lit = _ip(host)
     for e in allow:
         e = e.strip().lower()
+        m = re.fullmatch(r"([0-9a-f.:]+/\d{1,3}):(\d{1,5})", e)
+        if m:
+            try:
+                net = ipaddress.ip_network(m.group(1), strict=False)
+            except ValueError:
+                continue
+            if lit is not None and lit.version == net.version and lit in net and port == int(m.group(2)):
+                return True
+            continue
         try:
             net = ipaddress.ip_network(e, strict=False)
         except ValueError:
@@ -150,7 +160,8 @@ def _allowed(host: str, port: int, allow: list[str]) -> bool:
             if m and lit is None and m.group(1) == host and (m.group(2) is None or int(m.group(2)) == port):
                 return True
             continue
-        if lit is not None and lit.version == net.version and lit in net:
+        # a bare CIDR (no port) covers the ordinary web ports only: never any service on the whole subnet
+        if lit is not None and lit.version == net.version and lit in net and port in (80, 443):
             return True
     return False
 
@@ -193,8 +204,11 @@ async def _fetch(i: int, it: AttachmentIn, allow: list[str], http: httpx.AsyncCl
                     continue
                 if not 200 <= r.status_code < 300:
                     raise AttachmentError(f"attachment {i}: fetch failed with HTTP {r.status_code}")
+                if r.headers.get("content-encoding", "identity").strip().lower() not in ("", "identity"):
+                    # httpx would decode it without a size bound (stacked gzip: KB on the wire, GB in memory)
+                    raise AttachmentError(f"attachment {i}: compressed responses are not accepted")
                 buf = bytearray()
-                async for chunk in r.aiter_bytes():
+                async for chunk in r.aiter_bytes():  # identity only (checked above): nothing is decoded
                     buf += chunk
                     if used + len(buf) > MAX_TOTAL:
                         raise AttachmentError(_TOTAL_MSG)

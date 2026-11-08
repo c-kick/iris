@@ -10,6 +10,12 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 DEFAULT_ROUTES: dict[tuple[str, str], int] = {("POST", "/v1/notifications"): 15 << 20}
+# a body above `large` on these routes also needs one of these scopes (any valid token is not enough)
+DEFAULT_LARGE_SCOPES: dict[tuple[str, str], frozenset[str]] = {("POST", "/v1/notifications"): frozenset({"send", "admin"})}
+# without a valid bearer/basic credential a body is at most this big: JSON is parsed before the route's auth
+# dependency runs (~25x memory), and nothing public (registration, login, callbacks, decide pages, browser
+# push, admin session forms) needs more
+UNAUTHENTICATED_MAX = 64 << 10
 
 
 class _Rejected(Exception):
@@ -24,7 +30,8 @@ class BodyLimit:
 
     def __init__(self, app: ASGIApp, default: int = 1 << 20, routes: dict[tuple[str, str], int] | None = None,
                  large: int = 1 << 20, large_concurrency: int = 2, get_auth: Callable[[], Any] | None = None,
-                 read_deadline: float = 60.0):
+                 read_deadline: float = 60.0, unauthenticated_max: int = UNAUTHENTICATED_MAX,
+                 large_scopes: dict[tuple[str, str], frozenset[str]] | None = None):
         self.app = app
         self.default = default
         self.routes = DEFAULT_ROUTES if routes is None else routes
@@ -32,6 +39,8 @@ class BodyLimit:
         self.large_concurrency = large_concurrency
         self.get_auth = get_auth
         self.read_deadline = read_deadline
+        self.unauthenticated_max = unauthenticated_max
+        self.large_scopes = DEFAULT_LARGE_SCOPES if large_scopes is None else large_scopes
         self._sem: asyncio.Semaphore | None = None
 
     def _semaphore(self) -> asyncio.Semaphore:
@@ -47,17 +56,25 @@ class BodyLimit:
         headers = scope.get("headers", [])
         declared = next((v for k, v in headers if k.lower() == b"content-length"), None)
         auth = next((v.decode("latin-1") for k, v in headers if k.lower() == b"authorization"), None)
-        has_auth = auth is not None and (self.get_auth is None or self.get_auth().from_header(auth) is not None)
+        who = None
+        if auth is not None and self.get_auth is not None:
+            who = self.get_auth().from_header(auth)
+        has_auth = auth is not None and (self.get_auth is None or who is not None)
+        need = self.large_scopes.get((scope["method"], scope["path"]))
+        large_ok = has_auth and (need is None or who is None or bool({getattr(s, "value", s) for s in who.scopes} & need))
         size = int(declared) if declared is not None and declared.isdigit() else None
         if size is not None and size > cap:
             await self._reject(cap, scope, receive, send)
             return
-        if size is not None and size > self.large and not has_auth:
+        if size is not None and size > self.unauthenticated_max and not has_auth:
             await self._unauthenticated(scope, receive, send)
+            return
+        if size is not None and size > self.large and not large_ok:
+            await self._forbidden(scope, receive, send)
             return
         seen = 0
         held = False  # holding a large-body slot
-        reason = ""  # "", "large" (413), "auth" (401) or "slow" (408)
+        reason = ""  # "", "large" (413), "auth" (401), "scope" (403) or "slow" (408)
         complete = False  # the final body chunk has arrived
         deadline = 0.0  # monotonic time by which a large body must have arrived
         started = False  # a response (ours or the app's) has begun
@@ -90,8 +107,11 @@ class BodyLimit:
                 if seen > cap:
                     reason = "large"
                     raise _Rejected
-                if seen > self.large and not has_auth:
+                if seen > self.unauthenticated_max and not has_auth:
                     reason = "auth"
+                    raise _Rejected
+                if seen > self.large and not large_ok:
+                    reason = "scope"
                     raise _Rejected
                 if seen > self.large:
                     await acquire()
@@ -100,6 +120,8 @@ class BodyLimit:
         async def reject() -> None:
             if reason == "auth":
                 await self._unauthenticated(scope, receive, send)
+            elif reason == "scope":
+                await self._forbidden(scope, receive, send)
             elif reason == "slow":
                 await JSONResponse({"detail": "request body arrived too slowly"}, status_code=408,
                                    headers={"Connection": "close"})(scope, receive, send)
@@ -134,6 +156,12 @@ class BodyLimit:
     async def _unauthenticated(scope: Scope, receive: Receive, send: Send) -> None:
         resp = JSONResponse({"detail": "authentication required"}, status_code=401,
                             headers={"WWW-Authenticate": "Bearer", "Connection": "close"})
+        await resp(scope, receive, send)
+
+    @staticmethod
+    async def _forbidden(scope: Scope, receive: Receive, send: Send) -> None:
+        resp = JSONResponse({"detail": "a body this large needs a token with the send scope"}, status_code=403,
+                            headers={"Connection": "close"})
         await resp(scope, receive, send)
 
     @staticmethod

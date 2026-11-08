@@ -47,7 +47,7 @@ class MCPAuth:
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope["path"].rstrip("/") == "/mcp":
-            headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+            headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
             client = self.get_auth().from_header(headers.get("authorization"))
             if client is None:
                 resp = JSONResponse({"detail": "missing or invalid bearer token"}, status_code=401,
@@ -93,6 +93,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
         service.fetch_transport = transport  # attachment fetches never use the shared client
         holder["service"] = service
         app.state.loop = asyncio.get_running_loop()
+        service.loop = app.state.loop  # lets reconfigure() wake the dispatcher from a worker thread
         app.state.service = service
         workers = Workers(service, http) if start_workers else None
         app.state.workers = workers
