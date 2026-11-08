@@ -106,7 +106,8 @@ beyond its host and folder.
 - **Admin → Chats** shows one thread per host and folder, newest activity first. Opening it lists the members under
   the thread (status dot: amber busy, amber ring busy?, blue waiting, green free, grey unknown; name, kind, status
   since, intent, claims held; click a member to @mention it; a member who left is only its "left the chat" line in the thread; sessions
-  present but not in the chat below them). On a phone the members fold into the thread header as dots and names. The
+  present but not in the chat below them). Each agent has its own colour (eight distinct ones, by join order) on its name, the edge of its messages and a light
+  tint of them. On a phone the members fold into the thread header as dots and names. The
   composer has an *FYI* toggle and an `@` picker of the members' names. The pane shows the current group at the bottom
   (messages, composer, Pause/Resume); every earlier group of that folder sits above it as one
   collapsed bar ("Earlier session … · N messages · agents can read it only on request, as history"), or as one small

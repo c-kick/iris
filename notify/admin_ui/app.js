@@ -1708,7 +1708,7 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 
 // ---------------------------------------------------------------- chats
 
-const chats = { folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "", replyTo: null, msgs: {} };
+const chats = { colors: {}, folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "", replyTo: null, msgs: {} };
 // The Chats page is exactly as tall as what the viewer can see. visualViewport shrinks when a phone
 // keyboard opens (100dvh does not on iOS), so the composer stays in view without the page scrolling.
 if (window.visualViewport) {
@@ -1751,6 +1751,12 @@ function chatMembersText(g) {
   return here.length ? `Here now: ${here.join(", ")}` : "Nobody here";
 }
 
+// ---- one colour per agent: 8 distinct ones by join order within its chat (the first 8 members never share one)
+const CHAT_COLORS = 8;
+function chatLearnColors(g) {
+  (g?.members || []).forEach((m, i) => { chats.colors[m.id] = i % CHAT_COLORS; });
+}
+
 // ---- members of the open thread: status dot, name, kind, what it said it would do, claims held
 const CHAT_STATUS = {
   busy: ["busy", "busy"],
@@ -1777,7 +1783,7 @@ function chatMembersHtml(g) {
     const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";
     const rename = `<button type="button" class="btn quiet cmem-rename" data-rename="${esc(m.id)}" data-name="${esc(name)}" aria-label="Rename ${esc(name)}" title="Rename">✎</button>`;
     return `<li class="cmem"><button type="button" class="cmem-main" data-mention="${esc(m.name || "")}" title="${m.name ? `Mention ${esc(name)} in your message` : ""}">
-      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm">${esc(name)}</span> <small>${esc(kind)}</small>
+      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chats.colors[m.id] !== undefined ? ` style="color: var(--a${chats.colors[m.id]})"` : ""}>${esc(name)}</span> <small>${esc(kind)}</small>
       <span class="sub">${sub}</span></button>${claims}${rename}</li>`;
   }).join("");
   const others = (g.presences || []).map((p) => `<li class="cmem away"><span class="sdot unknown" aria-hidden="true"></span><span class="nm">${esc(CHAT_WHO[p.kind] || p.kind)}</span> <small>not in the chat</small></li>`).join("");
@@ -1855,7 +1861,8 @@ function chatMessageHtml(m, canReply = false) {
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
-  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${tag}</div>
+  const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
+  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${tag}</div>
     ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${(canReply && m.text != null) || m.author === "owner" ? `<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}${chatTicksHtml(m.id, m.receipt, m.author)}</div>` : ""}</div>`;
 }
@@ -1893,6 +1900,7 @@ function chatPaneEmpty(el) {
 async function chatsLoadList(el) {
   const data = await api("GET", "/chats");
   chats.folders = data.folders;
+  chats.folders.forEach(chatLearnColors); // each entry carries its current group's members, in join order
   chatsRenderList(el);
 }
 
@@ -2101,6 +2109,7 @@ async function chatOpen(el, key, keep = false) {
   } catch (ex) { pane.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
   if (chats.selected !== key) return;
   const g = data.group;
+  chatLearnColors(g);
   const id = g.id;
   chats.currentId = id;
   pane.innerHTML = `
@@ -2218,6 +2227,7 @@ async function chatToggleEarlier(bar) {
   body.innerHTML = `<div class="empty">Loading…</div>`;
   try {
     const d = await api("GET", `/chats/${encodeURIComponent(wrap.dataset.earlier)}/messages`);
+    chatLearnColors(d.group);
     body.innerHTML = d.messages.map(chatMessageHtml).join("") || `<div class="empty">No messages.</div>`;
     body.querySelectorAll("[data-hreq]").forEach((x) => x.remove()); // an old session cannot be decided any more
     body.dataset.loaded = "1";
@@ -2265,6 +2275,7 @@ async function chatTick(el) {
     const path = `/chats/${encodeURIComponent(id)}/messages${chats.lastId ? `?after=${encodeURIComponent(chats.lastId)}` : ""}`;
     const data = await api("GET", path);
     if (chats.selected !== key || chats.currentId !== id) return;
+    chatLearnColors(data.group);
     chatHeader(el, data.group, f);
     const box = el.querySelector("#chat-msgs");
     // a request decided elsewhere (phone link, expiry) loses its buttons

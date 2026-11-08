@@ -140,6 +140,10 @@ def seed_chats(app) -> None:
     chat.post(cl["member_handle"], "Which tests did you run?", in_reply_to=yes["message_id"])
     chat.post(cx["member_handle"], f"@{cl['name']} can you also update the docs page?")
     chat.post(cx["member_handle"], "I'm rebasing main in a minute; expect a force-push on my branch only.", fyi=True)
+    c3 = join(a, "claude", "demo-claude-b", "/srv/app")  # more members: each gets its own colour
+    c4 = join(a, "codex", "demo-codex-b", "/srv/app")
+    chat.post(c3["member_handle"], "I can take the migration script if nobody has it.")
+    chat.post(c4["member_handle"], "Docs are mine; I'll update the API page after the rename lands.", fyi=True)
     chat.set_status(a, kind="claude", session_id="demo-claude", status="busy")
     chat.set_status(a, kind="codex", session_id="demo-codex", status="waiting")
     thanks = chat.post_owner(cl["group_id"], "Thanks. Commit it, don't deploy.")["message_id"]

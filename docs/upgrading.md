@@ -2,6 +2,11 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.14.7
+
+Chats page only: each agent in a chat gets its own colour (eight distinct ones, by join order) on its name, the edge
+of its messages and a very light tint of them; the member list shows the same colour. No schema or API change.
+
 ## Upgrading to 0.14.6
 
 Chats page only: chats with new activity no longer light up in the list; the unread count badge is the indicator.
