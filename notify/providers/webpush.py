@@ -36,6 +36,10 @@ _BODY_LIMIT = 4000
 MAX_RETRY_AFTER = 3600.0
 
 
+class PayloadTooLarge(Exception):
+    """The push message cannot be made small enough for one 4096-byte record."""
+
+
 def push_endpoint_ok(url: str) -> bool:
     """https on a known push service host: a subscription endpoint is never fetched from anywhere else."""
     try:
@@ -158,19 +162,34 @@ class WebPushProvider(Provider):
         def dump() -> bytes:
             return json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
 
-        raw = dump()
-        if len(raw) > MAX_PLAINTEXT:
-            body = msg.message
-            lo, hi = 0, len(body)  # longest prefix (plus an ellipsis) that fits
+        def shrink(key: str) -> None:
+            """Longest prefix of data[key] (plus an ellipsis) that makes the payload fit."""
+            text = data[key]
+            lo, hi = 0, len(text)
             while lo < hi:
                 mid = (lo + hi + 1) // 2
-                data["b"] = body[:mid] + "…"
+                data[key] = text[:mid] + "…"
                 if len(dump()) <= MAX_PLAINTEXT:
                     lo = mid
                 else:
                     hi = mid - 1
-            data["b"] = body[:lo] + "…"
-            raw = dump()
+            data[key] = text[:lo] + "…"
+
+        # trim the body first, then the title; a link that does not fit even without them is dropped (a cut link
+        # would lead somewhere else), and then the text gets the room back
+        if len(dump()) > MAX_PLAINTEXT:
+            text = data["b"], data["t"]
+            data["b"] = data["t"] = ""
+            if len(dump()) > MAX_PLAINTEXT:
+                data["u"] = None
+            data["b"], data["t"] = text
+        for key in ("b", "t"):
+            if len(dump()) > MAX_PLAINTEXT and data[key]:
+                shrink(key)
+        raw = dump()
+        if len(raw) > MAX_PLAINTEXT:
+            raise PayloadTooLarge(f"browser push payload is {len(raw)} bytes even without text and link"
+                                  f" (limit {MAX_PLAINTEXT})")
         return raw
 
     @staticmethod
@@ -200,7 +219,11 @@ class WebPushProvider(Provider):
                               request_summary=summary)
         endpoint = str(address["endpoint"])
         try:
-            body = encrypt(self.build_payload(msg), str(address["p256dh"]), str(address["auth"]))
+            payload = self.build_payload(msg)
+        except PayloadTooLarge as e:
+            return SendResult(outcome="permanent", error=str(e), request_summary=summary)
+        try:
+            body = encrypt(payload, str(address["p256dh"]), str(address["auth"]))
         except ValueError as e:
             return SendResult(outcome="permanent", request_summary=summary,
                               error=f"browser subscription keys are invalid ({e}): re-enroll this browser")
@@ -237,6 +260,8 @@ class WebPushProvider(Provider):
             retry_after = min(wait, MAX_RETRY_AFTER) if math.isfinite(wait) and wait >= 0 else None
             return SendResult(outcome="retryable", http_status=code, response_body=text, error=error,
                               retry_after=retry_after, request_summary=summary)
+        if code == 413:
+            error = "push service rejected the message as too large (HTTP 413)" + (f": {text[:200]}" if text else "")
         outcome = "permanent" if 400 <= code < 500 else "retryable"
         return SendResult(outcome=outcome, http_status=code, response_body=text, error=error,
                           request_summary=summary)

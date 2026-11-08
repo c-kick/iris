@@ -158,7 +158,7 @@ def test_deeply_nested_multipart_raises_value_error():
     n = 3000
     raw = b"".join(b"Content-Type: multipart/mixed; boundary=b%d\r\n\r\n--b%d\r\n" % (i, i) for i in range(n))
     raw = b"From: a@example.org\r\nMIME-Version: 1.0\r\n" + raw + b"Content-Type: text/plain\r\n\r\nhi\r\n"
-    with pytest.raises(ValueError, match="too deeply nested"):
+    with pytest.raises(ValueError, match="too deeply nested|more than 200 MIME parts"):  # the part cap now stops it first
         rp.parse_reply(raw)
 
 

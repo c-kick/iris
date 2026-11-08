@@ -173,7 +173,7 @@ def test_transient_error_is_retried(live, fake):
     n = submit(live).json()
     wait_for(lambda: len(fake.messages) == 1)
     d = wait_for(lambda: (x := get(live, n["id"])["deliveries"][0])["attempts"] == 1 and x["state"] == "queued" and x)
-    assert d["last_error"] == "internal" and d["next_attempt_at"]
+    assert d["last_error"] == "outcome unknown; may be duplicated: internal" and d["next_attempt_at"]  # a 5xx may follow acceptance
     live.fast_forward()
     n = wait_for(lambda: (x := get(live, n["id"]))["status"] == "dispatched" and x)
     log = n["deliveries"][0]["attempt_log"]

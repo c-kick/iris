@@ -56,8 +56,11 @@ class FakeMailbox:
         self.folders: dict[str, list[bytes]] = {self.inbox: [], self.processed: [], self.quarantine: []}
         self.fail_move_once = False
         self.fetched: list[bytes] = []
-        self.opened = self.closed = 0
+        self.opened = self.closed = self.armed = 0
         self._next = 1
+
+    def arm(self) -> None:
+        self.armed += 1
 
     def add(self, raw: bytes, size: int | None = None) -> bytes:
         uid = str(self._next).encode()

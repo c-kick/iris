@@ -14,10 +14,12 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import parseaddr
 from html.parser import HTMLParser
+from typing import Any
 
 MAX_TEXT = 8000
 MAX_ATTACHMENTS = 10
 MAX_ATTACHMENT_BYTES = 10485760
+MAX_PARTS = 200  # MIME parts; each costs a Python object tree, so a part flood could exhaust memory
 _DELIVERY_ID = re.compile(r"^dlv_[0-9a-f]{22}$")
 _MSGID = re.compile(r"<([^<>@\s]+)@[^<>\s]+>")
 _AUTO_LOCALS = {"mailer-daemon", "postmaster"}
@@ -32,8 +34,24 @@ def parse_headers(raw: bytes) -> EmailMessage:
     return BytesParser(policy=policy.default).parsebytes(raw, headersonly=True)  # type: ignore[return-value]
 
 
-def parse_message(raw: bytes) -> EmailMessage:
-    return BytesParser(policy=policy.default).parsebytes(raw)  # type: ignore[return-value]
+class TooComplex(ValueError):
+    """The message has more than MAX_PARTS MIME parts."""
+
+
+def parse_message(raw: bytes, max_parts: int | None = None) -> EmailMessage:
+    """Full parse. With `max_parts` the parser stops (TooComplex) as soon as it creates one part more, so a
+    flood of tiny parts never becomes an object tree in memory."""
+    if max_parts is None:
+        return BytesParser(policy=policy.default).parsebytes(raw)  # type: ignore[return-value]
+    made = -1  # the parser calls the factory once up front to probe its signature
+
+    def factory(policy: Any = None) -> EmailMessage:  # the parser passes its policy by this name
+        nonlocal made
+        made += 1
+        if made > max_parts + 1:  # the message itself plus its parts
+            raise TooComplex(f"more than {max_parts} MIME parts")
+        return EmailMessage(policy)
+    return BytesParser(factory, policy=policy.default).parsebytes(raw)  # type: ignore[return-value]
 
 
 def header(msg: EmailMessage, name: str) -> str:
@@ -151,33 +169,48 @@ def header_block_problem(raw_headers: bytes) -> str | None:
 
 
 def dkim_passes(msg: EmailMessage, authserv_id: str, from_domain: str) -> bool:
-    """Only the first Authentication-Results header counts: the receiving server prepends its own,
-    and anything below it may have been written by the sender. It must show dkim=pass for the From
-    domain (or a parent) AND dmarc=pass for exactly that From domain: DMARC is the server's own reading
-    of the From header, which binds the signature to the address we compare."""
+    """Read the Authentication-Results headers from the top: the receiving server prepends its own, and
+    anything below them may have been written by the sender. Only the leading run of headers carrying the
+    trusted authserv-id counts (the first header with another id ends it), so a split OpenDKIM + OpenDMARC
+    pair is combined. Per method the topmost header in that run that reports it decides; a lower header
+    can never override it. It must show dkim=pass for the From domain (or a parent) AND dmarc=pass for
+    exactly that From domain: DMARC is the server's own reading of the From header, which binds the
+    signature to the address we compare."""
     if not authserv_id or not from_domain:
         return False
     try:
-        first = next((str(v) for k, v in msg.raw_items() if k.lower() == "authentication-results"), None)
+        values = [str(v) for k, v in msg.raw_items() if k.lower() == "authentication-results"]
     except Exception:
         return False
-    if first is None:
-        return False
-    parts = [p.strip() for p in _strip_comments_quotes(first).split(";")]
-    if not parts[0] or parts[0].split()[0].lower() != authserv_id.strip().lower():
-        return False
     from_domain = from_domain.lower().rstrip(".")
-    dkim = dmarc = False
-    for p in parts[1:]:
-        if re.match(r"dkim\s*=\s*pass(?:\s|$)", p, re.I):
-            m = re.search(r"(?:^|\s)header\.d\s*=\s*([a-z0-9.-]+)", p, re.I)
-            d = m.group(1).lower().rstrip(".") if m else ""
-            if "." in d and (from_domain == d or from_domain.endswith("." + d)):
-                dkim = True
-        elif re.match(r"dmarc\s*=\s*pass(?:\s|$)", p, re.I):
-            m = re.search(r"(?:^|\s)header\.from\s*=\s*([a-z0-9.-]+)", p, re.I)
-            dmarc = dmarc or bool(m and m.group(1).lower().rstrip(".") == from_domain)
-    return dkim and dmarc
+    trusted = authserv_id.strip().lower()
+    dkim: bool | None = None
+    dmarc: bool | None = None
+    for value in values:
+        parts = [p.strip() for p in _strip_comments_quotes(value).split(";")]
+        if not parts[0] or parts[0].split()[0].lower() != trusted:
+            break  # the end of the server's own headers
+        has_dkim = has_dmarc = False
+        dkim_ok = dmarc_ok = False
+        for p in parts[1:]:
+            if re.match(r"dkim\s*=", p, re.I):
+                has_dkim = True
+                if re.match(r"dkim\s*=\s*pass(?:\s|$)", p, re.I):
+                    m = re.search(r"(?:^|\s)header\.d\s*=\s*([a-z0-9.-]+)", p, re.I)
+                    d = m.group(1).lower().rstrip(".") if m else ""
+                    dkim_ok = dkim_ok or ("." in d and (from_domain == d or from_domain.endswith("." + d)))
+            elif re.match(r"dmarc\s*=", p, re.I):
+                has_dmarc = True
+                if re.match(r"dmarc\s*=\s*pass(?:\s|$)", p, re.I):
+                    m = re.search(r"(?:^|\s)header\.from\s*=\s*([a-z0-9.-]+)", p, re.I)
+                    dmarc_ok = dmarc_ok or bool(m and m.group(1).lower().rstrip(".") == from_domain)
+        if dkim is None and has_dkim:
+            dkim = dkim_ok
+        if dmarc is None and has_dmarc:
+            dmarc = dmarc_ok
+        if dkim is not None and dmarc is not None:
+            break
+    return bool(dkim and dmarc)
 
 
 def strip_quotes(text: str) -> tuple[str, bool]:
@@ -279,8 +312,11 @@ def extract_attachments(msg: EmailMessage) -> tuple[list[ReplyAttachment], list[
         if not name:
             images += 1
             name = f"image-{images}.{ctype.partition('/')[2] or 'bin'}"
+        if len(kept) >= MAX_ATTACHMENTS:  # past the cap: listed by name, never decoded
+            dropped.append(name[:255])
+            continue
         data = part.get_payload(decode=True) or b""
-        if len(kept) >= MAX_ATTACHMENTS or total + len(data) > MAX_ATTACHMENT_BYTES:
+        if total + len(data) > MAX_ATTACHMENT_BYTES:
             dropped.append(name[:255])
             continue
         total += len(data)
@@ -302,7 +338,7 @@ class ParsedReply:
 def parse_reply(raw: bytes) -> ParsedReply:
     """Full parse of an accepted reply. CPU and memory heavy for big mail: call it off the event loop."""
     try:
-        msg = parse_message(raw)
+        msg = parse_message(raw, MAX_PARTS)
         text, stripped = strip_quotes(body_text(msg))
         atts, dropped = extract_attachments(msg)
     except RecursionError:

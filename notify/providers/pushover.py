@@ -22,6 +22,7 @@ import re
 import time
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -47,6 +48,10 @@ MIN_RETRY = 30
 _KEY_RE = re.compile(r"^[A-Za-z0-9]{30}$")
 _BODY_LIMIT = 4000
 _CHECK_TIMEOUT = 10.0
+# Failures before the request left this host: nothing was sent, a retry cannot duplicate.
+_NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, httpx.UnsupportedProtocol,
+             httpx.LocalProtocolError)
+_UNKNOWN = "outcome unknown; may be duplicated"
 
 
 def _ts(v: Any) -> datetime | None:
@@ -261,7 +266,8 @@ class PushoverProvider(Provider):
     @staticmethod
     def _redact(form: dict[str, str]) -> dict[str, Any]:
         out: dict[str, Any] = {k: v for k, v in form.items()
-                               if k not in ("token", "user", "message", "attachment_base64")}
+                               if k not in ("token", "user", "message", "attachment_base64", "callback")}
+        out["callback"] = bool(form.get("callback"))  # the URL carries the callback secret: never logged
         if "attachment_base64" in form:
             b64 = form["attachment_base64"]
             out["attachment_bytes"] = len(b64) * 3 // 4 - b64.count("=", -2)
@@ -331,8 +337,11 @@ class PushoverProvider(Provider):
     async def _post_message(self, form: dict[str, str], summary: dict[str, Any], now: datetime) -> SendResult:
         try:
             resp = await self.http.post(f"{self.api_base}/messages.json", data=form)
-        except httpx.HTTPError as e:
+        except _NOT_SENT as e:  # the request never reached Pushover
             return SendResult(outcome="retryable", error=f"{type(e).__name__}: {e}", request_summary=summary)
+        except httpx.HTTPError as e:  # Pushover may have accepted it before the failure
+            return SendResult(outcome="retryable", error=f"{_UNKNOWN}: {type(e).__name__}: {e}",
+                              request_summary=summary)
         self._record_quota(resp)
         body = resp.text[:_BODY_LIMIT]
         data: dict[str, Any] = {}
@@ -352,6 +361,8 @@ class PushoverProvider(Provider):
         if 400 <= resp.status_code < 500:
             return SendResult(outcome="permanent", http_status=resp.status_code, response_body=body,
                               error=errors, request_summary=summary)
+        if resp.status_code >= 500:
+            errors = f"{_UNKNOWN}: {errors}"
         return SendResult(outcome="retryable", http_status=resp.status_code, response_body=body,
                           error=errors, request_summary=summary)
 
@@ -378,10 +389,13 @@ class PushoverProvider(Provider):
             raw=body,
         )
 
-    async def cancel(self, receipt: str) -> SendResult:
+    async def cancel(self, receipt: str, tag: str | None = None) -> SendResult:
+        """Stop an emergency alert. With `tag` (the notification id, sent as `tags`) every alert carrying it is
+        cancelled, including one from an attempt whose answer was lost and whose receipt we never saw."""
+        url = (f"{self.api_base}/receipts/cancel_by_tag/{quote(tag, safe='')}.json" if tag
+               else f"{self.api_base}/receipts/{receipt}/cancel.json")
         try:
-            resp = await self.http.post(f"{self.api_base}/receipts/{receipt}/cancel.json",
-                                        data={"token": self.app_token})
+            resp = await self.http.post(url, data={"token": self.app_token})
         except httpx.HTTPError as e:
             return SendResult(outcome="retryable", error=f"{type(e).__name__}: {e}")
         body = resp.text[:_BODY_LIMIT]
@@ -434,3 +448,14 @@ class PushoverProvider(Provider):
             q["observed_at"] = q["observed_at"].isoformat()
             h["quota"] = q
         return h
+
+
+def redact_callback_secrets(db: Any) -> int:
+    """One-off, idempotent: drop callback URLs (they carry the callback secret) from attempt rows logged before
+    `_redact` excluded them, leaving `"callback": true`. Returns the number of rows changed."""
+    with db.tx() as c:
+        cur = c.execute("UPDATE attempts SET request_json=json_set(json_remove(request_json, '$.callback'),"
+                        " '$.callback', json('true'))"
+                        " WHERE request_json IS NOT NULL AND json_valid(request_json)"
+                        " AND json_type(request_json, '$.callback')='text'")
+        return cur.rowcount

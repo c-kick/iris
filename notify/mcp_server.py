@@ -63,8 +63,8 @@ is kept and gets an automatic "the agent isn't listening right now" answer; it
 can still be collected later with the same handle. get_replies (pass
 reply_handle) lists replies but shows reply text only for replies already
 collected; use notify-wait to collect.
-Reply text passed sender and DKIM checks: it comes from the person the mail was
-sent to.
+Reply text passed sender and DKIM checks: it was sent from the recipient's address
+and signed by their mail domain.
 
 Scheduling: pass send_at (ISO time; without offset = {zone}) or delay ('2h', '30m', seconds)
 to send later; it is accepted up to a year ahead. List your scheduled notifications with

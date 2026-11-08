@@ -88,6 +88,10 @@ class FakePushover:
                 return httpx.Response(200, json=body, headers={"X-Limit-App-Limit": "10000",
                                                                "X-Limit-App-Remaining": str(10000 - len(self.messages)),
                                                                "X-Limit-App-Reset": "1790000000"})
+            if "/receipts/cancel_by_tag/" in path:
+                tag = path.split("/cancel_by_tag/")[1].removesuffix(".json")
+                self.cancelled.append(f"tag:{tag}")
+                return httpx.Response(200, json={"status": 1, "canceled": 1})
             if "/receipts/" in path and path.endswith("/cancel.json"):
                 receipt = path.split("/receipts/")[1].split("/")[0]
                 self.cancelled.append(receipt)

@@ -163,7 +163,9 @@ class Provider(ABC):
     async def poll_receipt(self, receipt: str) -> ReceiptStatus:
         raise ProviderError(f"{self.type} has no receipts")
 
-    async def cancel(self, receipt: str) -> SendResult:
+    async def cancel(self, receipt: str, tag: str | None = None) -> SendResult:
+        """Recall a dispatched message by its receipt; `tag` is the notification id, for providers that can
+        cancel everything sent under it."""
         return SendResult(outcome="permanent", error=f"{self.type} cannot cancel after dispatch")
 
     def can_cancel_after_dispatch(self, severity: Severity) -> bool:

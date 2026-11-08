@@ -220,7 +220,8 @@ found in the newest message. Enter the one your mail server writes as
 `mx.example.org`); it is never filled in for you. Replies are accepted only when
 the mail server itself reports `dkim=pass` and `dmarc=pass` for the sender's
 domain, so this must be a server you trust to add that header (with DKIM and DMARC
-results) to every inbound message.
+results) to every inbound message. Only the server's own headers at the top count (one, or a
+DKIM and a DMARC header written separately); a lower header never overrides them.
 
 **Sending.** Add `"reply": true` and an email kind:
 
@@ -310,8 +311,12 @@ listed (reason, sender, subject) in the admin *Activity* list; its content is no
 stored and agents never see it. Reasons: `automatic` (auto-replies, bulk,
 bounces), `no_thread` (not a reply to our mail), `not_reply_enabled`,
 `sender_mismatch` (not from the address the mail was sent to), `dkim_fail`,
-`too_large` (over 15 MiB, or an oversized or unsized header), `header_mismatch`,
-`unreadable`. Reply text is capped at 8000 characters; at most 10 attachments
+`too_large` (over 15 MiB, or an oversized or unsized header), `malformed_headers` (a header
+block that is not plain CRLF `Name: value` lines, or one the parser cannot read), `too_complex`
+(more than 200 MIME parts), `header_mismatch`, `unreadable`. A message is listed once, even if it
+is seen again. A message whose handling fails three passes in a row (for example a move the server
+refuses) is skipped until the service restarts, and the admin page shows it as the poller's last error.
+Reply text is capped at 8000 characters; at most 10 attachments
 and 10 MiB are kept.
 
 ### Reply mailbox cleanup
@@ -836,7 +841,8 @@ Claude session's inbox socket; that is Claude Code's design and is accepted here
 Critical alerts are tracked by polling Pushover receipts every 30 s. For
 instant acknowledgement, expose `/v1/callbacks/` through a public HTTPS proxy
 and set the public address under **Settings** (a random callback secret is
-generated). Without that, nothing changes except latency.
+generated). Without that, nothing changes except latency. The callback URL holds that secret, so the
+attempt log records only `"callback": true`.
 
 ## Operations
 

@@ -132,7 +132,7 @@ class FakeIMAP:
 
     def uid(self, cmd, *args):
         self.calls.append(("uid", cmd, *args))
-        if cmd == "FETCH" and args[1] == "(RFC822.SIZE)":
+        if cmd == "FETCH" and args[1] == "(RFC822.SIZE FLAGS)":
             return ("OK", [b"1 (UID 7 RFC822.SIZE 1234)", b"2 (UID 9 RFC822.SIZE 99)"])
         if cmd == "FETCH":
             return ("OK", [(b"1 (UID 7 BODY[HEADER]<0> {5}", b"X: y\r\n"), b")"])
@@ -201,13 +201,13 @@ def test_imap_login_failure_raises(fake_imap):
 
 def test_imap_test_reports_authserv_ids(fake_imap, monkeypatch):
     monkeypatch.setattr(FakeIMAP, "uid", lambda self, cmd, *a: (
-        ("OK", [b"1 (UID 7 RFC822.SIZE 10)"]) if a[1] == "(RFC822.SIZE)" else
+        ("OK", [b"1 (UID 7 RFC822.SIZE 10)"]) if a[1] == "(RFC822.SIZE FLAGS)" else
         ("OK", [(b"1 (UID 7 BODY[HEADER] {9}", b"Authentication-Results: mx.example.org; dkim=pass\r\n\r\n"), b")"])))
     out = box().test()
     assert out["ok"] and out["messages"] == 1 and out["authserv_ids"] == ["mx.example.org"]
 
 
-def test_imap_move_falls_back_to_plain_expunge(fake_imap, monkeypatch):
+def test_imap_move_without_uidplus_never_expunges_the_folder(fake_imap, monkeypatch):
     fake_imap.move_ok = False
     orig = fake_imap.uid
 
@@ -220,7 +220,9 @@ def test_imap_move_falls_back_to_plain_expunge(fake_imap, monkeypatch):
     mb.open()
     mb.move(b"7", "Processed")
     mb.close()
-    assert ("expunge",) in fake_imap.instances[0].calls
+    calls = fake_imap.instances[0].calls
+    assert ("expunge",) not in calls  # a plain EXPUNGE would remove other clients' \Deleted mail too
+    assert ("uid", "STORE", b"7", "+FLAGS.SILENT", "(\\Deleted)") in calls
 
 
 def test_imap_missing_folder_that_cannot_be_created_raises(fake_imap):

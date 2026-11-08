@@ -59,24 +59,21 @@ class Replies:
         self.now = utcnow  # seam: tests move the clock
 
     # ------------------------------------------------------------ inbound
-    def classify(self, msg: EmailMessage, raw_headers: bytes, authserv_id: str) -> Verdict:
-        """Spec §3 steps 2-6 on the header block only; the body is fetched only for an accept."""
+    def classify(self, msg: EmailMessage, raw_headers: bytes, authserv_id: str,
+                 provider: str | None = None) -> Verdict:
+        """Spec §3 steps 2-6 on the header block only; the body is fetched only for an accept. `provider` is the
+        email provider whose mailbox is polled."""
         if replyparse.header_block_problem(raw_headers):
             return Verdict("quarantine", "malformed_headers")
         if replyparse.is_automatic(msg):
             return Verdict("quarantine", "automatic")
         db = self.svc.db
-        d = None
-        for did in replyparse.thread_delivery_ids(msg):
-            d = db.one("SELECT * FROM deliveries WHERE id=?", (did,))
-            if d is not None:
-                break
+        sender = replyparse.from_address(msg)
+        d, n = self._thread_match(replyparse.thread_delivery_ids(msg), sender, provider)
         if d is None:
             return Verdict("quarantine", "no_thread")
-        n = db.one("SELECT * FROM notifications WHERE id=?", (d["notification_id"],))
         if n is None or not n["reply_wanted"]:
             return Verdict("quarantine", "not_reply_enabled", d, n)
-        sender = replyparse.from_address(msg)
         if not sender or sender != (d["recipient_address"] or "").strip().lower():
             return Verdict("quarantine", "sender_mismatch", d, n)
         if not replyparse.dkim_passes(msg, authserv_id, sender.rpartition("@")[2]):
@@ -85,18 +82,45 @@ class Replies:
             return Verdict("duplicate", None, d, n)
         return Verdict("accept", None, d, n)
 
-    def quarantine(self, msg: EmailMessage, verdict: Verdict) -> None:
+    def _thread_match(self, ids: list[str], sender: str,
+                      provider: str | None) -> tuple[sqlite3.Row | None, sqlite3.Row | None]:
+        """The delivery this mail answers. `ids` come from one References chain, newest first: take the newest
+        delivery that accepts this reply (reply-enabled, sent to this sender, through the polled provider), so an
+        answer to a non-reply mail in a reply thread (an autoreply, a reply:false follow-up) still finds the
+        conversation. When none qualifies, the newest known delivery decides the quarantine reason."""
+        db = self.svc.db
+        first: tuple[sqlite3.Row | None, sqlite3.Row | None] = (None, None)
+        for did in ids:
+            d = db.one("SELECT * FROM deliveries WHERE id=?", (did,))
+            if d is None:
+                continue
+            n = db.one("SELECT * FROM notifications WHERE id=?", (d["notification_id"],))
+            if first[0] is None:
+                first = (d, n)
+            if (n is not None and n["reply_wanted"] and sender
+                    and sender == (d["recipient_address"] or "").strip().lower()
+                    and (provider is None or d["provider"] == provider)):
+                return d, n
+        return first
+
+    def quarantine(self, msg: EmailMessage, verdict: Verdict, key: str | None = None) -> bool:
+        """Record a rejected message once: a message already recorded under the same key (its Message-ID, else a
+        hash of its headers) is not recorded or announced again. Returns whether a row was added."""
         n, d = verdict.notification, verdict.delivery
+        key = (key if key is not None else replyparse.header(msg, "Message-ID").strip())[:300]
         with self.svc.db.tx() as c:
+            if key and c.execute("SELECT 1 FROM reply_quarantine WHERE message_id=? LIMIT 1", (key,)).fetchone():
+                return False
             c.execute("INSERT INTO reply_quarantine(received_at, from_address, subject, message_id, reason,"
                       " notification_id) VALUES (?,?,?,?,?,?)",
                       (iso(self.now()), replyparse.from_address(msg)[:320], replyparse.header(msg, "Subject")[:300],
-                       replyparse.header(msg, "Message-ID")[:300], verdict.reason, n["id"] if n is not None else None))
+                       key, verdict.reason, n["id"] if n is not None else None))
             if n is not None:
                 self.svc._emit(c, "reply.quarantined", n, d["id"] if d is not None else None, {"reason": verdict.reason})
         self.svc._after_commit()
         log.warning("reply quarantined", extra={"reason": verdict.reason,
                                                 "notification_id": n["id"] if n is not None else None})
+        return True
 
     def store(self, verdict: Verdict, key: str, p: replyparse.ParsedReply) -> str:
         d, n = verdict.delivery, verdict.notification

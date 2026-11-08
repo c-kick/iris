@@ -253,7 +253,7 @@ capabilities state the condition under which they apply (e.g.
 | Acknowledged? | Priority 2 only: receipt `acknowledged(_at/_by/_by_device)`, or a callback POST to a **publicly reachable** URL | `acknowledged`; receipt polling by default (Pushover: ≤ once per 5 s; we poll every 30 s), callback only if `public_base_url` is set |
 | Emergency expired without ack? | Receipt `expired=1` | delivery `expired` (keeps `delivered_at`) |
 | Action buttons / interaction reports | None. One supplementary URL (`url`, `url_title`) opens on tap; HTML `<a>` links in the message text are tappable in the Pushover app (stripped from the lock-screen banner); no taps are reported | `links: 1`, `actions: 0` + `inline_links`; the first URL action is the tap link, further URL actions become links in the message text (`html=1`, text escaped), actions without URL → capability gap; `interactions: false` |
-| Recall after sending | Only the repeating emergency alert (`receipts/{r}/cancel.json`) | `cancel_after_dispatch: severity=critical` |
+| Recall after sending | Only the repeating emergency alert: `receipts/cancel_by_tag/{notification id}.json` (every alert of it, also one from an attempt whose answer was lost), or `receipts/{r}/cancel.json` without a tag | `cancel_after_dispatch: severity=critical` |
 | TTL | `ttl` seconds, auto-deletes from device; ignored for priority 2 | local expiry always; `ttl` forwarded when not critical |
 | Errors | 4xx + `errors[]` = invalid, don't retry; 429 = monthly quota exhausted; 5xx = retry after ≥ 5 s | `permanent` / `retryable` attempt outcome, raw body stored |
 | Limits | message 1024 chars, title 250, url 512, url_title 100; 10 000 msgs/month; ≤ 2 concurrent connections | truncation recorded as gap; adapter concurrency 2; quota headers surfaced in `/v1/providers` and `/metrics` |
@@ -333,8 +333,13 @@ runs it: per-step locking on `NotifyService.mailbox_lock(provider)`, a daily wor
 **Inbound.** The reply mailbox is an IMAP account over implicit TLS, polled every
 30 s by the worker (no IDLE, no inbound SMTP, no MX change). Connection errors
 back off (10 s × 3ⁿ, cap 15 min); the admin UI shows the last success and error.
-Each session has a hard deadline. Mail is moved with `UID MOVE` (fallback
-`COPY` + `\Deleted` + `EXPUNGE`) to `Processed` or `Quarantine`. The database
+Each session has a hard deadline, re-armed for every message. Mail is moved with
+`UID MOVE` (fallback `COPY` + `\Deleted` + `UID EXPUNGE`) to `Processed` or
+`Quarantine`. Without UIDPLUS the original is left flagged `\Deleted`: a plain
+`EXPUNGE` would also remove mail someone else flagged in the polled folder, and the
+listing skips `\Deleted` messages. A message that ends three passes in a row (a
+refused move, a fetch that never finishes) is skipped for the rest of the process
+and reported as the poller's last error, so it cannot block every reply behind it. The database
 commit precedes the move, so a crash in between ends as a duplicate on the next
 poll, never as a second reply.
 
@@ -347,7 +352,8 @@ poll, never as a second reply.
    at the first line it does not recognise and treats a bare CR as a line break):
    CRLF line endings only, no control characters, every line a `Name:` header or a
    continuation, exactly one `From` (also counting `From :`) → else
-   `malformed_headers`. This closes a replay attack where a validly signed mail
+   `malformed_headers`; so is a header block Python's parser cannot read at all
+   (deeply nested comments raise `RecursionError`). This closes a replay attack where a validly signed mail
    from another account of the same provider gets an extra From in front of a line
    Python stops at.
 2. **Automatic mail** → `automatic`: `Auto-Submitted` other than `no`,
@@ -355,8 +361,12 @@ poll, never as a second reply.
    path or From, `multipart/report`.
 3. **Thread.** Our Message-ID is `<{delivery_id}@{from domain}>`; the poller looks at
    `In-Reply-To`, then `References` newest first, for a local part that is a
-   delivery id. None → `no_thread`. The notification was not sent with `reply`
-   (including every mail sent before 0.6.0) → `not_reply_enabled`.
+   delivery id. The first one that accepts this reply wins: reply-enabled, sent to
+   the From address, through the polled provider. So an answer to the service's own
+   autoreply or to a `reply: false` follow-up still reaches its conversation. When
+   none qualifies, the first known delivery decides the reason. None → `no_thread`.
+   The notification was not sent with `reply` (including every mail sent before
+   0.6.0) → `not_reply_enabled`.
 4. **Sender.** The bare From address, lower-cased, must equal the delivery's stored
    `recipient_address`; a message with more than one From header never matches
    → `sender_mismatch`. The From header is read strictly from its raw form: only
@@ -364,15 +374,18 @@ poll, never as a second reply.
    name, no address lists, comments, source routes or encoded words in the address).
    Anything else yields no sender, so a lenient parser can never read a different
    address than the receiving server and DKIM alignment saw (CVE-2023-27043 class).
-5. **DKIM** → `dkim_fail`. Only the **first** `Authentication-Results` header
-   counts, because the receiving server prepends its own and anything below may
-   have been written by the sender (checked against the deployment's mail server:
-   forged headers claiming its authserv-id are not removed). Its authserv-id must
-   equal the admin-entered `authserv_id`. RFC 8601 comments and quoted strings are
+5. **DKIM** → `dkim_fail`. `Authentication-Results` headers are read from the top,
+   because the receiving server prepends its own and anything below may have been
+   written by the sender (checked against the deployment's mail server: forged
+   headers claiming its authserv-id are not removed). Only the leading run of headers
+   whose authserv-id equals the admin-entered `authserv_id` counts; the first header
+   with another id ends it. That combines a split OpenDKIM + OpenDMARC pair. For each
+   of DKIM and DMARC the topmost header in the run that reports the method decides,
+   so a lower header can never override it. RFC 8601 comments and quoted strings are
    stripped before parsing, so `;` and tokens inside them cannot forge a verdict.
    `dkim=pass` must be the method token of a result, with a standalone `header.d`
    property (containing a dot) equal to or a parent of the From domain, **and** the
-   same header must show `dmarc=pass` with `header.from` equal to the From domain.
+   deciding DMARC header must show `dmarc=pass` with `header.from` equal to the From domain.
    DMARC is the server's own reading of the From header (it fails on multiple From
    headers), which binds the signature to the address compared in step 4. A mail
    server that does not run DMARC therefore accepts no replies.
@@ -380,11 +393,13 @@ poll, never as a second reply.
    moved to Processed.
 7. **Accept.** The full message is fetched, parsed and stored; then the **full**
    header block is judged again and must give the same verdict, delivery and sender,
-   else `header_mismatch` (the first verdict came from a bounded fetch). A message
-   that cannot be parsed → `unreadable`.
+   else `header_mismatch` (the first verdict came from a bounded fetch). More than
+   200 MIME parts → `too_complex` (the parser stops at part 201, so a flood of tiny
+   parts never becomes an object tree in memory). A message that cannot be parsed →
+   `unreadable`. Attachments past the cap of 10 are listed by name, never decoded.
 
-Quarantined mail is recorded (time, from, subject, Message-ID, reason) and the
-event `reply.quarantined` is emitted; its content is never stored and never
+Quarantined mail is recorded once per message (time, from, subject, Message-ID or a
+hash of the headers, reason) and the event `reply.quarantined` is emitted; its content is never stored and never
 shown to agents.
 
 **Accepted residual risk.** If the mail server's milter ever passed a message
