@@ -386,3 +386,19 @@ def test_mcp_instructions_do_not_overstate_reply_checks():
     text = " ".join(instructions("Europe/Amsterdam").split())
     assert "it was sent from the recipient's address and signed by their mail domain" in text
     assert "comes from the person" not in text
+
+
+def test_uid_skip_list_resets_when_uidvalidity_changes(email_live):
+    """0.13.2: the skip list belongs to one UID numbering; after a UIDVALIDITY change the same number is new mail."""
+    mb = FailingMoveMailbox(b"1")
+    mb.uidvalidity = b"100"
+    email_live.mailbox = mb
+    nid, did = send(email_live)
+    mb.add(reply_raw(did, message_id="<spam@example.org>", auth_results=["mx.example.org; dkim=fail"]))
+    for _ in range(inbound.MAX_UID_FAILURES):
+        with pytest.raises(inbound.MailboxError):
+            poll(email_live)
+    assert poll(email_live)["quarantined"] == 0  # UID 1 skipped
+    mb.bad, mb.uidvalidity = None, b"101"  # the folder was renumbered: UID 1 is another message now
+    assert poll(email_live)["quarantined"] == 1
+    assert inbound.skipped_note(email_live.service.providers["mail"]) is None

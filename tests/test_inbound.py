@@ -295,3 +295,11 @@ def test_truncated_header_block_is_too_large(email_live):
     assert poll(email_live)["quarantined"] == 1
     assert mb.folders["Quarantine"] == [uid] and mb.fetched == []
     assert email_live.service.db.scalar("SELECT reason FROM reply_quarantine") == "too_large"
+
+
+def test_imap_open_reads_uidvalidity(fake_imap, monkeypatch):
+    monkeypatch.setattr(FakeIMAP, "response", lambda self, code: (code, [b"4711"]), raising=False)
+    mb = box()
+    mb.open()
+    mb.close()
+    assert mb.uidvalidity == b"4711"

@@ -62,6 +62,7 @@ class ImapMailbox:
         self.inbox, self.processed, self.quarantine = inbox, processed, quarantine
         self.timeout = timeout
         self._imap: Any = None
+        self.uidvalidity: bytes | None = None  # the selected folder's UID numbering
         self._timer: threading.Timer | None = None
 
     @classmethod
@@ -102,6 +103,11 @@ class ImapMailbox:
             if f not in have:
                 raise MailboxError(f"reply folder {f!r} does not exist and could not be created")
         _ok(self._imap.select(_q(self.inbox)), f"select {self.inbox}")
+        try:
+            resp = self._imap.response("UIDVALIDITY")
+            self.uidvalidity = resp[1][0] if resp and resp[1] else None
+        except (AttributeError, imaplib.IMAP4.error):
+            self.uidvalidity = None  # unknown numbering: the skip list is kept as before
 
     def close(self) -> None:
         if self._timer is not None:
@@ -266,6 +272,10 @@ async def _poll_locked(svc: NotifyService, provider: EmailProvider, mailbox: Any
     skipped: list[bytes] = []
     provider._uid_skipped = skipped  # type: ignore[attr-defined]
     await asyncio.to_thread(mailbox.open)
+    uidvalidity = getattr(mailbox, "uidvalidity", None)
+    if getattr(provider, "_uid_validity", None) != uidvalidity:
+        fails.clear()  # the failures belong to the old numbering: the same UID is another message now
+        provider._uid_validity = uidvalidity  # type: ignore[attr-defined]
     try:
         for uid, size in await asyncio.to_thread(mailbox.list):
             # each message gets a full session budget (re-armed below), but a pass starts no new message after a
