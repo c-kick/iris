@@ -103,8 +103,7 @@ beyond its host and folder.
   `retention_days`. Messages of open groups older than that are deleted too, except claimed ones and the group's
   first and newest line. An open group in which no member was seen for 7 days is closed ("closed: nobody seen for 7
   days").
-- **Admin → Chats** shows one thread per host and folder, newest activity first; a thread other than the open one
-  lights up (amber) when something new happens in it, until you open it. Opening it lists the members under
+- **Admin → Chats** shows one thread per host and folder, newest activity first. Opening it lists the members under
   the thread (status dot: amber busy, amber ring busy?, blue waiting, green free, grey unknown; name, kind, status
   since, intent, claims held; click a member to @mention it; a member who left is only its "left the chat" line in the thread; sessions
   present but not in the chat below them). On a phone the members fold into the thread header as dots and names. The

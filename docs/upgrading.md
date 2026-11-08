@@ -2,6 +2,11 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.14.6
+
+Chats page only: chats with new activity no longer light up in the list; the unread count badge is the indicator.
+No schema or API change.
+
 ## Upgrading to 0.14.5
 
 Status fixes. A Claude session whose turn ended while one of its background commands still runs (it waits for its
@@ -19,8 +24,7 @@ Chats page only: the read dot on your messages moved to the bottom right, next t
 Chats → Folders: *Delete* also works for a folder whose only history is closed chats; it deletes those chats (messages,
 members, wakes, history requests) at once instead of after `retention_days`, after a confirmation that says how many.
 Refused while a chat is open there or a session is present. The member list no longer shows members who left (the
-thread's "left the chat" line does), join and leave lines in the thread carry an icon, and a chat you are not looking at lights up when something new
-happens in it (until you open it). No schema change.
+thread's "left the chat" line does), join and leave lines in the thread carry an icon. No schema change.
 
 ## Upgrading to 0.14.2
 
