@@ -317,6 +317,8 @@ class Database:
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT"},
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER"},
                                   "subscriptions": {"failing_since": "TEXT"},
+                                  # 0.13.2: bumped by every claim, never reset (a retry resets attempts)
+                                  "deliveries": {"lease_no": "INTEGER NOT NULL DEFAULT 0"},
                                   "replies": {"collected_at": "TEXT"}})  # 0.13.1: a waiter printed it  # 0.13.1: start of a failure streak
         # members from before 0.13.0's read cursor owe nothing: start them at their group's newest message
         self.conn.execute("UPDATE chat_members SET last_read_rowid=(SELECT COALESCE(MAX(rowid), 0) FROM chat_messages"

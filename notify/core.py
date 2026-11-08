@@ -738,8 +738,8 @@ class NotifyService:
                     continue
                 dev = self.config.devices.get(d["device"])
                 recipient = p.recipient(dev.address) if p is not None and dev is not None else None
-                c.execute("UPDATE deliveries SET state=?, attempts=attempts+1, lease_until=?, recipient_address=?,"
-                          " updated_at=? WHERE id=?", (SENDING, in_seconds(lease), recipient, now, d["id"]))
+                c.execute("UPDATE deliveries SET state=?, attempts=attempts+1, lease_no=lease_no+1, lease_until=?,"
+                          " recipient_address=?, updated_at=? WHERE id=?", (SENDING, in_seconds(lease), recipient, now, d["id"]))
                 claimed.append(c.execute("SELECT * FROM deliveries WHERE id=?", (d["id"],)).fetchone())
         if cancelled:
             self._after_commit()
@@ -811,8 +811,8 @@ class NotifyService:
                 (d["id"], d["attempts"], "send", started_at, iso(now), result.outcome, result.http_status,
                  dumps(result.request_summary), result.response_body, result.error))
             cur = c.execute("SELECT * FROM deliveries WHERE id=?", (d["id"],)).fetchone()
-            if cur["state"] != SENDING or cur["attempts"] != d["attempts"]:
-                return  # lease was recovered meanwhile (and maybe re-claimed); the newer run owns it
+            if cur["state"] != SENDING or cur["lease_no"] != d["lease_no"]:
+                return  # lease was recovered meanwhile (and maybe re-claimed, even after a retry); the newer run owns it
             n = c.execute("SELECT * FROM notifications WHERE id=?", (d["notification_id"],)).fetchone()
             if result.outcome == "success":
                 fields: dict[str, Any] = {"dispatched_at": iso(now), "provider_message_id": result.provider_message_id,
