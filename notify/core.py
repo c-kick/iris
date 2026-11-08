@@ -152,6 +152,7 @@ class NotifyService:
         self.http: Any = None  # shared httpx client, set by the app
         # attachment fetching builds its own locked-down client; these are seams for the app and tests
         self.fetch_transport: Any = None
+        self.webhook_http: Any = None  # webhook client (connect-time address checks), set by the app
         self.resolve = attachments.default_resolve
         self._intake: asyncio.Semaphore | None = None  # created on first use, in the serving loop
         from .replies import Replies  # replies imports core for types; import here to avoid a cycle

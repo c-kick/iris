@@ -14,7 +14,7 @@ import httpx
 from .core import Client, Conflict, NotifyService
 from .db import dumps, now_iso
 from .device_check import check_devices, record_check
-from . import attachments
+from . import attachments, netguard
 from .providers.base import ProviderError, SendResult
 from .providers.email_inbound import mask_secret, poll_once, skipped_note
 
@@ -295,7 +295,7 @@ class Workers:
                     if not await webhook_address_ok(item["url"], self.service.resolve):
                         self.service.webhook_result(item, False, None, "address not allowed")
                         return
-                    resp = await self.http.post(item["url"], content=body, headers=headers,
+                    resp = await (self.service.webhook_http or self.http).post(item["url"], content=body, headers=headers,
                                                 timeout=self.service.config.server.webhook_timeout_seconds)
                     if attachments._peer_denied(resp):  # e.g. DNS changed between the check and the connect
                         self.service.webhook_result(item, False, None, "address not allowed")
@@ -306,7 +306,8 @@ class Workers:
                     # the stored text is shown to the subscription's owner: keep it coarse (no port-scan oracle)
                     log.info("webhook delivery failed", extra={"subscription_id": item["sid"],
                                                                "error": f"{type(e).__name__}: {e}"[:300]})
-                    kind = "timeout" if isinstance(e, httpx.TimeoutException) else "connection failed"
+                    kind = ("address not allowed" if netguard.refused(e) else
+                            "timeout" if isinstance(e, httpx.TimeoutException) else "connection failed")
                     self.service.webhook_result(item, False, None, kind)
                 except Exception as e:  # e.g. a host name the resolver refuses: record it, never leave the row pending
                     log.info("webhook delivery failed", extra={"subscription_id": item["sid"],

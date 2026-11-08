@@ -25,6 +25,7 @@ from .chat_decide import router as chat_decide_router
 from .bodylimit import BodyLimit
 from .config import NotifyConfig
 from .core import NotifyService
+from .netguard import GuardedTransport
 from .db import Database
 from .mcp_server import SCOPE_KEY, build_mcp
 from .providers import build_provider
@@ -94,6 +95,10 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
         service = NotifyService(cfg, db, providers)
         service.http = http
         service.fetch_transport = transport  # attachment fetches never use the shared client
+        # webhooks get their own client: every connect is checked against the deny list (netguard), never via a proxy
+        service.webhook_http = httpx.AsyncClient(transport=transport or GuardedTransport(), trust_env=False,
+                                                 timeout=httpx.Timeout(20.0, connect=10.0),
+                                                 headers={"User-Agent": f"hnl-notify/{__version__}"})
         holder["service"] = service
         app.state.loop = asyncio.get_running_loop()
         service.loop = app.state.loop  # lets reconfigure() wake the dispatcher from a worker thread
@@ -119,6 +124,7 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
                 if workers:
                     await workers.stop()
                 await http.aclose()
+                await service.webhook_http.aclose()
                 db.close()
                 log.info("hnl-notify stopped")
 

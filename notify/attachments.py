@@ -230,6 +230,9 @@ async def prepare(items: list[AttachmentIn], allow: list[str], transport: httpx.
     used = sum(p.size for p in decoded if p)
     out: list[PreparedAttachment] = []
     try:
+        if transport is None:
+            from .netguard import GuardedTransport  # every connect is checked, not only the name before it
+            transport = GuardedTransport()
         async with asyncio.timeout(FETCH_BUDGET_SECONDS), httpx.AsyncClient(
                 transport=transport, trust_env=False, follow_redirects=False,
                 timeout=httpx.Timeout(FETCH_BUDGET_SECONDS)) as http:
