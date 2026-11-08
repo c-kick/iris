@@ -2,14 +2,14 @@
 
 ## Operations
 
-- Logs: `docker logs hnl-notify` (one JSON object per line; every state change is an `event` line with ids).
+- Logs: `docker logs iris` (one JSON object per line; every state change is an `event` line with ids).
 - Health: `/health/live`, `/health/ready` (includes `checks.scheduler`). Metrics (Prometheus text): `/metrics` (incl. `notify_scheduled_next_seconds`, `notify_scheduled_overdue`).
 - Admin UI: `/admin` (session login, CSRF header, strict CSP). Admin API calls also accept a bearer token with the `admin` scope.
 - Backup: `sqlite3 data/notify.sqlite3 ".backup data/notify-$(date +%F).sqlite3"` **plus** `secrets/master.key` (without it the stored Pushover and SMTP secrets cannot be decrypted). Backups include attachment bytes that have not yet been purged. History is kept 90 days (Settings).
 - Signed-in admin page only: changing cleanup settings, *Clean up now* and reading reply contents need the browser session; an admin bearer token gets 403 on the first two and states, times and counts only for replies.
 - Reply mailbox: *Providers* → *Manage…* in the admin UI (also linked from the size alert) shows the Processed and Quarantine folders, the cleanup
   settings and the last run; the poll, the connection test and cleanup share one lock per mailbox, so only one IMAP
-  session of hnl-notify acts on it at a time.
+  session of Iris acts on it at a time.
 - Reverse proxy: list its address in Settings → *Trusted reverse proxies* (`server.trusted_proxies`, signed-in page
   only). From those peers only, the client's address comes from `X-Forwarded-For` (the nearest hop that is not a trusted
   proxy) and the scheme from `X-Forwarded-Proto`; the login, decision-link and registration limits then count per

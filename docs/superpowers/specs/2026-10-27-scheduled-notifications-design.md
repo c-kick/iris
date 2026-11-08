@@ -1,5 +1,7 @@
 # Scheduled notifications — design
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 Date: 2026-10-27 · Status: revision 2 (after builder check, hostile review and ambassador ruling) ·
 Target version: 0.8.0 (on top of 0.7.0)
 

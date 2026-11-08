@@ -1,5 +1,7 @@
 # Browser push (Web Push) — design
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 Date: 2026-10-30 · Status: revision 3, approved 2026-10-30 (after builder check, owner answers, staff review and ambassador rulings) · Target version: 0.10.0 (on top of 0.9.1)
 
 ## Intent

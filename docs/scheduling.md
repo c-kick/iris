@@ -2,7 +2,7 @@
 
 ## Scheduling
 
-Any sender can hold a notification back and let hnl-notify send it later. Add **one** of
+Any sender can hold a notification back and let Iris send it later. Add **one** of
 `send_at` or `delay` to a normal submit; everything else (targets, severity, `kinds`,
 attachments, links, actions, `reply`, `webhook`, idempotency keys) works as before.
 
@@ -34,11 +34,11 @@ How it behaves:
   applies. The 202 carries a `routing_preview` of how it would route now. Targets, attachments (URLs are
   fetched at scheduling time), sizes and follow-up rules are validated immediately, so mistakes surface at once.
 - **How late is still on time.** `max_late_seconds` (60 to 86 400, default 3 600) is how long after
-  `send_at` it may still be sent, for example after an outage of hnl-notify or the provider. The limit bounds
+  `send_at` it may still be sent, for example after an outage of Iris or the provider. The limit bounds
   dispatch as well as release: a delivery not dispatched by `send_at + max_late_seconds` expires. Past it,
   the notification is **missed** (status `expired`, routing note "missed: due at ...") and shows under Needs
   attention. A morning ping therefore never arrives in the afternoon.
-- **Caps per client**, 422 beyond them (admin tokens and hnl-notify's own notifications are exempt): at most
+- **Caps per client**, 422 beyond them (admin tokens and Iris' own notifications are exempt): at most
   100 notifications in `scheduled` and 50 MiB of attachment bytes held by them.
 - **Idempotency.** Replaying a key with a send time that resolves differently answers 409 ("use PATCH").
 - `in_reply_to` a notification that is itself still scheduled is a 422 (the mail needs a sent parent to thread to).

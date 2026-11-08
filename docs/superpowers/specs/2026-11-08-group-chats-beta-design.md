@@ -1,5 +1,7 @@
 # Group chats beta — design
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 Date: 2026-11-08. Status: built in 0.14.0 (branch chat-beta-0.14); choices made with the owner in the
 2026-11-08 interview, open questions answered at the end. Deviations while building: invites are rows in their own
 table (`chat_invites`) delivered through the same relay endpoints; recently stale members ride along in the heartbeat's

@@ -2,6 +2,42 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.15.0: the rename to Iris
+
+hnl-notify is now **Iris**: the product, the repository (`https://github.com/c-kick/iris`, the old URL redirects),
+the Python distribution (`iris`), the Docker image (`iris:<version>`) and the container (`iris`). Nothing stored
+changes: no schema change, no data migration, the same master key, the same tokens.
+
+What you see: page titles and headings, the admin UI, the OpenAPI title, the MCP server name (`Iris`) and
+instructions, log lines (`Iris started`), the default email sender name (`Iris`; a sender name you configured,
+including `hnl-notify`, is kept), the test notification title, HTTP `User-Agent: iris/<version>` (also on webhooks),
+the browser-push fallback title and the chat frame header (`[Iris group chat · …]`, system notices "Notice from
+Iris."). Quoted text in chats neutralises both the Iris and the old hnl-notify header words.
+
+Kept on purpose (renaming them would break running clients or stored data for no gain):
+
+| Kept | Why |
+|---|---|
+| Python module `notify`, `python -m notify`, `NOTIFY_*` variables, config file names, port 8930 | scripts, Compose files and hooks use them |
+| API and MCP endpoints, tool names, token prefixes, database file `notify.sqlite3`, UID/GID 1026 | existing clients and data |
+| System client id `hnl-notify`, reserved client names, event sources such as `hnl-notify/device-check` | stored history and attribution; no rewrite of old rows |
+| Encryption associated data `b"hnl-notify"` | a format identifier of the stored secrets, never changed |
+| `~/.config/hnl-notify/`, `~/.cache/hnl-notify-chat`, `~/.cache/hnl-notify-wait`, script names | hosts already have them |
+| Compose project name `hnl-notify` (now pinned in `compose.yaml`), service key `notify` | the new container replaces the old one in the same stack, whatever the checkout directory is called |
+| Hostnames, browser enrollments, service worker scope, VAPID keys, chat membership handles | browsers and sessions keep working |
+
+**Upgrade.** Take a database backup, then from the existing checkout: `git pull` (after the repository rename,
+`git remote set-url origin https://github.com/c-kick/iris.git`) and `docker compose up -d --build`. Compose stops
+and removes the `hnl-notify` container and starts `iris` with the same mounts; run `docker ps` afterwards: there
+must be exactly one. Commands that named the container change: `docker logs iris`, `docker exec iris …`.
+
+**Agents.** New MCP registrations use the name `iris` (`claude mcp add --transport http iris …/mcp`). An existing
+`hnl-notify` registration keeps working; do not register both in one scope. `notify-wait` reads the `iris` entry
+in `~/.claude.json`, else the `hnl-notify` one: the global scope first, then each project; within a scope `iris`
+wins, and the chosen entry is used whole (an `iris` entry without a token is an error, not a reason to take the
+token from the `hnl-notify` entry). **Copy the new `scripts/notify-wait` to hosts that run a copy.**
+Running sessions keep their registration until they are reconfigured and restarted.
+
 ## Upgrading to 0.14.7
 
 Chats page only: each agent in a chat gets its own colour (eight distinct ones, by join order) on its name, the edge

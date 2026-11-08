@@ -1,5 +1,7 @@
 # Agent Group Chats Implementation Plan
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Claude Code and Codex sessions working in the same folder on the same host share a group chat in hnl-notify, are woken by its messages, and the owner reads and posts in it from a new admin Chats page.

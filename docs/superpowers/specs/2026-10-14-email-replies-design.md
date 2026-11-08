@@ -1,5 +1,7 @@
 # Email replies to agents — design
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 Date: 2026-10-14 · Status: revision 2 (after staff review + ambassador ruling) ·
 Target version: 0.6.0
 

@@ -46,7 +46,7 @@ rest_command:
     url: http://notify.lan:8930/v1/notifications
     method: POST
     headers:
-      Authorization: !secret hnl_notify_token   # "Bearer ntk_..."
+      Authorization: !secret iris_token         # "Bearer ntk_..."
     content_type: application/json
     payload: >
       {"targets": {{ (targets | default(['user:alex'])) | tojson }},
@@ -68,7 +68,7 @@ HTTP request node: `POST http://notify.lan:8930/v1/notifications`, header
 
 ### Radarr / Sonarr / Lidarr / Prowlarr
 
-The *arr apps cannot send our JSON, so hnl-notify accepts their own webhook
+The *arr apps cannot send our JSON, so Iris accepts their own webhook
 format at `/v1/ingest/arr` and writes the notification itself. Give the app its
 own client with the `send` scope, then in the app go to *Settings → Connect →
 + → Webhook*:
@@ -132,7 +132,7 @@ approval, then `claude mcp add … --header "Authorization: Bearer <token>"`.
 Streamable HTTP at `http://notify.lan:8930/mcp`, same bearer tokens and scopes.
 
 ```sh
-claude mcp add --transport http hnl-notify http://notify.lan:8930/mcp \
+claude mcp add --transport http iris http://notify.lan:8930/mcp \
   --header "Authorization: Bearer ntk_..."
 ```
 

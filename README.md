@@ -1,9 +1,9 @@
-# hnl-notify
+# Iris (formerly hnl-notify)
 
 A self-hosted notification gateway for a home or small-office network.
 Trusted services (Home Assistant, Node-RED, n8n, scripts, AI agents) submit
 **notification intent** — message, severity, logical target — over REST or
-MCP. hnl-notify routes it to devices, delivers through provider adapters,
+MCP. Iris routes it to devices, delivers through provider adapters,
 retries, persists everything and reports status honestly: it only claims what
 the provider can actually observe.
 
@@ -19,16 +19,21 @@ Design, data model, lifecycle and the full Pushover capability analysis:
 - Intended for a trusted LAN/VPN: plain HTTP, bearer tokens. Put it behind a
   TLS reverse proxy if it has to leave the local network.
 
+Iris takes its name from the Greek messenger goddess and personification of the rainbow, reflecting its role in
+carrying messages through several delivery channels. It was called **hnl-notify** until 0.15.0; technical names
+from then (the `notify` Python module, `NOTIFY_*` variables, port 8930, token prefixes, the database file, script
+config paths) are kept on purpose, see [upgrading to 0.15.0](docs/upgrading.md#upgrading-to-0150-the-rename-to-iris).
+
 Examples assume the service runs at `http://notify.lan:8930`; replace that with your host. Upgrading: read
 [docs/upgrading.md](docs/upgrading.md) first.
 
 ## Deploy
 
 ```sh
-git clone <this repository> hnl-notify && cd hnl-notify
+git clone https://github.com/c-kick/iris.git && cd iris
 mkdir -p data secrets && chmod 700 data secrets
 docker compose up -d --build
-docker logs hnl-notify 2>&1 | grep "setup code"
+docker logs iris 2>&1 | grep "setup code"
 ```
 
 The container runs as UID/GID 1026 by default (`user:` in `compose.yaml`);
@@ -49,7 +54,7 @@ admin password. Then, in the admin UI:
 2. **People & groups → Add person**: add yourself (e.g. `alex`).
 3. **Devices → Add device**: name it (e.g. `alex-phone`), let it belong to
    you, paste your Pushover user key, press *Find devices* and pick the phone
-   (leave it empty to reach all your Pushover devices). hnl-notify re-checks a
+   (leave it empty to reach all your Pushover devices). Iris re-checks a
    picked device name with Pushover at most every 15 minutes before a push: if
    the device is gone from your account, the push fails and you get one alert,
    instead of Pushover quietly sending it to all your other devices. For email, add a
@@ -71,7 +76,7 @@ using the 32-byte key that the container generates in `secrets/master.key`
 (0600). **Back up both**; the database is useless without the key. Changes
 apply immediately, no restart.
 
-Links in notifications that hnl-notify sends you (access requests) need the
+Links in notifications that Iris sends you (access requests) need the
 address under which you reach the service. Set it under **Settings → Address
 of this service**, or as `NOTIFY_EXTERNAL_URL` in a local, git-ignored
 `compose.override.yaml`:
@@ -83,7 +88,7 @@ services:
       NOTIFY_EXTERNAL_URL: http://notify.lan:8930
 ```
 
-Forgot the admin password: `docker exec hnl-notify python -m notify reset-admin`
+Forgot the admin password: `docker exec iris python -m notify reset-admin`
 prints a new setup code (and signs out every browser).
 
 `GET /health/ready` returns 503 with the exact reason (no device ready,

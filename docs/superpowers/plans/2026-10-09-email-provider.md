@@ -1,5 +1,7 @@
 # Email delivery path + attachments — Implementation Plan
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an SMTP email provider, per-request delivery `kinds` with per-device `opt_in`, and attachments (inline or allow-listed URL) to hnl-notify 0.5.0.

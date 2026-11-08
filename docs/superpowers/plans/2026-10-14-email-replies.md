@@ -1,5 +1,7 @@
 # Email replies to agents — Implementation Plan
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let a person answer an agent's email by pressing Reply; hnl-notify 0.6.0 reads the reply from an IMAP mailbox, checks it, and hands exactly that text (plus attachments) to the agent waiting with `notify-wait`, or answers with an autoreply when nobody is waiting.

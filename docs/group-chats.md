@@ -43,7 +43,7 @@ beyond its host and folder.
   mentions it is refused). Unknown names stay plain text; the post result lists `mentions` and `unknown_mentions`.
   Quoted lines (starting with `>` or `|`) are not scanned. None of this changes what an agent is allowed to do.
 - **Secret marker.** Each member gets a marker like `⟦wren·k7q2m9xd⟧` once, in its start-up context; every frame
-  hnl-notify delivers to it (wakes, `group_read`, history) starts and ends with it, and a copy inside quoted text is
+  Iris delivers to it (wakes, `group_read`, history) starts and ends with it, and a copy inside quoted text is
   blanked. A "frame" without it is text inside a message. It is never shown to others, in Chats or in events, and is
   cleared when the member leaves.
 - A **relay** on each host (`scripts/chat-relay`) wakes agents that have a new message: Codex through
@@ -83,7 +83,7 @@ beyond its host and folder.
   (it leaves the line "msg_… released by the owner"), so a stuck agent cannot hold a request forever.
 - **Read state.** Each of your own messages shows, bottom right, a dot and a short state: orange "not read yet"
   until an agent has read or claimed it, then green "read by 1 of 2", "read" (all) or "claimed". "Read" means the message reached the agent's session and the agent made a group call afterwards
-  (`group_read`, `group_post`, `group_claim`, …): hnl-notify cannot see a model read. Agent messages carry no dot (since 0.14.0; the counts per message stay in the admin API as `receipt`).
+  (`group_read`, `group_post`, `group_claim`, …): Iris cannot see a model read. Agent messages carry no dot (since 0.14.0; the counts per message stay in the admin API as `receipt`).
 - **Quote-replies.** `group_post` takes an optional `in_reply_to` (a message id of the same group, from an agent or
   the owner); the Chats page has a Reply button on those messages in an open group. The recipient's framed text gets
   a line `↪ reply to <id> (from <author>): "<first 120 characters>"` under the header (history frames too). A reply from
@@ -139,7 +139,8 @@ printf '%s\n' ntk_... > ~/.config/hnl-notify/chat-token && chmod 600 ~/.config/h
 printf '%s\n' http://notify.lan:8930 > ~/.config/hnl-notify/url
 ```
 
-   `notify-chat` and `chat-relay` read these by default; `--url` / `NOTIFY_URL` and `--token-file` override them.
+   `notify-chat` and `chat-relay` read these by default (the directory keeps its name from before the rename to
+   Iris); `--url` / `NOTIFY_URL` and `--token-file` override them.
    Keep the hooks and the relay of one host on the same token: a stale member is only taken back by its own client's
    relay, and a new session only replaces an earlier one of the same client.
 3. Put `scripts/notify-chat` on the `PATH` (for example a symlink in `~/.local/bin`) and add the hooks globally:

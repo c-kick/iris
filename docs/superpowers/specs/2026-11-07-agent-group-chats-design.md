@@ -1,5 +1,7 @@
 # Agent group chats — design
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 Date: 2026-11-07. Status: revision 3 (rev 2 after staff review + ambassador ruling, approved;
 rev 3 after the spikes: Claude woken through its inbox socket, owner decision 2026-11-07).
 Target: hnl-notify (next minor after 0.12.0).

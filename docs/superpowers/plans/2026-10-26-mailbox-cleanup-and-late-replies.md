@@ -1,5 +1,7 @@
 # Reply Mailbox Cleanup and Late Replies Implementation Plan
 
+> Archived record: written when this project was called hnl-notify (renamed to Iris in 0.15.0). Names, commands and paths below are kept as they were decided; see docs/upgrading.md for what changed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** hnl-notify 0.7.0: per-conversation reply handles that make late replies collectable only by

@@ -1,7 +1,10 @@
-# hnl-notify — architecture
+# Iris — architecture
+
+Iris was called hnl-notify until 0.15.0. Identifiers from then (module `notify`, the system client id
+`hnl-notify`, event sources such as `hnl-notify/device-check`, the encryption associated data) are kept on purpose.
 
 Unified notification service for the LAN. Senders state *intent* (what, how
-urgent, for whom). hnl-notify owns routing, delivery, persistence, retries,
+urgent, for whom). Iris owns routing, delivery, persistence, retries,
 status tracking and provider quirks. Pushover (phone push) is the first
 delivery path, email (SMTP, with file attachments) the second; nothing in the
 public REST or MCP interface is provider-specific.
@@ -21,7 +24,7 @@ pydantic, plus the official MCP Python SDK.
  senders (HA, Node-RED, n8n, scripts, agents)
    │  REST /v1/*             MCP /mcp  (same auth, same core)
    ▼
- ┌─────────────────────────── hnl-notify ───────────────────────────┐
+ ┌────────────────────────────── Iris ──────────────────────────────┐
  │ auth ─► intake ─► router ─► deliveries (SQLite, 1 per device)    │
  │                                  │                               │
  │   dispatcher ◄───────────────────┘   (lease, retry/backoff)      │
@@ -310,7 +313,7 @@ never raises on sender input. One send at a time per email provider (`max_concur
 
 Optional, email only. An agent sends with `reply: true`; the email carries
 `Reply-To: <reply mailbox>` and a footer saying a reply reaches the agent. The
-person presses Reply, hnl-notify reads the mailbox, checks the mail and hands
+person presses Reply, Iris reads the mailbox, checks the mail and hands
 the new text (plus attachments) to the agent that is waiting for it. Paths that
 cannot carry replies (Pushover, email without a reply mailbox) record the
 capability gap `replies` and still send. Notifications without `reply` /
@@ -320,7 +323,7 @@ and `authserv_id` are configured.
 
 **Access.** One gate (`Replies._access`) serves claim, listing, attachment download and follow-up submission:
 the sending token's visibility, then the conversation row (a reply conversation without a row is refused), then the
-reply handle (`hmac.compare_digest` against the stored hash; legacy rows need the sending token instead). hnl-notify's
+reply handle (`hmac.compare_digest` against the stored hash; legacy rows need the sending token instead). Iris'
 own notifications (autoreply, size alert) skip the handle through a private flag on the request. Bearer admin tokens
 get no bypass and see no reply content in `/admin/api`. Late replies: a swept (`unclaimed`) reply of a non-legacy
 conversation has `late_ok=1` and is claimed after the waiting ones.
@@ -466,7 +469,7 @@ tokens of at most 100 characters; anything else, and `text/html` and
 endpoint with one waiter id per run, prints the reply and saves attachments.
 
 - Base URL and token: `--url` / `NOTIFY_URL`, `--token-file` / `NOTIFY_TOKEN`, else the
-  `hnl-notify` MCP entry in `~/.claude.json`. The token is never printed.
+  `iris` MCP entry (else the `hnl-notify` one from before the rename) in `~/.claude.json`. The token is never printed.
 - Attachment URLs from the service must be relative paths on the service; the
   token is only ever sent to the configured base URL and redirects are not followed.
 - Filenames are reduced to a base name, control characters, separators and a
@@ -563,7 +566,7 @@ hash into the API-client configuration with the granted scopes, so the app's
 token starts working without reconfiguration; denial or 7-day expiry leaves it
 inert forever. Admin scope can never be requested or granted this way. New
 requests alert the configured targets (default: every person) through
-hnl-notify itself. The alert's link opens `/admin/decide/{id}?k=<code>`: a
+Iris itself. The alert's link opens `/admin/decide/{id}?k=<code>`: a
 login-free page for that one request with Approve/Deny buttons (POST; GET
 never decides). `<code>` is random, stored only as a hash, cleared by any
 decision (phone or admin UI), expires with the request, and wrong codes are

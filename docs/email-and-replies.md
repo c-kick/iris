@@ -97,7 +97,7 @@ the reply endpoints, 422 on a follow-up). Send it in the `reply_handle` field or
 `X-Reply-Handle` header, never in `in_reply_to` and never in a URL. A follow-up with
 `reply: true` into a conversation that has no handle yet creates one.
 
-*Threat model.* hnl-notify is meant for a trusted LAN. The reply handle protects against
+*Threat model.* Iris is meant for a trusted LAN. The reply handle protects against
 **accidental or confused** cross-agent access: a wrong id, a new session reusing an old
 one, a second agent on the same token. It does not protect against a hostile agent running
 as the same user: the handle appears in the sending agent's tool output, which its
@@ -122,7 +122,8 @@ Attachments: /tmp/notify-reply-x1y2/screenshot.png
 ```
 
 It reads the service address and token from `NOTIFY_URL` / `NOTIFY_TOKEN`, or from
-the `hnl-notify` MCP entry in `~/.claude.json`; `--token-file PATH` reads it from a file instead
+the `iris` MCP entry in `~/.claude.json` (else the `hnl-notify` entry from before the rename; within the
+global scope, then each project, `iris` wins and the entry is used whole, never mixed with another); `--token-file PATH` reads it from a file instead
 (for agents without that entry, e.g. Codex). The token is never printed.
 The handle comes from a positional argument containing `:`, else `--handle-file`, else
 `NOTIFY_REPLY_HANDLE`, and is never printed. Prefer the environment variable or the file: the
@@ -170,7 +171,7 @@ block that is not plain CRLF `Name: value` lines, or one the parser cannot read)
 is seen again. A message whose handling fails three passes in a row (for example a move the server
 refuses) is skipped until the service restarts or the folder's UIDVALIDITY changes, and the admin page shows it as
 the poller's last error. A server without UIDPLUS cannot expunge single messages: what was moved stays in the
-polled folder flagged `\Deleted` (hnl-notify never expunges the whole folder), and the admin page shows how many;
+polled folder flagged `\Deleted` (Iris never expunges the whole folder), and the admin page shows how many;
 remove them with a mail client. Two email providers may not read the same reply mailbox folder (same IMAP server,
 port, user and folder): saving the second is refused, because each would quarantine the other's replies.
 Reply text is capped at 8000 characters; at most 10 attachments
@@ -178,7 +179,7 @@ and 10 MiB are kept.
 
 ### Reply mailbox cleanup
 
-hnl-notify moves handled replies to `Processed` and rejected mail to `Quarantine` and, from
+Iris moves handled replies to `Processed` and rejected mail to `Quarantine` and, from
 0.7.0, deletes old mail from those two folders by itself (never from the folder it reads).
 
 | Setting (per email provider) | Default | Meaning |
