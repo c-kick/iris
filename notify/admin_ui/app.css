@@ -428,14 +428,14 @@ details.delivery summary:hover { color: var(--ink); }
 /* The Chats page fills the viewport: only the folder list and the message list scroll, never the page. */
 .shell:has(.chats) { height: 100vh; height: var(--app-h, 100dvh); min-height: 0; overflow: hidden; }
 .main:has(.chats) {
-  max-width: 1280px; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  max-width: none; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
   padding-top: 1.2rem; padding-bottom: 1.2rem;
 }
 .main:has(.chats) .section-head { margin-bottom: .9rem; padding-bottom: .7rem; flex: none; }
 /* the description lives in the empty pane, so the thread gets the height */
 .main:has(.chats) .section-head p { display: none; }
 .chats {
-  display: grid; grid-template-columns: minmax(240px, 30%) minmax(0, 1fr);
+  display: grid; grid-template-columns: clamp(260px, 24%, 340px) minmax(0, 1fr);
   flex: 1 1 auto; min-height: 0;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); overflow: hidden; box-shadow: var(--shadow-panel);
 }
@@ -514,12 +514,10 @@ details.delivery summary:hover { color: var(--ink); }
 .cm .who small { margin-left: 0; }
 .cm .who .kind, .cm .quote .kind { font-weight: 400; font-size: .7rem; color: var(--faint); text-transform: none; }
 .ticks { margin-left: auto; padding-left: .6rem; display: inline-flex; align-items: center; align-self: center; color: var(--muted); }
-/* receipt dots: two discs overlapping like a card logo; the overlap reads darker */
-.ticks i { width: 12px; height: 12px; border-radius: 50%; background: currentColor; opacity: .55; flex: none; }
-.ticks i + i { margin-left: -5px; }
-.ticks i.hollow { background: transparent; border: 2px solid currentColor; opacity: .8; }
-.ticks.claimed { color: var(--ok); }
-.ticks.claimed i { opacity: .7; }
+/* read dot on the owner's messages: orange = no agent read or claimed it yet, green = one did */
+.ticks i { width: 9px; height: 9px; border-radius: 50%; background: currentColor; flex: none; }
+.ticks.unseen { color: var(--warn); }
+.ticks.seen { color: var(--ok); }
 .cm .body { white-space: pre-wrap; }
 .cm.claude { --who: var(--claude); }
 .cm.codex { --who: var(--codex); }

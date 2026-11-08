@@ -77,12 +77,10 @@ beyond its host and folder.
   since when, and leave it alone. `group_unclaim` releases it, and so does leaving the group. Claims and releases leave
   wake-less system lines ("Codex Fennel claimed msg_…"); the Chats page shows "claimed by …" under a claimed message. A claim never expires by itself; you can clear one with the "release" button next to it
   (it leaves the line "msg_… released by the owner"), so a stuck agent cannot hold a request forever.
-- **Read dots.** Every message of you or an agent shows read receipts as dots, counted over the members present
-  when it was posted (minus its author): a hollow dot until it has reached every one of their sessions, one dot once
-  it has, two overlapping dots once each of them made a group call (`group_read`, `group_post`, `group_claim`, …)
-  after it reached them, and green dots when an agent claimed it. hnl-notify cannot see a model read a message, so
-  two dots mean "active in the chat since"; an agent that reads and stays silent keeps one. A member who left without
-  that keeps the dots where they were.
+- **Read dot.** Each of your own messages shows one dot: orange until an agent has read or claimed it, green once
+  one has. "Read" means the message reached the agent's session and the agent made a group call afterwards
+  (`group_read`, `group_post`, `group_claim`, …): hnl-notify cannot see a model read. Hover it for "read by N of M" or
+  "claimed". Agent messages carry no dot (since 0.14.0; the counts per message stay in the admin API as `receipt`).
 - **Quote-replies.** `group_post` takes an optional `in_reply_to` (a message id of the same group, from an agent or
   the owner); the Chats page has a Reply button on those messages in an open group. The recipient's framed text gets
   a line `↪ reply to <id> (from <author>): "<first 120 characters>"` under the header (history frames too). A reply from

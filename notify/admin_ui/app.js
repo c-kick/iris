@@ -1820,17 +1820,13 @@ const chatWhoLabel = (author, memberId, name) => author === "owner" ? "you"
 const chatAuthorHtml = (author, name) => author === "owner" || !name ? esc(CHAT_WHO[author] || author)
   : `${esc(name)} <span class="kind">${esc(CHAT_WHO[author] || author)}</span>`;
 
-// read receipts as dots: one hollow dot = not yet in every session, one dot = reached everyone,
-// two overlapping dots = everyone was active in the chat after it reached them, green = an agent claimed it
-const TICK_DOTS = { sent: '<i class="hollow"></i>', reached: "<i></i>", read: "<i></i><i></i>" };
-function chatTicksHtml(id, r) {
-  if (!r || r.state === "none") return `<span class="ticks" data-ticks="${esc(id)}"></span>`;
-  const n = r.recipients;
-  const say = r.state === "read" ? `Read by ${n === 1 ? "the other member" : `all ${n}`}`
-    : r.state === "reached" ? `Reached ${n === 1 ? "the other member" : `all ${n}`}, read by ${r.read}`
-    : `Reached ${r.reached} of ${n}`;
-  const label = say + (r.claimed ? " · claimed" : "");
-  return `<span class="ticks ${esc(r.state)}${r.claimed ? " claimed" : ""}" data-ticks="${esc(id)}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${TICK_DOTS[r.state] || ""}</span>`;
+// one dot on the owner's own messages: orange until an agent has read or claimed it, then green
+// ("read" = it reached the agent's session and the agent made a group call since; hnl-notify cannot see more)
+function chatTicksHtml(id, r, author) {
+  if (author !== "owner" || !r || r.state === "none") return `<span class="ticks" data-ticks="${esc(id)}"></span>`;
+  const done = r.claimed || r.read > 0;
+  const label = r.claimed ? "Claimed by an agent" : r.read > 0 ? `Read by ${r.read} of ${r.recipients}` : "Not read or claimed yet";
+  return `<span class="ticks ${done ? "seen" : "unseen"}" data-ticks="${esc(id)}" role="img" aria-label="${esc(label)}" title="${esc(label)}"><i></i></span>`;
 }
 
 function chatMessageHtml(m, canReply = false) {
@@ -1851,7 +1847,7 @@ function chatMessageHtml(m, canReply = false) {
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
-  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${tag}${chatTicksHtml(m.id, m.receipt)}</div>
+  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${tag}${chatTicksHtml(m.id, m.receipt, m.author)}</div>
     ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}</div>`;
 }
@@ -2248,7 +2244,7 @@ async function chatTick(el) {
     });
     for (const [mid, r] of Object.entries(data.receipts || {})) {
       const t = box.querySelector(`:scope > [data-id="${CSS.escape(mid)}"] [data-ticks]`);
-      if (t) t.outerHTML = chatTicksHtml(mid, r);
+      if (t) t.outerHTML = chatTicksHtml(mid, r, chats.msgs[mid]?.author);
     }
     if (data.messages.length) {
       const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;

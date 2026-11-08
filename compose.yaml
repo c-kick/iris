@@ -1,7 +1,7 @@
 services:
   notify:
     build: .
-    image: hnl-notify:0.14.0
+    image: hnl-notify:0.14.1
     container_name: hnl-notify
     restart: unless-stopped
     stop_grace_period: 130s  # a stop waits for a running mailbox poll/cleanup step (IMAP session limit 120 s)

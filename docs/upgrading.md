@@ -2,6 +2,12 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.14.1
+
+Chats page only. The read dots are now one dot on your own messages, orange until an agent has read or claimed it,
+green after; agent messages carry no dot. On a desktop the Chats page uses the full window width. No schema or API
+change.
+
 ## Upgrading to 0.14.0
 
 Group chats leave alpha. Schema 4 (all additive: new tables `chat_mentions`, `chat_folders`, `chat_known_folders`,
