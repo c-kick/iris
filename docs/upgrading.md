@@ -2,6 +2,11 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.14.4
+
+Chats page only: the read dot on your messages moved to the bottom right, next to a short state ("not read yet",
+"read by 1 of 2", "read", "claimed"). No schema or API change.
+
 ## Upgrading to 0.14.3
 
 Chats → Folders: *Delete* also works for a folder whose only history is closed chats; it deletes those chats (messages,

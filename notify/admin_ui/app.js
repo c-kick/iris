@@ -1820,8 +1820,8 @@ const chatAuthorHtml = (author, name) => author === "owner" || !name ? esc(CHAT_
 function chatTicksHtml(id, r, author) {
   if (author !== "owner" || !r || r.state === "none") return `<span class="ticks" data-ticks="${esc(id)}"></span>`;
   const done = r.claimed || r.read > 0;
-  const label = r.claimed ? "Claimed by an agent" : r.read > 0 ? `Read by ${r.read} of ${r.recipients}` : "Not read or claimed yet";
-  return `<span class="ticks ${done ? "seen" : "unseen"}" data-ticks="${esc(id)}" role="img" aria-label="${esc(label)}" title="${esc(label)}"><i></i></span>`;
+  const text = r.claimed ? "claimed" : r.read > 0 ? (r.read >= r.recipients ? "read" : `read by ${r.read} of ${r.recipients}`) : "not read yet";
+  return `<span class="ticks ${done ? "seen" : "unseen"}" data-ticks="${esc(id)}"><i aria-hidden="true"></i>${esc(text)}</span>`;
 }
 
 // join and leave lines get an icon (the words stay: the icon is for scanning, screen readers read the text)
@@ -1856,9 +1856,9 @@ function chatMessageHtml(m, canReply = false) {
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
-  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${tag}${chatTicksHtml(m.id, m.receipt, m.author)}</div>
+  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${tag}</div>
     ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
-    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}</div>`;
+    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${(canReply && m.text != null) || m.author === "owner" ? `<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}${chatTicksHtml(m.id, m.receipt, m.author)}</div>` : ""}</div>`;
 }
 
 // an earlier session of the folder: one bar (expandable), or one small line when nobody said anything
