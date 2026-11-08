@@ -705,6 +705,12 @@ class Chat:
                      present=self.db.scalar("SELECT COUNT(*) FROM chat_presence WHERE host=? AND folder=?",
                                             (host, folder)) or 0,
                      editable=self._only_a_setting(host, folder))
+            closed = self.db.one("SELECT COUNT(*) AS n, (SELECT COUNT(*) FROM chat_messages x JOIN chat_groups y"
+                                 " ON y.id=x.group_id WHERE y.host=? AND y.folder=? AND y.state='closed'"
+                                 " AND x.author<>'system') AS msgs FROM chat_groups WHERE host=? AND folder=?"
+                                 " AND state='closed'", (host, folder, host, folder))
+            f.update(closed_chats=closed["n"], closed_messages=closed["msgs"],
+                     deletable=g is None and not f["present"])
             out.append(f)
         return out
 
@@ -714,17 +720,42 @@ class Chat:
         return (self.db.one("SELECT 1 FROM chat_groups WHERE host=? AND folder=?", (host, folder)) is None
                 and self.db.one("SELECT 1 FROM chat_presence WHERE host=? AND folder=?", (host, folder)) is None)
 
-    def delete_folder(self, host: str, folder: str, by: str = "admin-ui") -> None:
-        """Remove a folder entry that is only a setting (e.g. a mistyped path)."""
+    def delete_folder(self, host: str, folder: str, with_history: bool = False, by: str = "admin-ui") -> dict[str, Any]:
+        """Remove a folder entry. With closed chats in it, only with with_history=True, and then those chats go now
+        (messages, members, wakes, mentions, history requests), without waiting for retention_days. Never while a
+        chat is open there or a session is present."""
         folder = normalise_folder(folder)
         with self.db.tx() as c:
-            if not self._only_a_setting(host, folder):
-                raise Conflict("this folder has chat history or sessions; switch chats off instead")
+            if c.execute("SELECT 1 FROM chat_groups WHERE host=? AND folder=? AND state='open'",
+                         (host, folder)).fetchone():
+                raise Conflict("a chat is open in this folder; it can be deleted once that chat has closed")
+            if c.execute("SELECT 1 FROM chat_presence WHERE host=? AND folder=?", (host, folder)).fetchone():
+                raise Conflict("an agent session is present in this folder; switch chats off instead")
+            gids = [r[0] for r in c.execute("SELECT id FROM chat_groups WHERE host=? AND folder=?", (host, folder))]
+            if gids and not with_history:
+                raise Conflict(f"this folder has {len(gids)} closed chat(s); confirm deleting them too")
+            if gids:
+                self._purge_groups(c, gids)
             n = c.execute("DELETE FROM chat_folders WHERE host=? AND folder=?", (host, folder)).rowcount
             n += c.execute("DELETE FROM chat_known_folders WHERE host=? AND folder=?", (host, folder)).rowcount
-            if not n:
+            if not n and not gids:
                 raise NotFound("folder not found")
-            self._event(c, "group.folder_deleted", by, {"host": host, "folder": folder})
+            self._event(c, "group.folder_deleted", by, {"host": host, "folder": folder, "chats_deleted": len(gids)})
+        return {"chats_deleted": len(gids)}
+
+    @staticmethod
+    def _purge_groups(c: sqlite3.Connection, gids: list[str]) -> None:
+        """Delete closed groups and everything hanging on them, children first (foreign keys are on)."""
+        q = ",".join("?" * len(gids))
+        msgs = f"(SELECT id FROM chat_messages WHERE group_id IN ({q}))"
+        mems = f"(SELECT id FROM chat_members WHERE group_id IN ({q}))"
+        c.execute(f"DELETE FROM chat_wakes WHERE message_id IN {msgs} OR member_id IN {mems}", (*gids, *gids))
+        c.execute(f"DELETE FROM chat_mentions WHERE message_id IN {msgs} OR member_id IN {mems}", (*gids, *gids))
+        c.execute(f"DELETE FROM chat_invites WHERE group_id IN ({q})", gids)
+        c.execute(f"DELETE FROM chat_history_requests WHERE group_id IN ({q}) OR member_id IN {mems}", (*gids, *gids))
+        c.execute(f"DELETE FROM chat_messages WHERE group_id IN ({q})", gids)
+        c.execute(f"DELETE FROM chat_members WHERE group_id IN ({q})", gids)
+        c.execute(f"DELETE FROM chat_groups WHERE id IN ({q})", gids)
 
     def move_folder(self, host: str, folder: str, new_host: str, new_folder: str, by: str = "admin-ui") -> dict[str, Any]:
         """Correct a folder entry that is only a setting: another path and/or host, chats on or off as before."""

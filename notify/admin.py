@@ -1137,14 +1137,22 @@ async def chat_folder_move(body: ChatFolderMoveIn, request: Request, client: Cli
     return _folder_errors(lambda: svc.chat.move_folder(body.host, body.folder, body.new_host, body.new_folder))
 
 
-@router.post("/api/chats/folders/delete", status_code=204)
-async def chat_folder_delete(body: ChatFolderIn, request: Request, client: Client = Depends(admin)) -> Response:
-    """Remove a folder entry with no history (a folder with history is switched off instead)."""
+class ChatFolderDeleteIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    host: str = Field(min_length=1, max_length=100)
+    folder: str = Field(min_length=1, max_length=1024)
+    with_history: bool = False  # also delete the folder's closed chats now, instead of after retention_days
+
+
+@router.post("/api/chats/folders/delete")
+async def chat_folder_delete(body: ChatFolderDeleteIn, request: Request,
+                             client: Client = Depends(admin)) -> dict[str, Any]:
+    """Remove a folder entry; with with_history its closed chats go too. Refused while a chat is open or a session
+    is present there."""
     require_session(client)
     _check_browser_mutation(request)
     svc = _svc(request)
-    _folder_errors(lambda: svc.chat.delete_folder(body.host, body.folder))
-    return Response(status_code=204)
+    return _folder_errors(lambda: svc.chat.delete_folder(body.host, body.folder, body.with_history))
 
 
 @router.post("/api/chats/folders/open", status_code=201)

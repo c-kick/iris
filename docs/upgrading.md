@@ -2,6 +2,12 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.14.3
+
+Chats → Folders: *Delete* also works for a folder whose only history is closed chats; it deletes those chats (messages,
+members, wakes, history requests) at once instead of after `retention_days`, after a confirmation that says how many.
+Refused while a chat is open there or a session is present. No schema change.
+
 ## Upgrading to 0.14.2
 
 Chats → Folders: a folder entry with no chat history and no session present (for example a mistyped path) can be

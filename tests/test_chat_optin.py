@@ -347,6 +347,41 @@ def test_admin_folder_edit_delete_api(ctx):  # noqa: F811
     gone = {"host": "host-a", "folder": "/home/alex/x"}
     assert httpx.post(srv.url + "/admin/api/chats/folders/delete", json=gone,
                       headers={**bearer, **H}).status_code == 403
-    assert b.post("/admin/api/chats/folders/delete", json=gone, headers=H).status_code == 204
+    assert b.post("/admin/api/chats/folders/delete", json=gone, headers=H).json() == {"chats_deleted": 0}
     assert b.post("/admin/api/chats/folders/delete", json=gone, headers=H).status_code == 404
     assert b.get("/admin/api/chats/folders").json()["folders"] == []
+
+
+
+def test_delete_folder_with_closed_history(svc):
+    svc.chat.set_folder("host-a", FOLDER, True)
+    a, b = pres(svc, "s1"), pres(svc, "s2")
+    q = svc.chat.post(a["member_handle"], f"@{b['name']} look")["message_id"]
+    svc.chat.post(b["member_handle"], "ok", in_reply_to=q)
+    svc.chat.history(a["member_handle"], "why")
+    with pytest.raises(Conflict, match="a chat is open"):
+        svc.chat.delete_folder("host-a", FOLDER, with_history=True)
+    svc.chat.leave(a["member_handle"])
+    svc.chat.leave(b["member_handle"])
+    other = svc.chat.join(AGENT, kind="claude", session_id="o1", folder="/srv/keep", pid=9, pid_start="k")
+    f = {x["folder"]: x for x in svc.chat.folders()}[FOLDER]
+    assert f["deletable"] is True and f["editable"] is False and f["closed_chats"] == 1 and f["closed_messages"] == 2
+    with pytest.raises(Conflict, match="1 closed chat"):
+        svc.chat.delete_folder("host-a", FOLDER)
+    assert svc.chat.delete_folder("host-a", FOLDER, with_history=True) == {"chats_deleted": 1}
+    for t in ("chat_messages", "chat_members", "chat_wakes", "chat_mentions", "chat_history_requests", "chat_groups"):
+        left = svc.db.scalar(f"SELECT COUNT(*) FROM {t}")
+        assert left == (0 if t in ("chat_mentions", "chat_history_requests", "chat_wakes") else
+                        svc.db.scalar(f"SELECT COUNT(*) FROM {t} WHERE " + {
+                            "chat_messages": "group_id=?", "chat_members": "group_id=?",
+                            "chat_groups": "id=?"}[t], (other["group_id"],))), t
+    assert FOLDER not in {x["folder"] for x in svc.chat.folders()}
+    assert not svc.chat.folder_enabled("host-a", FOLDER)
+
+
+def test_delete_refused_with_presence(svc):
+    pres(svc, "s1", folder="/srv/p")
+    f = {x["folder"]: x for x in svc.chat.folders()}["/srv/p"]
+    assert f["deletable"] is False
+    with pytest.raises(Conflict, match="session is present"):
+        svc.chat.delete_folder("host-a", "/srv/p", with_history=True)

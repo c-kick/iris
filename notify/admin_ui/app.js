@@ -1986,7 +1986,7 @@ async function chatFolders(el) {
       <label class="fyi-toggle cf-on" title="Agent sessions that start here join the folder's chat"><input type="checkbox" data-fen="${key}" ${f.enabled ? "checked" : ""}> Chats on</label>
       ${f.open_group_id ? `<button type="button" class="btn quiet" data-fshow="${key}">Show chat</button>`
         : `<button type="button" class="btn" data-fopen="${key}" title="Open a chat now and invite the sessions here">Open chat</button>`}
-      ${f.editable ? `<span class="cf-edit"><button type="button" class="btn quiet" data-fedit="${key}">Edit</button><button type="button" class="btn quiet danger" data-fdel="${key}">Delete</button></span>` : `<span class="cf-edit" aria-hidden="true"></span>`}</li>`;
+      ${f.editable || f.deletable ? `<span class="cf-edit">${f.editable ? `<button type="button" class="btn quiet" data-fedit="${key}">Edit</button>` : ""}<button type="button" class="btn quiet danger" data-fdel="${key}" data-chats="${f.closed_chats}" data-msgs="${f.closed_messages}">Delete</button></span>` : `<span class="cf-edit" aria-hidden="true"></span>`}</li>`;
   };
   pane.innerHTML = `
     <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Chats</button>
@@ -2032,8 +2032,10 @@ async function chatFolders(el) {
   }));
   pane.querySelectorAll("[data-fdel]").forEach((b) => (b.onclick = () => {
     const f = parse(b.dataset.fdel);
-    confirmAction("Delete folder", `Remove <span class="mono">${esc(f.folder)}</span> on ${esc(f.host)} from the list? Sessions that start there stay out of chats.`, "Delete",
-      async () => { await api("POST", "/chats/folders/delete", f); await chatFolders(el); });
+    const n = +b.dataset.chats || 0, m = +b.dataset.msgs || 0;
+    const what = n ? ` This also deletes its ${n} earlier chat${n === 1 ? "" : "s"} (${m} message${m === 1 ? "" : "s"}) now, instead of after the retention period. This cannot be undone.` : "";
+    confirmAction("Delete folder", `Remove <span class="mono">${esc(f.folder)}</span> on ${esc(f.host)} from the list? Sessions that start there stay out of chats.${what}`, n ? "Delete with history" : "Delete",
+      async () => { await api("POST", "/chats/folders/delete", { ...f, with_history: n > 0 }); await chatsLoadList(el); await chatFolders(el); });
   }));
   pane.querySelector("#cf-add").onclick = () => openForm({
     title: "Add a folder",
