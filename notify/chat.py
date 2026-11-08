@@ -135,8 +135,36 @@ def reply_line(quoted_id: str, quoted_desc: str, quoted_text: str) -> str:
     return f"\u21aa reply to {quoted_id} (from {_clean_desc(quoted_desc)}):\n{QUOTE}{reply_excerpt(quoted_text)}"
 
 
+MARKER_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # no 0/o, 1/l/i
+MARKER_LEN = 8
+MARKER_RE = re.compile(r"^\u27e6[a-z0-9]{1,20}\u00b7([a-z0-9]{8})\u27e7$")
+
+
+def new_marker(name: str | None) -> str:
+    """A member's secret frame marker, e.g. ⟦wren·k7q2m9xd⟧. Only that member ever sees it."""
+    code = "".join(secrets.choice(MARKER_ALPHABET) for _ in range(MARKER_LEN))
+    label = re.sub(r"[^a-z0-9]", "", (name or "member").lower())[:20] or "member"
+    return f"\u27e6{label}\u00b7{code}\u27e7"
+
+
+def _strip_code(text: str, marker: str | None) -> str:
+    """The marker's secret part replaced by dots: quoted text can never show the recipient its own marker."""
+    m = MARKER_RE.match(marker) if marker else None
+    return re.sub(re.escape(m.group(1)), "\u00b7" * MARKER_LEN, text, flags=re.IGNORECASE) if m else text
+
+
+def _marked(text: str, marker: str | None) -> str:
+    """The marker at the start of the header line and the end of the end line: outside the quoted body."""
+    if not marker:
+        return text
+    lines = text.split("\n")
+    lines[0] = f"{marker} {lines[0]}"
+    lines[-1] = f"{lines[-1]} {marker}"
+    return "\n".join(lines)
+
+
 def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, reply: str | None = None,
-          rules: bool = True, for_line: str | None = None) -> str:
+          rules: bool = True, for_line: str | None = None, marker: str | None = None) -> str:
     """The text a recipient sees. Every line of the author's text is quoted, so it can never contain a header."""
     mid = msg["id"]
     author = msg["author"]
@@ -146,34 +174,34 @@ def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, rep
     if for_line:
         lines.append(for_line)
     if reply:
-        lines.append(reply)
+        lines.append(_strip_code(reply, marker))
     if rules:
         lines.append(rules_text)
-    lines += _quote_body(msg["text"])
+    lines += _quote_body(msg["text"], marker)
     lines.append(f"[end {mid}]")
-    return "\n".join(lines)
+    return _marked("\n".join(lines), marker)
 
 
 def history_frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, opened: str, closed: str,
-                  reply: str | None = None) -> str:
+                  reply: str | None = None, marker: str | None = None) -> str:
     """One message of an earlier session. Like frame(): the author's text is quoted line by line, so it can never
     contain a header, and nothing here reads as a current instruction."""
     mid = msg["id"]
     desc = _clean(author_desc, keep_newlines=False).replace("[", "(").replace("]", ")")
     lines = [f"[history · closed session {opened}–{closed} · {mid} · {sent_at} · from {desc}]"]
     if reply:
-        lines.append(reply)
+        lines.append(_strip_code(reply, marker))
     lines.append(HISTORY_RULE)
-    lines += _quote_body(msg["text"])
+    lines += _quote_body(msg["text"], marker)
     lines.append(f"[end {mid}]")
-    return "\n".join(lines)
+    return _marked("\n".join(lines), marker)
 
 
-def _quote_body(text: str) -> list[str]:
+def _quote_body(text: str, marker: str | None = None) -> list[str]:
     """The author's text as quoted lines. A line that starts like a frame line gets its bracket turned into '(', so
-    a quoted body cannot carry a copy of a real frame line."""
+    a quoted body cannot carry a copy of a real frame line. The recipient's marker code never appears inside."""
     out = []
-    for line in _clean(text, keep_newlines=True).split("\n"):
+    for line in _strip_code(_clean(text, keep_newlines=True), marker).split("\n"):
         rest = line.lstrip()
         # frame vocabulary in any letter case, after NFKC, behind any bracket lookalike (`[HNL-notify`,
         # `［hnl-notify`, `⟦end `): ordinary brackets (JSON, TOML, [INFO], markdown links) stay as written
@@ -380,8 +408,8 @@ class Chat:
                     raise Forbidden("this session is in the group under another client")
                 group_id, member_id = row["group_id"], row["id"]
                 handle, sha = new_handle(member_id)
-                c.execute("UPDATE chat_members SET handle_sha256=?, pid=?, pid_start=?, client_id=?, last_seen_at=?"
-                          " WHERE id=?", (sha, pid, pid_start, client.id, now, member_id))
+                c.execute("UPDATE chat_members SET handle_sha256=?, pid=?, pid_start=?, client_id=?, last_seen_at=?,"
+                          " marker=? WHERE id=?", (sha, pid, pid_start, client.id, now, new_marker(row["name"]), member_id))
             else:
                 g = c.execute("SELECT id FROM chat_groups WHERE host=? AND folder=? AND state='open'",
                               (host, folder)).fetchone()
@@ -396,8 +424,9 @@ class Chat:
                 handle, sha = new_handle(member_id)
                 name = self._pick_name(c, group_id, host, folder)
                 c.execute("INSERT INTO chat_members(id, group_id, kind, session_id, pid, pid_start, client_id,"
-                          " handle_sha256, joined_at, last_seen_at, name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                          (member_id, group_id, kind, session_id, pid, pid_start, client.id, sha, now, now, name))
+                          " handle_sha256, joined_at, last_seen_at, name, marker) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (member_id, group_id, kind, session_id, pid, pid_start, client.id, sha, now, now, name,
+                           new_marker(name)))
                 self._event(c, "group.member_joined", client.id,
                             {"group_id": group_id, "member_id": member_id, "kind": kind, "name": name})
                 self._add_message(c, group_id, "system", None, f"{who(kind, name, member_id)} joined the chat")
@@ -405,10 +434,10 @@ class Chat:
                 c.execute("UPDATE chat_members SET last_read_rowid=(SELECT MAX(rowid) FROM chat_messages"
                           " WHERE group_id=?) WHERE id=?", (group_id, member_id))
             members = self._members(c, group_id)
-            name = c.execute("SELECT name FROM chat_members WHERE id=?", (member_id,)).fetchone()["name"]
+            me = c.execute("SELECT name, marker FROM chat_members WHERE id=?", (member_id,)).fetchone()
         self.svc._after_commit()
-        return {"group_id": group_id, "member_id": member_id, "name": name, "member_handle": handle,
-                "members": members}
+        return {"group_id": group_id, "member_id": member_id, "name": me["name"], "marker": me["marker"],
+                "member_handle": handle, "members": members}
 
     def _pick_name(self, c: sqlite3.Connection, group_id: str, host: str, folder: str) -> str:
         """Inside the join transaction (BEGIN IMMEDIATE), so two joiners never get the same name."""
@@ -459,7 +488,7 @@ class Chat:
             if m is None:
                 return False
             gid = m["group_id"]
-            c.execute("UPDATE chat_members SET left_at=?, leave_reason=? WHERE id=?", (now, reason, member_id))
+            c.execute("UPDATE chat_members SET left_at=?, leave_reason=?, marker=NULL WHERE id=?", (now, reason, member_id))
             c.execute("UPDATE chat_wakes SET state='skipped', reason='member gone', finished_at=?"
                       " WHERE member_id=? AND state IN ('pending', 'claimed')", (now, member_id))
             c.execute("UPDATE chat_history_requests SET state='expired', decision_sha256=NULL"
@@ -779,7 +808,7 @@ class Chat:
             for r in rows:
                 out.append({"id": r["id"], "session_opened": opened, "session_closed": closed,
                             "text": history_frame(r, self.author_desc(r), r["created_at"], opened, closed,
-                                                      self.reply_line_for(r))})
+                                                      self.reply_line_for(r), member["marker"])})
         return {"status": "approved", "messages": out, "truncated": truncated,
                 "note": "this approval is used up; ask again with a reason to read it once more"}
 
@@ -907,13 +936,16 @@ class Chat:
         desc = "the owner" if q["author"] == "owner" else self.author_desc(q)
         return reply_line(q["id"], desc, q["text"])
 
-    def framed_text(self, message_id: str) -> str:
-        """The recipient-facing text of a stored message."""
+    def framed_text(self, message_id: str, member_id: str | None = None) -> str:
+        """The recipient-facing text of a stored message; with member_id, carrying that member's marker."""
         msg = self.db.one("SELECT * FROM chat_messages WHERE id=?", (message_id,))
         if msg is None:
             raise NotFound("message not found")
         return frame(msg, self.author_desc(msg), msg["created_at"], self.reply_line_for(msg),
-                     for_line=self.for_line(msg))
+                     for_line=self.for_line(msg), marker=self._marker(member_id))
+
+    def _marker(self, member_id: str | None) -> str | None:
+        return self.db.scalar("SELECT marker FROM chat_members WHERE id=?", (member_id,)) if member_id else None
 
     def read(self, member_handle: str, since: str | None = None, all: bool = False) -> dict[str, Any]:  # noqa: A002
         """group_read. Default: the messages of others you have not read yet (a new member owes nothing from before
@@ -964,7 +996,7 @@ class Chat:
             msgs = [{"id": r["id"], "author": r["author"], "author_desc": self.author_desc(r),
                      "created_at": r["created_at"], "in_reply_to": r["in_reply_to"],
                      "text": frame(r, self.author_desc(r), r["created_at"], self.reply_line_for(r), rules=False,
-                                   for_line=self.for_line(r)),
+                                   for_line=self.for_line(r), marker=member["marker"]),
                      **({"rules": OWNER_RULES} if r["author"] == "owner" else {})}
                     for r in rows]
         out = {"rules": READ_RULES, "messages": msgs, "members": members, "unread_only": not all}
@@ -994,7 +1026,7 @@ class Chat:
             got = self._claim_once(host, waiter)
             if got is not None:
                 out, message_id = got
-                out["text"] = self.framed_text(message_id)
+                out["text"] = self.framed_text(message_id, out["member_id"])
                 return out
             left = deadline - time.monotonic()
             if left <= 0:

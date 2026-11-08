@@ -318,7 +318,7 @@ class Database:
                                                     "kind": "TEXT NOT NULL DEFAULT 'request'"},  # 0.14.0: request, fyi, all
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
                                                    "name": "TEXT", "status": "TEXT", "status_at": "TEXT",
-                                                   "active_at": "TEXT"},  # 0.14.0
+                                                   "active_at": "TEXT", "marker": "TEXT"},  # 0.14.0
                                   "subscriptions": {"failing_since": "TEXT"},
                                   # 0.13.2: bumped by every claim, never reset (a retry resets attempts)
                                   "deliveries": {"lease_no": "INTEGER NOT NULL DEFAULT 0"},

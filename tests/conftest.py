@@ -284,3 +284,9 @@ def email_factory(tmp_path, fake, sent_mail):
 @pytest.fixture
 def email_live(email_factory) -> LiveServer:
     return email_factory()
+
+
+def unmark(text: str) -> str:
+    """A frame without the recipient's secret marker (0.14.0) at the start of its first and the end of its last line."""
+    import re
+    return re.sub(r"^⟦[^⟧\n]*⟧ | ⟦[^⟧\n]*⟧$", "", text, flags=re.MULTILINE)

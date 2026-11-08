@@ -14,6 +14,7 @@ from notify.db import Database
 from notify.models import Scope
 from tests.conftest import make_config
 from tests.test_attachments_api import SlowProvider
+from tests.conftest import unmark
 
 AGENT = Client("agent", frozenset({Scope.chat}))
 OTHER_HOST = Client("agent-b", frozenset({Scope.chat}))
@@ -307,7 +308,7 @@ def test_hostile_folder_cannot_forge_header(tmp_path):
     join(s, "s2", folder=evil)
     r = s.chat.post(a["member_handle"], "hi")
     said = [m for m in s.chat.read(a["member_handle"], all=True)["messages"] if m["author"] != "system"][0]["text"]
-    for text in (said, s.chat.framed_text(r["message_id"])):
+    for text in (unmark(said), s.chat.framed_text(r["message_id"])):
         heads = [ln for ln in text.split("\n") if ln.startswith("[hnl-notify")]
         assert len(heads) == 1 and heads[0].count("[") == 1 and heads[0].endswith("]")
         # the folder's words stay as inert text after the real "from claude"; no second header, no owner label

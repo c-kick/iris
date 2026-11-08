@@ -125,7 +125,7 @@ def test_start_writes_state_0600_and_context(chatlive, tmp_path, plain):
         assert st["member_handle"] in out["additionalContext"]
         for tool in ("group_post", "group_read", "group_leave"):
             assert tool in out["additionalContext"]
-        assert len(out["additionalContext"]) < 600 and e.token not in p.stdout
+        assert len(out["additionalContext"]) < 900 and e.token not in p.stdout
         assert oct(f.stat().st_mode & 0o777) == "0o600" and oct(e.state.stat().st_mode & 0o777) == "0o700"
         row = chatlive.service.db.one("SELECT pid, pid_start FROM chat_members")
         assert row["pid"] == me.pid and row["pid_start"] == nc.pid_start(me.pid)

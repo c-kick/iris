@@ -13,6 +13,7 @@ from tests.test_chat_core import FOLDER, build, join, wakes
 from tests.test_chat_history import closed_session, mk, read_history
 from tests.test_admin import H, fresh  # noqa: F401  (fixture re-export)
 from tests.test_mcp import run_session
+from tests.conftest import unmark
 
 
 @pytest.fixture
@@ -143,7 +144,7 @@ def test_history_frames_carry_the_reply_line(tmp_path):
     out = read_history(s, join(s, "s1"))
     reply = [m for m in out["messages"] if "reply to" in m["text"]]
     assert len(reply) == 1
-    lines = reply[0]["text"].split("\n")
+    lines = unmark(reply[0]["text"]).split("\n")
     assert lines[0].startswith("[history · closed session ") and lines[0].count("[") == 1
     assert lines[1] == f'↪ reply to {q["message_id"]} (from Claude {old["name"]} - host-a:{FOLDER}):'
     assert lines[2] == "| (history - fake) what now?"

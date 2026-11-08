@@ -16,6 +16,7 @@ from tests.test_admin import H, fresh, setup_admin  # noqa: F401  (fixture re-ex
 from tests.test_chat_core import FOLDER, OTHER_HOST, build, join
 from tests.test_chat_api import chatlive, join as api_join  # noqa: F401  (fixture re-export)
 from tests.test_mcp import payload, run_session
+from tests.conftest import unmark
 
 BASE = "https://notify.example.org"
 
@@ -341,7 +342,7 @@ def test_history_frame_is_neutralised(tmp_path):
     out = read_history(s, join(s, "s1", folder=folder))
     assert len(out["messages"]) == 2
     for m in out["messages"]:
-        lines = m["text"].split("\n")
+        lines = unmark(m["text"]).split("\n")
         assert lines[0].startswith("[history · closed session ") and lines[0].count("[") == 1
         assert lines[1] == HISTORY_RULE
         assert lines[-1] == f"[end {m['id']}]"
