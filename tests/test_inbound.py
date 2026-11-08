@@ -95,6 +95,7 @@ def test_worker_loop_polls_and_reports_status(email_live):
     email_live.app.state.workers.inbound_interval = 0.1
     wait_for(lambda: email_live.service.inbound_status.get("mail", {}).get("last_success"), timeout=10)
     assert email_live.service.inbound_status["mail"]["last_error"] is None
+    assert email_live.service.inbound_status["mail"]["deleted_left"] == 0  # 0.13.2: shown in the admin page
     assert email_live.service.db.scalar("SELECT COUNT(*) FROM replies") == 1
 
 

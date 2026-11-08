@@ -230,6 +230,7 @@ class Workers:
                     mailbox = svc.open_mailbox(p) if svc.open_mailbox else p.mailbox()  # type: ignore[attr-defined]
                     status["last_stats"] = await poll_once(svc, p, mailbox)  # type: ignore[arg-type]
                     status.update(last_success=now_iso(), last_error=skipped_note(p))  # skipped UIDs stay visible
+                    status["deleted_left"] = getattr(p, "_deleted_left", 0)  # moved mail a non-UIDPLUS server keeps
                     failures[name] = 0
                 except Exception as e:
                     failures[name] = failures.get(name, 0) + 1

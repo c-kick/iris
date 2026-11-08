@@ -1488,7 +1488,7 @@ function activityList(main) {
     if (!data.items.length && (state.before || state.after)) { firstPage(); load(); return; } // that page was purged
 
     els.inbound.innerHTML = Object.entries(data.inbound).map(([name, s]) => `<div class="sub">${esc(name)}: ${s.last_error
-      ? `<span class="problem">${esc(s.last_error)}</span>` : s.last_success ? `checked ${esc(when(s.last_success))}` : "not checked yet"}</div>`).join("");
+      ? `<span class="problem">${esc(s.last_error)}</span>` : s.last_success ? `checked ${esc(when(s.last_success))}` : "not checked yet"}${deletedLeftText(s)}</div>`).join("");
     const known = [...new Set([...data.sources, ...(state.source ? [state.source] : [])])].sort();
     sourceEl.innerHTML = `<option value="">Everyone</option>${known.map((s) => `<option value="${esc(s)}">${esc(s)}</option>`).join("")}`;
     sourceEl.value = state.source;
@@ -1721,6 +1721,14 @@ const chatFolderOf = (key) => chats.folders.find((f) => chatKey(f) === key);
 
 function chatPresent(g) {
   return g.state === "open" && g.members.some((m) => !m.left_at);
+}
+
+// Mail the poller moved but could not expunge (the server has no UIDPLUS) stays flagged \Deleted in the folder.
+function deletedLeftText(s) {
+  const n = s.deleted_left || 0;
+  if (!n) return "";
+  const text = `${n} ${n === 1 ? "message" : "messages"} left flagged deleted in the reply folder (the server cannot expunge single messages); remove them with a mail client`;
+  return ` · <span class="${n >= 500 ? "problem" : "hint"}">${esc(text)}</span>`;
 }
 
 function chatMembersText(g) {

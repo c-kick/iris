@@ -63,6 +63,7 @@ class ImapMailbox:
         self.timeout = timeout
         self._imap: Any = None
         self.uidvalidity: bytes | None = None  # the selected folder's UID numbering
+        self.deleted_left = 0  # messages flagged \Deleted in the polled folder at the last list()
         self._timer: threading.Timer | None = None
 
     @classmethod
@@ -134,13 +135,14 @@ class ImapMailbox:
         typ, data = self._imap.uid("FETCH", "1:*", "(RFC822.SIZE FLAGS)")
         if typ != "OK":
             return []  # some servers answer NO on an empty mailbox
-        out = []
+        out, self.deleted_left = [], 0
         for item in data or []:
             line = item[0] if isinstance(item, tuple) else item
             if isinstance(line, bytes):
                 u, s = re.search(rb"UID (\d+)", line), re.search(rb"RFC822\.SIZE (\d+)", line)
                 flags = re.search(rb"FLAGS \(([^)]*)\)", line)
                 if flags and b"\\deleted" in flags.group(1).lower().split():
+                    self.deleted_left += 1  # only an expunge removes it; shown in the admin page
                     continue
                 if u:
                     out.append((u.group(1), int(s.group(1)) if s else 0))
@@ -301,6 +303,7 @@ async def _poll_locked(svc: NotifyService, provider: EmailProvider, mailbox: Any
             fails.pop(uid, None)
     finally:
         await asyncio.to_thread(mailbox.close)
+    provider._deleted_left = int(getattr(mailbox, "deleted_left", 0) or 0)  # type: ignore[attr-defined]
     return stats
 
 

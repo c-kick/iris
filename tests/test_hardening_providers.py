@@ -261,6 +261,7 @@ def test_list_skips_messages_flagged_deleted(imap_cls):
     mb.open()
     try:
         assert mb.list() == [(b"7", 1234), (b"11", 5)]
+        assert mb.deleted_left == 1  # 0.13.2: counted for the admin page
     finally:
         mb.close()
 
@@ -402,3 +403,12 @@ def test_uid_skip_list_resets_when_uidvalidity_changes(email_live):
     mb.bad, mb.uidvalidity = None, b"101"  # the folder was renumbered: UID 1 is another message now
     assert poll(email_live)["quarantined"] == 1
     assert inbound.skipped_note(email_live.service.providers["mail"]) is None
+
+
+def test_poll_reports_messages_left_flagged_deleted(email_live):
+    """0.13.2: without UIDPLUS moved mail stays flagged \\Deleted; the poll stats count it for the admin page."""
+    mb = email_live.mailbox
+    mb.deleted_left = 3
+    mb.list = lambda: []  # type: ignore[method-assign]
+    poll(email_live)
+    assert email_live.service.providers["mail"]._deleted_left == 3
