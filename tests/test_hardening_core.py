@@ -91,7 +91,7 @@ def test_a3_result_of_a_superseded_claim_is_ignored(live, fake):
     wait_for(lambda: delivery(live, nid)["state"] == "sending")
     old = delivery(live, nid)
     with live.service.db.tx() as c:  # the lease was recovered and the delivery claimed again
-        c.execute("UPDATE deliveries SET attempts=attempts+1 WHERE id=?", (old["id"],))
+        c.execute("UPDATE deliveries SET attempts=attempts+1, lease_no=lease_no+1 WHERE id=?", (old["id"],))
     live.call(lambda: live.service.complete_send(old, SendResult(outcome="success", provider_message_id="stale"),
                                                   now_iso()))
     d = delivery(live, nid)
@@ -313,3 +313,34 @@ def test_latent_interrupted_cancelled_send_ends_cancelled(live, fake):
     live.call(live.service.recover_leases)
     assert delivery(live, nid)["state"] == "cancelled"
     gate.set()
+
+
+def test_disabled_subscription_can_be_enabled_again(server_factory, fake):
+    """0.13.2: the owner re-enables a disabled subscription; the backlog from the outage is not replayed (catch up
+    with GET /v1/events instead)."""
+    live = server_factory(webhook_disable_after_failures=1)
+    fake.webhook_status = 500
+    c = live.client()
+    sid = c.post("/v1/subscriptions", json={"url": "http://hooks.test/h"}).json()["id"]
+    with live.service.db.tx() as tx:
+        tx.execute("UPDATE subscriptions SET failing_since='2000-01-01T00:00:00.000000Z' WHERE id=?", (sid,))
+    submit(live)
+    wait_for(lambda: live.service.db.one("SELECT active FROM subscriptions WHERE id=?", (sid,))["active"] == 0)
+    submit(live)  # never queued for a disabled subscription
+    fake.webhook_status = 200
+    assert c.post(f"/v1/subscriptions/{sid}/enable").status_code == 200
+    sub = live.service.db.one("SELECT * FROM subscriptions WHERE id=?", (sid,))
+    assert sub["active"] == 1 and sub["consecutive_failures"] == 0 and sub["failing_since"] is None
+    assert live.service.db.scalar("SELECT COUNT(*) FROM webhook_deliveries WHERE subscription_id=? AND state='pending'",
+                                  (sid,)) == 0
+    before = len(fake.webhooks)
+    submit(live)
+    wait_for(lambda: len(fake.webhooks) > before)
+    assert c.post("/v1/subscriptions/sub_nope/enable").status_code == 404
+
+
+def test_enable_is_owner_only(server_factory, fake):
+    live = server_factory()
+    sid = live.client().post("/v1/subscriptions", json={"url": "http://hooks.test/h"}).json()["id"]
+    assert live.client("other").post(f"/v1/subscriptions/{sid}/enable").status_code == 404
+    assert live.client("admin").post(f"/v1/subscriptions/{sid}/enable").status_code == 200

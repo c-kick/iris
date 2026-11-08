@@ -293,6 +293,14 @@ async def list_subscriptions(request: Request, client: Client = Depends(require(
     return {"items": service(request).list_subscriptions(client)}
 
 
+@router.post("/v1/subscriptions/{sid}/enable", tags=["events"])
+@_errors
+async def enable_subscription(sid: str, request: Request, client: Client = Depends(require(Scope.read))) -> dict[str, Any]:
+    """Turn a subscription that was disabled after failures back on (owner or admin). Events from while it was off
+    are not replayed: catch up with GET /v1/events."""
+    return service(request).enable_subscription(client, sid)
+
+
 @router.delete("/v1/subscriptions/{sid}", status_code=204, tags=["events"])
 @_errors
 async def delete_subscription(sid: str, request: Request, client: Client = Depends(require(Scope.read))) -> Response:

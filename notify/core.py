@@ -1428,6 +1428,20 @@ class NotifyService:
         with self.db.tx() as c:
             c.execute("DELETE FROM subscriptions WHERE id=?", (sid,))
 
+    def enable_subscription(self, client: Client, sid: str) -> dict[str, Any]:
+        """Turn a (disabled) subscription back on with a clean failure count. Deliveries that waited while it was off
+        are dropped (failed): the subscriber catches up with GET /v1/events instead of a burst of old events."""
+        s = self.db.one("SELECT * FROM subscriptions WHERE id=?", (sid,))
+        if s is None or not self._visible(client, s["client_id"]) or s["client_id"] not in self.config.clients:
+            raise NotFound(f"subscription {sid} not found")
+        with self.db.tx() as c:
+            if not s["active"]:
+                c.execute("UPDATE webhook_deliveries SET state='failed', last_error='subscription was disabled'"
+                          " WHERE subscription_id=? AND state='pending'", (sid,))
+            c.execute("UPDATE subscriptions SET active=1, consecutive_failures=0, failing_since=NULL, last_error=NULL"
+                      " WHERE id=?", (sid,))
+        return self._sub_out(self.db.one("SELECT * FROM subscriptions WHERE id=?", (sid,)))  # type: ignore[arg-type]
+
     def claim_webhooks(self, limit: int = 10) -> list[dict[str, Any]]:
         now = now_iso()
         rows = self.db.query(
