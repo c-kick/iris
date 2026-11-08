@@ -141,6 +141,16 @@ def test_open_needs_reason_and_own_host(svc):
         svc.chat.check_handle_host(OTHER_HOST, a["member_handle"])
 
 
+def test_presence_of_another_client_is_not_taken_over(svc):
+    from notify.core import Client
+    from notify.models import Scope
+    pres(svc, "s1")
+    svc.chat.set_folder("host-a", FOLDER, True)
+    with pytest.raises(Forbidden):
+        svc.chat.join(Client("agent-a2", frozenset({Scope.chat})), kind="claude", session_id="s1", folder=FOLDER,
+                      pid=1, pid_start="y")
+
+
 def test_presence_ends_with_the_session(svc):
     a = pres(svc, "s1")
     svc.chat.leave(a["member_handle"], "ended")

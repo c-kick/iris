@@ -440,6 +440,8 @@ class Chat:
                 group_id = self._open_or_get(c, host, folder, client.id)
                 pres = c.execute("SELECT * FROM chat_presence WHERE host=? AND kind=? AND session_id=?",
                                  (host, kind, session_id)).fetchone()
+                if pres is not None and pres["client_id"] != client.id:
+                    raise Forbidden("this session is in the group under another client")
                 member_id = pres["id"] if pres is not None else new_id("mem")  # a presence keeps its id
                 handle, sha = new_handle(member_id)
                 self._insert_member(c, group_id, host, folder, member_id, kind, session_id, pid, pid_start,
