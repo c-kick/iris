@@ -354,3 +354,69 @@ def test_cli_exit_1_on_410(email_live, monkeypatch, capsys):
     monkeypatch.setenv("NOTIFY_TOKEN", TOKENS["agent"])
     assert nw.main([out["reply_handle"], "--url", email_live.url, "--timeout", "5s"]) == 1
     assert "No reply possible: notification was cancelled." in capsys.readouterr().out
+
+
+def _entry(url, tok):
+    return {"type": "http", "url": url, "headers": {"Authorization": f"Bearer {tok}"}}
+
+
+def _write(tmp_path, data):
+    f = tmp_path / "claude.json"
+    f.write_text(json.dumps(data))
+    return f
+
+
+@pytest.fixture
+def _no_env(monkeypatch):
+    monkeypatch.delenv("NOTIFY_URL", raising=False)
+    monkeypatch.delenv("NOTIFY_TOKEN", raising=False)
+
+
+def test_mcp_entry_prefers_iris_within_a_scope(tmp_path, _no_env):
+    f = _write(tmp_path, {"mcpServers": {"hnl-notify": _entry("http://old:1/mcp", "tok-old"),
+                                         "iris": _entry("http://new:1/mcp", "tok-new")}})
+    assert nw.settings(None, nw.mcp_entry(f)) == ("http://new:1", "tok-new")
+
+
+def test_mcp_entry_global_scope_beats_projects(tmp_path, _no_env):
+    f = _write(tmp_path, {"mcpServers": {"hnl-notify": _entry("http://global:1/mcp", "tok-g")},
+                          "projects": {"/p": {"mcpServers": {"iris": _entry("http://proj:1/mcp", "tok-p")}}}})
+    assert nw.settings(None, nw.mcp_entry(f)) == ("http://global:1", "tok-g")
+
+
+def test_mcp_entry_projects_in_order_iris_first_per_project(tmp_path, _no_env):
+    f = _write(tmp_path, {"projects": {
+        "/a": {"mcpServers": {"other": _entry("http://x:1/mcp", "x")}},
+        "/b": {"mcpServers": {"hnl-notify": _entry("http://b-old:1/mcp", "tok-bo"),
+                              "iris": _entry("http://b-new:1/mcp", "tok-bn")}},
+        "/c": {"mcpServers": {"iris": _entry("http://c:1/mcp", "tok-c")}}}})
+    assert nw.settings(None, nw.mcp_entry(f)) == ("http://b-new:1", "tok-bn")
+
+
+def test_mcp_entry_incomplete_is_an_error_not_a_merge(tmp_path, _no_env):
+    # the selected iris entry has no token: never borrow the hnl-notify entry's token
+    f = _write(tmp_path, {"mcpServers": {"iris": {"type": "http", "url": "http://new:1/mcp"},
+                                         "hnl-notify": _entry("http://old:1/mcp", "tok-old")}})
+    with pytest.raises(nw.Fatal) as e:
+        nw.settings(None, nw.mcp_entry(f))
+    assert "iris" in str(e.value) and "tok-old" not in str(e.value)
+    # an incomplete global entry does not fall through to a project entry either
+    f = _write(tmp_path, {"mcpServers": {"iris": {"headers": {"Authorization": "Bearer tok-g"}}},
+                          "projects": {"/p": {"mcpServers": {"iris": _entry("http://p:1/mcp", "tok-p")}}}})
+    with pytest.raises(nw.Fatal):
+        nw.settings(None, nw.mcp_entry(f))
+
+
+def test_mcp_entry_explicit_overrides_still_win(tmp_path, monkeypatch, _no_env):
+    f = _write(tmp_path, {"mcpServers": {"iris": {"type": "http", "url": "http://new:1/mcp"}}})
+    monkeypatch.setenv("NOTIFY_TOKEN", "tok-env")
+    assert nw.settings(None, nw.mcp_entry(f)) == ("http://new:1", "tok-env")
+    monkeypatch.setenv("NOTIFY_URL", "http://env:2")
+    assert nw.settings(None, nw.mcp_entry(f)) == ("http://env:2", "tok-env")
+    assert nw.settings("http://cli:3", nw.mcp_entry(f)) == ("http://cli:3", "tok-env")
+
+
+def test_mcp_entry_ignores_non_dict_values(tmp_path, _no_env):
+    f = _write(tmp_path, {"mcpServers": {"iris": "garbage", "hnl-notify": _entry("http://old:1/mcp", "t")},
+                          "projects": ["not", "a", "dict"]})
+    assert nw.settings(None, nw.mcp_entry(f)) == ("http://old:1", "t")

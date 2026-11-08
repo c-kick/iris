@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait for a reply to an hnl-notify notification and print it.
+"""Wait for a reply to an Iris (formerly hnl-notify) notification and print it.
 
   notify-wait REPLY_HANDLE|NOTIFICATION_ID [--handle-file FILE] [--timeout 60m] [--save-dir DIR] [--url URL] [--json]
 
@@ -16,7 +16,8 @@ Long-polls POST /v1/notifications/{id}/replies/claim (at least once, also with -
 derived from the reply handle and the last reply printed on this host (kept in ~/.cache/hnl-notify-wait), so a
 retry after a lost response, or a new run after one that was killed before printing, gets the same reply. Exit codes: 0 reply printed (even if its attachments could not be saved), 1 error (also: the notification was
 cancelled, missed or never sent, so no reply can come), 2 no reply before --timeout.
-Base URL: --url, else NOTIFY_URL, else the url of the hnl-notify entry in ~/.claude.json without /mcp.
+Base URL: --url, else NOTIFY_URL, else the url of the iris (or, from before the rename, hnl-notify) MCP entry in
+~/.claude.json without /mcp (see mcp_entry for the order).
 Token: --token-file, else NOTIFY_TOKEN, else that entry's Authorization header. The token is never printed.
 """
 
@@ -65,15 +66,34 @@ def parse_duration(s: str) -> int:
     return d * 86400 + h * 3600 + mi * 60 + sec
 
 
+MCP_NAMES = ("iris", "hnl-notify")  # the Iris registration first; hnl-notify is the name from before the rename
+
+
 def mcp_entry(path: Path = Path.home() / ".claude.json") -> dict[str, Any]:
+    """The MCP entry for this service in ~/.claude.json: the global scope first, then each project in file order;
+    within a scope `iris` before `hnl-notify`. The first entry found is used as a whole, never merged with another
+    (an incomplete one is a configuration error in settings(), not a reason to borrow from the next)."""
     try:
         data = json.loads(Path(path).read_text())
     except (OSError, ValueError):
         return {}
-    entry = (data.get("mcpServers") or {}).get("hnl-notify")
-    for proj in (data.get("projects") or {}).values():
-        entry = entry or ((proj or {}).get("mcpServers") or {}).get("hnl-notify")
-    return entry or {}
+    if not isinstance(data, dict):
+        return {}
+    projects = data.get("projects")
+    scopes = [data] + (list(projects.values()) if isinstance(projects, dict) else [])
+    for scope in scopes:
+        servers = scope.get("mcpServers") if isinstance(scope, dict) else None
+        if not isinstance(servers, dict):
+            continue
+        for name in MCP_NAMES:
+            if isinstance(servers.get(name), dict):
+                return {**servers[name], "_name": name}
+    return {}
+
+
+def _entry_note(entry: dict[str, Any], field: str) -> str:
+    name = entry.get("_name")
+    return f" (the {name} MCP entry in ~/.claude.json has no {field})" if name else ""
 
 
 def settings(url: str | None, entry: dict[str, Any], token_file: str | Path | None = None) -> tuple[str, str]:
@@ -87,9 +107,10 @@ def settings(url: str | None, entry: dict[str, Any], token_file: str | Path | No
     else:
         token = os.environ.get("NOTIFY_TOKEN") or re.sub(r"^Bearer\s+", "", auth, flags=re.I)
     if not base:
-        raise Fatal("no service URL: pass --url or set NOTIFY_URL")
+        raise Fatal(f"no service URL: pass --url or set NOTIFY_URL{_entry_note(entry, 'url')}")
     if not token:
-        raise Fatal("no token: set NOTIFY_TOKEN or add the hnl-notify MCP entry to ~/.claude.json")
+        raise Fatal("no token: set NOTIFY_TOKEN or add the iris MCP entry to ~/.claude.json"
+                    f"{_entry_note(entry, 'Authorization header')}")
     return base.rstrip("/"), token
 
 
@@ -352,7 +373,7 @@ def _fmt(seconds: int) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(prog="notify-wait", description="Wait for a reply to an hnl-notify notification.")
+    ap = argparse.ArgumentParser(prog="notify-wait", description="Wait for a reply to an Iris notification.")
     ap.add_argument("notification_id", nargs="?", help="the reply handle, or (older conversations) a notification id")
     ap.add_argument("--handle-file", help="read the reply handle from this file")
     ap.add_argument("--timeout", type=parse_duration, default=3600,
