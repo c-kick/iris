@@ -1985,7 +1985,8 @@ async function chatFolders(el) {
     return `<li class="cf-row"><div class="cf-name"><span class="mono">${esc(f.folder)}</span><small>${esc(bits.join(" · "))}</small></div>
       <label class="fyi-toggle cf-on" title="Agent sessions that start here join the folder's chat"><input type="checkbox" data-fen="${key}" ${f.enabled ? "checked" : ""}> Chats on</label>
       ${f.open_group_id ? `<button type="button" class="btn quiet" data-fshow="${key}">Show chat</button>`
-        : `<button type="button" class="btn" data-fopen="${key}" title="Open a chat now and invite the sessions here">Open chat</button>`}</li>`;
+        : `<button type="button" class="btn" data-fopen="${key}" title="Open a chat now and invite the sessions here">Open chat</button>`}
+      ${f.editable ? `<span class="cf-edit"><button type="button" class="btn quiet" data-fedit="${key}">Edit</button><button type="button" class="btn quiet danger" data-fdel="${key}">Delete</button></span>` : `<span class="cf-edit" aria-hidden="true"></span>`}</li>`;
   };
   pane.innerHTML = `
     <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Chats</button>
@@ -2015,6 +2016,24 @@ async function chatFolders(el) {
     await chatsLoadList(el);
     const k = JSON.stringify(JSON.parse(b.dataset.fshow));
     if (chatFolderOf(k)) chatOpen(el, k); else back();
+  }));
+  pane.querySelectorAll("[data-fedit]").forEach((b) => (b.onclick = () => {
+    const f = parse(b.dataset.fedit);
+    openForm({
+      title: "Edit folder",
+      intro: "Correct the host or path. Chats stay on or off as they were.",
+      fields: [
+        { name: "host", label: "Host", kind: "select", value: f.host, options: data.hosts.map((h) => [h, h]) },
+        { name: "folder", label: "Folder", kind: "text", value: f.folder, help: "Absolute path of the git checkout (or folder) the agents work in." },
+      ],
+      submit: "Save",
+      onSubmit: async (v) => { await api("POST", "/chats/folders/move", { ...f, new_host: v.host, new_folder: v.folder }); await chatFolders(el); },
+    });
+  }));
+  pane.querySelectorAll("[data-fdel]").forEach((b) => (b.onclick = () => {
+    const f = parse(b.dataset.fdel);
+    confirmAction("Delete folder", `Remove <span class="mono">${esc(f.folder)}</span> on ${esc(f.host)} from the list? Sessions that start there stay out of chats.`, "Delete",
+      async () => { await api("POST", "/chats/folders/delete", f); await chatFolders(el); });
   }));
   pane.querySelector("#cf-add").onclick = () => openForm({
     title: "Add a folder",

@@ -496,6 +496,9 @@ details.delivery summary:hover { color: var(--ink); }
 .cf-name .mono { font: 500 .86rem var(--mono); overflow-wrap: anywhere; }
 .cf-name small { color: var(--muted); font-size: .76rem; }
 .cf-row > .btn { min-width: 7.2rem; justify-content: center; }
+.cf-edit { display: inline-flex; gap: .2rem; min-width: 7.6rem; justify-content: flex-end; }
+@media (max-width: 760px) { .cf-edit:empty { display: none; } }
+.cf-edit .btn { font-size: .8rem; padding-inline: .5rem; }
 .chat-mini .mini { display: inline-flex; align-items: center; gap: .25rem; margin-right: .55rem; font-size: .76rem; color: var(--muted); }
 @media (prefers-reduced-motion: no-preference) {
   .cm.flash { animation: cm-flash 1.4s ease-out; }

@@ -2,6 +2,11 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.14.2
+
+Chats → Folders: a folder entry with no chat history and no session present (for example a mistyped path) can be
+edited (host, path; chats stay on or off) or deleted. A folder with history is switched off instead. No schema change.
+
 ## Upgrading to 0.14.1
 
 Chats page only. The read dots are now one dot on your own messages, orange until an agent has read or claimed it,

@@ -1109,6 +1109,44 @@ async def chat_folder_set(body: ChatFolderIn, request: Request, client: Client =
         raise HTTPException(422, str(e)) from e
 
 
+class ChatFolderMoveIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    host: str = Field(min_length=1, max_length=100)
+    folder: str = Field(min_length=1, max_length=1024)
+    new_host: str = Field(min_length=1, max_length=100)
+    new_folder: str = Field(min_length=1, max_length=1024)
+
+
+def _folder_errors(fn: Any) -> Any:
+    try:
+        return fn()
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@router.post("/api/chats/folders/move")
+async def chat_folder_move(body: ChatFolderMoveIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    """Correct a folder entry with no history (another path or host)."""
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    return _folder_errors(lambda: svc.chat.move_folder(body.host, body.folder, body.new_host, body.new_folder))
+
+
+@router.post("/api/chats/folders/delete", status_code=204)
+async def chat_folder_delete(body: ChatFolderIn, request: Request, client: Client = Depends(admin)) -> Response:
+    """Remove a folder entry with no history (a folder with history is switched off instead)."""
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    _folder_errors(lambda: svc.chat.delete_folder(body.host, body.folder))
+    return Response(status_code=204)
+
+
 @router.post("/api/chats/folders/open", status_code=201)
 async def chat_folder_open(body: ChatFolderIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
     """Open a folder's group now (an ad-hoc group) and invite the sessions there; the folder stays as it is."""

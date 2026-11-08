@@ -298,3 +298,55 @@ def test_admin_folder_api(ctx):  # noqa: F811
     listed = b.get("/admin/api/chats").json()["folders"][0]
     assert listed["presences"] == [{"kind": "claude", "since": listed["presences"][0]["since"]}]
     assert listed["adhoc"] is True and listed["enabled"] is False
+
+
+def test_edit_and_delete_folder_entries(svc):
+    svc.chat.set_folder("host-a", "/home/typo", True)
+    f = {x["folder"]: x for x in svc.chat.folders()}
+    assert f["/home/typo"]["editable"] is True
+    out = svc.chat.move_folder("host-a", "/home/typo", "host-a", "/home/alex/project")
+    assert out == {"host": "host-a", "folder": "/home/alex/project", "enabled": True}
+    assert svc.chat.folder_enabled("host-a", "/home/alex/project")
+    assert not svc.chat.folder_enabled("host-a", "/home/typo")
+    with pytest.raises(Invalid):
+        svc.chat.move_folder("host-a", "/home/alex/project", "host-zz", "/x")
+    svc.chat.set_folder("host-a", "/srv/off", True)
+    svc.chat.set_folder("host-a", "/srv/off", False)  # off but listed: editable too, stays off when moved
+    assert svc.chat.move_folder("host-a", "/srv/off", "host-b", "/srv/off2")["enabled"] is False
+    with pytest.raises(Conflict):
+        svc.chat.move_folder("host-b", "/srv/off2", "host-a", "/home/alex/project")
+    svc.chat.delete_folder("host-a", "/home/alex/project")
+    svc.chat.delete_folder("host-b", "/srv/off2")
+    assert svc.chat.folders() == []
+    from notify.core import NotFound
+    with pytest.raises(NotFound):
+        svc.chat.delete_folder("host-a", "/nowhere")
+
+
+def test_folder_with_history_or_sessions_is_not_editable(svc):
+    svc.chat.set_folder("host-a", FOLDER, True)
+    pres(svc, "s1")  # joins: the folder now has a group
+    svc.chat.set_folder("host-a", "/srv/present", True)
+    pres(svc, "s2", folder="/srv/other")
+    svc.chat.set_folder("host-a", "/srv/other", True)  # a session was present before it was switched on
+    f = {x["folder"]: x for x in svc.chat.folders()}
+    assert f[FOLDER]["editable"] is False and f["/srv/other"]["editable"] is False
+    for folder in (FOLDER, "/srv/other"):
+        with pytest.raises(Conflict):
+            svc.chat.delete_folder("host-a", folder)
+        with pytest.raises(Conflict):
+            svc.chat.move_folder("host-a", folder, "host-a", "/srv/new")
+
+
+def test_admin_folder_edit_delete_api(ctx):  # noqa: F811
+    srv, b, bearer = ctx
+    b.put("/admin/api/chats/folders", json={"host": "host-a", "folder": "/home/typo"}, headers=H)
+    move = {"host": "host-a", "folder": "/home/typo", "new_host": "host-a", "new_folder": "/home/alex/x"}
+    assert httpx.post(srv.url + "/admin/api/chats/folders/move", json=move, headers={**bearer, **H}).status_code == 403
+    assert b.post("/admin/api/chats/folders/move", json=move, headers=H).json()["folder"] == "/home/alex/x"
+    gone = {"host": "host-a", "folder": "/home/alex/x"}
+    assert httpx.post(srv.url + "/admin/api/chats/folders/delete", json=gone,
+                      headers={**bearer, **H}).status_code == 403
+    assert b.post("/admin/api/chats/folders/delete", json=gone, headers=H).status_code == 204
+    assert b.post("/admin/api/chats/folders/delete", json=gone, headers=H).status_code == 404
+    assert b.get("/admin/api/chats/folders").json()["folders"] == []

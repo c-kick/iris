@@ -157,6 +157,7 @@ def seed_chats(app) -> None:
     chat.post(p2["member_handle"], "Yes, but not before the release.")
     # 0.14.0: /srv/app has chats on; a session present in /srv/docs (chats off there); a second session in /srv/app
     chat.set_folder("host-a", "/srv/app", True)
+    chat.set_folder("host-b", "/srv/planned", True)  # switched on before any agent started there: editable
     chat.presence(a, kind="codex", session_id="demo-present", folder="/srv/docs", pid=None, pid_start=None)
     # a closed group
     c1 = join(a, "claude", "demo-claude-3", "/srv/old-project")

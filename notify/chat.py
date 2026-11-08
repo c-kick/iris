@@ -703,9 +703,57 @@ class Chat:
                      members=self.db.scalar("SELECT COUNT(*) FROM chat_members WHERE group_id=? AND left_at IS NULL",
                                             (g["id"],)) if g else 0,
                      present=self.db.scalar("SELECT COUNT(*) FROM chat_presence WHERE host=? AND folder=?",
-                                            (host, folder)) or 0)
+                                            (host, folder)) or 0,
+                     editable=self._only_a_setting(host, folder))
             out.append(f)
         return out
+
+    def _only_a_setting(self, host: str, folder: str) -> bool:
+        """A folder entry the owner may edit or delete: no group ever and no session present, so nothing hangs on
+        the path (a folder with history is switched off instead)."""
+        return (self.db.one("SELECT 1 FROM chat_groups WHERE host=? AND folder=?", (host, folder)) is None
+                and self.db.one("SELECT 1 FROM chat_presence WHERE host=? AND folder=?", (host, folder)) is None)
+
+    def delete_folder(self, host: str, folder: str, by: str = "admin-ui") -> None:
+        """Remove a folder entry that is only a setting (e.g. a mistyped path)."""
+        folder = normalise_folder(folder)
+        with self.db.tx() as c:
+            if not self._only_a_setting(host, folder):
+                raise Conflict("this folder has chat history or sessions; switch chats off instead")
+            n = c.execute("DELETE FROM chat_folders WHERE host=? AND folder=?", (host, folder)).rowcount
+            n += c.execute("DELETE FROM chat_known_folders WHERE host=? AND folder=?", (host, folder)).rowcount
+            if not n:
+                raise NotFound("folder not found")
+            self._event(c, "group.folder_deleted", by, {"host": host, "folder": folder})
+
+    def move_folder(self, host: str, folder: str, new_host: str, new_folder: str, by: str = "admin-ui") -> dict[str, Any]:
+        """Correct a folder entry that is only a setting: another path and/or host, chats on or off as before."""
+        folder = normalise_folder(folder)
+        new_folder = normalise_folder(new_folder)
+        if new_host not in self.chat_hosts():
+            raise Invalid("host must be the chat host of an API client")
+        with self.db.tx() as c:
+            if not self._only_a_setting(host, folder):
+                raise Conflict("this folder has chat history or sessions; switch chats off instead")
+            en = c.execute("SELECT * FROM chat_folders WHERE host=? AND folder=?", (host, folder)).fetchone()
+            known = c.execute("SELECT 1 FROM chat_known_folders WHERE host=? AND folder=?", (host, folder)).fetchone()
+            if en is None and known is None:
+                raise NotFound("folder not found")
+            if (new_host, new_folder) == (host, folder):
+                return {"host": host, "folder": folder, "enabled": en is not None}
+            if c.execute("SELECT 1 FROM chat_folders WHERE host=? AND folder=? UNION SELECT 1 FROM chat_known_folders"
+                         " WHERE host=? AND folder=?", (new_host, new_folder, new_host, new_folder)).fetchone():
+                raise Conflict("that folder is already in the list")
+            c.execute("DELETE FROM chat_folders WHERE host=? AND folder=?", (host, folder))
+            c.execute("DELETE FROM chat_known_folders WHERE host=? AND folder=?", (host, folder))
+            if en is not None:
+                c.execute("INSERT INTO chat_folders(host, folder, enabled_at, enabled_by) VALUES (?, ?, ?, ?)",
+                          (new_host, new_folder, iso(self.now()), by))
+            else:
+                c.execute("INSERT INTO chat_known_folders(host, folder) VALUES (?, ?)", (new_host, new_folder))
+            self._event(c, "group.folder_moved", by, {"host": host, "folder": folder, "new_host": new_host,
+                                                       "new_folder": new_folder})
+        return {"host": new_host, "folder": new_folder, "enabled": en is not None}
 
     def leave(self, member_handle: str, reason: str = "ended") -> None:
         if reason not in LEAVE_REASONS:
