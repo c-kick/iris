@@ -138,6 +138,10 @@ def seed_chats(app) -> None:
         chat._add_message(c, cl["group_id"], "system", None, "Codex reconnected")
     chat.post(cl["member_handle"], "Done: the client reads both names, tests pass.")
     chat.post(cl["member_handle"], "Which tests did you run?", in_reply_to=yes["message_id"])
+    chat.post(cx["member_handle"], f"@{cl['name']} can you also update the docs page?")
+    chat.post(cx["member_handle"], "I'm rebasing main in a minute; expect a force-push on my branch only.", fyi=True)
+    chat.set_status(a, kind="claude", session_id="demo-claude", status="busy")
+    chat.set_status(a, kind="codex", session_id="demo-codex", status="waiting")
     thanks = chat.post_owner(cl["group_id"], "Thanks. Commit it, don't deploy.")["message_id"]
     with chat.db.tx() as c:  # in both sessions; Claude claims it: one green tick
         c.execute("UPDATE chat_wakes SET state='delivered' WHERE message_id=?", (thanks,))
@@ -151,6 +155,9 @@ def seed_chats(app) -> None:
         c.execute("UPDATE chat_groups SET paused=1 WHERE id=?", (p1["group_id"],))
         chat._add_message(c, p1["group_id"], "system", None, "paused after 10 agent messages; waiting for the owner")
     chat.post(p2["member_handle"], "Yes, but not before the release.")
+    # 0.14.0: /srv/app has chats on; a session present in /srv/docs (chats off there); a second session in /srv/app
+    chat.set_folder("host-a", "/srv/app", True)
+    chat.presence(a, kind="codex", session_id="demo-present", folder="/srv/docs", pid=None, pid_start=None)
     # a closed group
     c1 = join(a, "claude", "demo-claude-3", "/srv/old-project")
     chat.post(c1["member_handle"], "Nothing left to do here.")
@@ -163,6 +170,7 @@ async def keep_demo_chats_alive(app) -> None:
         await asyncio.sleep(30)
         with app.state.service.db.tx() as c:
             c.execute("UPDATE chat_members SET last_seen_at=? WHERE left_at IS NULL", (now_iso(),))
+            c.execute("UPDATE chat_presence SET seen_at=?", (now_iso(),))
 
 
 def main() -> None:

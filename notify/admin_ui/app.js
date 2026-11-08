@@ -1773,12 +1773,13 @@ function chatMembersHtml(g) {
     if (m.left_at) {
       return `<li class="cmem left"><span class="sdot" aria-hidden="true"></span><span class="nm">${esc(name)}</span> <small>${esc(kind)}</small><span class="sub">left ${esc(when(m.left_at))}</span></li>`;
     }
-    const sub = [m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : "",
-      m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text)].filter(Boolean).join(" · ");
+    const sub = [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
+      m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
     const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";
+    const rename = `<button type="button" class="btn quiet cmem-rename" data-rename="${esc(m.id)}" data-name="${esc(name)}" aria-label="Rename ${esc(name)}" title="Rename">✎</button>`;
     return `<li class="cmem"><button type="button" class="cmem-main" data-mention="${esc(m.name || "")}" title="${m.name ? `Mention ${esc(name)} in your message` : ""}">
       <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm">${esc(name)}</span> <small>${esc(kind)}</small>
-      <span class="sub">${sub}</span></button>${claims}</li>`;
+      <span class="sub">${sub}</span></button>${claims}${rename}</li>`;
   }).join("");
   const others = (g.presences || []).map((p) => `<li class="cmem away"><span class="sdot unknown" aria-hidden="true"></span><span class="nm">${esc(CHAT_WHO[p.kind] || p.kind)}</span> <small>not in the chat</small></li>`).join("");
   return `<div class="chat-members" aria-label="Members"><ul>${rows || `<li class="cmem empty-row">Nobody here</li>`}</ul>${others ? `<div class="also">Also here</div><ul>${others}</ul>` : ""}</div>`;
@@ -1798,7 +1799,7 @@ function chatGroupRow(g) {
   return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
       ${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span>
-    <span class="p">${esc(g.host)} · ${g.state === "open" ? "open" : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
+    <span class="p">${esc(g.host)} · ${g.state === "open" ? (g.adhoc ? "open on demand" : "open") : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
     <span class="p">${esc(preview)}</span></button>`;
 }
 
@@ -1870,13 +1871,14 @@ async function chatsPage(main) {
     </div>`;
   const el = main.querySelector("#chats");
   try { await chatsLoadList(el); } catch (ex) { el.querySelector("#chat-list").innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
-  if (chats.selected && chatFolderOf(chats.selected)) await chatOpen(el, chats.selected, true);
+  if (chats.foldersOpen) await chatFolders(el);
+  else if (chats.selected && chatFolderOf(chats.selected)) await chatOpen(el, chats.selected, true);
   else { chats.selected = null; el.classList.remove("thread"); chatPaneEmpty(el); }
   chats.timer = setInterval(() => chatTick(el), 5000);
 }
 
 function chatPaneEmpty(el) {
-  el.querySelector("#chat-pane").innerHTML = `<div class="empty">${chats.folders.length ? "Pick a folder on the left." : "No group chats yet. They appear when two agent sessions join in the same folder."}<br><span class="hint">Agent sessions in the same folder talk here, one thread per folder. Read along, and post into an open group to steer it.</span></div>`;
+  el.querySelector("#chat-pane").innerHTML = `<div class="empty">${chats.folders.length ? "Pick a folder on the left." : "No group chats yet. Switch chats on for a folder under Folders, or an agent opens one when it helps."}<br><span class="hint">Agent sessions in the same folder talk here, one thread per folder. Read along, and post into an open group to steer it.</span></div>`;
 }
 
 async function chatsLoadList(el) {
@@ -1887,11 +1889,15 @@ async function chatsLoadList(el) {
 
 function chatsRenderList(el) {
   const list = el.querySelector("#chat-list");
-  list.innerHTML = chats.folders.map((f) => chatGroupRow(f) + (chatKey(f) === chats.selected ? chatMembersHtml(f) : "")).join("")
-    || `<div class="empty">No chats yet.</div>`;
+  const top = `<div class="chat-list-top"><button type="button" class="btn quiet${chats.foldersOpen ? " on" : ""}" id="chat-folders-btn">Folders · chats on or off</button></div>`;
+  list.innerHTML = top + (chats.folders.map((f) => chatGroupRow(f) + (chatKey(f) === chats.selected ? chatMembersHtml(f) : "")).join("")
+    || `<div class="empty">No chats yet.</div>`);
   list.querySelectorAll("[data-key]").forEach((b) => (b.onclick = () => chatOpen(el, b.dataset.key)));
   list.querySelectorAll("[data-mention]").forEach((b) => (b.onclick = () => chatMention(el, b.dataset.mention)));
   list.querySelectorAll("[data-claim]").forEach((b) => (b.onclick = () => chatShowMessage(el, b.dataset.claim)));
+  list.querySelectorAll("[data-rename]").forEach((b) => (b.onclick = () => chatRename(el, b.dataset.rename, b.dataset.name)));
+  const fb = list.querySelector("#chat-folders-btn");
+  if (fb) fb.onclick = () => chatFolders(el);
   const nav = document.querySelector('[data-nav="chats"]');
   if (nav) nav.querySelector(".badge")?.remove();
   const n = chatUnread();
@@ -1948,6 +1954,79 @@ function chatAtPicker(el, ta, list) {
   };
 }
 
+function chatRename(el, id, name) {
+  openForm({
+    title: `Rename ${name}`,
+    intro: "The other members see a line in the chat. Names are unique in the group.",
+    fields: [{ name: "name", label: "Name", kind: "text", value: name, help: "One word, 2–20 letters or digits, starting with a letter." }],
+    submit: "Rename",
+    onSubmit: async (v) => { await api("PUT", `/chats/members/${encodeURIComponent(id)}`, { name: v.name }); await chatTick(el); },
+  });
+}
+
+// ---- Folders: where chats are on (sessions join when they start) and where a chat can be opened now
+async function chatFolders(el) {
+  chats.selected = null;
+  chats.currentId = null;
+  chats.foldersOpen = true;
+  el.classList.add("thread");
+  chatsRenderList(el);
+  const pane = el.querySelector("#chat-pane");
+  pane.innerHTML = `<div class="empty">Loading…</div>`;
+  let data;
+  try { data = await api("GET", "/chats/folders"); } catch (ex) { pane.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
+  if (!chats.foldersOpen) return;
+  const row = (f) => {
+    const bits = [f.host];
+    if (f.present) bits.push(`${f.present} session${f.present === 1 ? "" : "s"} here, not in a chat`);
+    if (f.open_group_id) bits.push(`chat open${f.adhoc ? " (opened on demand)" : ""} · ${f.members} member${f.members === 1 ? "" : "s"}`);
+    const key = esc(JSON.stringify([f.host, f.folder]));
+    return `<li class="cf-row"><div class="cf-name"><span class="mono">${esc(f.folder)}</span><small>${esc(bits.join(" · "))}</small></div>
+      <label class="fyi-toggle cf-on" title="Agent sessions that start here join the folder's chat"><input type="checkbox" data-fen="${key}" ${f.enabled ? "checked" : ""}> Chats on</label>
+      ${f.open_group_id ? `<button type="button" class="btn quiet" data-fshow="${key}">Show chat</button>`
+        : `<button type="button" class="btn" data-fopen="${key}" title="Open a chat now and invite the sessions here">Open chat</button>`}</li>`;
+  };
+  pane.innerHTML = `
+    <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Chats</button>
+      <div class="grow"><b>Folders</b><span class="hint">Chats on: agent sessions that start in the folder join its chat and report in. Off: they stay out, and an agent (or you) can still open a chat there when it helps.</span></div>
+      <button type="button" class="btn" id="cf-add">Add folder…</button></div>
+    <div class="chat-folders">${data.folders.length ? `<ul>${data.folders.map(row).join("")}</ul>` : `<div class="empty">No folders yet. They appear when an agent session starts, or add one.</div>`}</div>`;
+  const back = () => { chats.foldersOpen = false; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
+  pane.querySelector("#chat-back").onclick = back;
+  const parse = (k) => { const [host, folder] = JSON.parse(k); return { host, folder }; };
+  pane.querySelectorAll("[data-fen]").forEach((cb) => (cb.onchange = async () => {
+    cb.disabled = true;
+    try { await api("PUT", "/chats/folders", { ...parse(cb.dataset.fen), enabled: cb.checked }); toast(cb.checked ? "Chats on: new sessions there join" : "Chats off: an open chat stays until it empties"); }
+    catch (ex) { cb.checked = !cb.checked; toast(ex.message); }
+    finally { cb.disabled = false; }
+  }));
+  pane.querySelectorAll("[data-fopen]").forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const r = await api("POST", "/chats/folders/open", parse(b.dataset.fopen));
+      toast(r.invited ? `Chat opened; ${r.invited} session${r.invited === 1 ? "" : "s"} invited` : "Chat opened; no session is here to invite yet");
+      await chatsLoadList(el);
+      await chatFolders(el);
+    } catch (ex) { toast(ex.message); b.disabled = false; }
+  }));
+  pane.querySelectorAll("[data-fshow]").forEach((b) => (b.onclick = async () => {
+    chats.foldersOpen = false;
+    await chatsLoadList(el);
+    const k = JSON.stringify(JSON.parse(b.dataset.fshow));
+    if (chatFolderOf(k)) chatOpen(el, k); else back();
+  }));
+  pane.querySelector("#cf-add").onclick = () => openForm({
+    title: "Add a folder",
+    intro: "Switch chats on for a folder before any agent has started there.",
+    fields: [
+      { name: "host", label: "Host", kind: "select", value: data.hosts[0] || "", options: data.hosts.map((h) => [h, h]), help: "The chat host of the API client the agents there use." },
+      { name: "folder", label: "Folder", kind: "text", value: "", placeholder: "/home/alex/project", help: "Absolute path of the git checkout (or folder) the agents work in." },
+    ],
+    submit: "Switch chats on",
+    onSubmit: async (v) => { await api("PUT", "/chats/folders", { host: v.host, folder: v.folder, enabled: true }); await chatFolders(el); },
+  });
+}
+
 // a click on a member: "@Name " at the cursor in the composer
 function chatMention(el, name) {
   const ta = el.querySelector("#chat-text");
@@ -1974,6 +2053,7 @@ function chatShowMessage(el, id) {
 async function chatOpen(el, key, keep = false) {
   const f = chatFolderOf(key);
   if (!f) return;
+  chats.foldersOpen = false;
   chats.selected = key;
   chats.lastId = null;
   chats.currentId = null;

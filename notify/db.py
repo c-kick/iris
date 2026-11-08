@@ -310,15 +310,17 @@ class Database:
             "replies": {"late_ok": "INTEGER NOT NULL DEFAULT 0"},
         })
         self._add_conversations()
+        had_adhoc = "adhoc" in {r[1] for r in self.conn.execute("PRAGMA table_info(chat_groups)")}
         self._add_chat()
         self._add_chat_history()
         self._add_missing_columns({"chat_wakes": {"attempts": "INTEGER NOT NULL DEFAULT 0", "retry_after": "TEXT"},
-                                  "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT"},
+                                  "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT",
+                                                  "adhoc": "INTEGER NOT NULL DEFAULT 0"},
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT",
                                                     "kind": "TEXT NOT NULL DEFAULT 'request'"},  # 0.14.0: request, fyi, all
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
                                                    "name": "TEXT", "status": "TEXT", "status_at": "TEXT",
-                                                   "active_at": "TEXT", "marker": "TEXT"},  # 0.14.0
+                                                   "active_at": "TEXT", "marker": "TEXT", "intent": "TEXT"},  # 0.14.0
                                   "subscriptions": {"failing_since": "TEXT"},
                                   # 0.13.2: bumped by every claim, never reset (a retry resets attempts)
                                   "deliveries": {"lease_no": "INTEGER NOT NULL DEFAULT 0"},
@@ -329,9 +331,24 @@ class Database:
         # members from before 0.13.0's read cursor owe nothing: start them at their group's newest message
         self.conn.execute("UPDATE chat_members SET last_read_rowid=(SELECT COALESCE(MAX(rowid), 0) FROM chat_messages"
                           " WHERE group_id=chat_members.group_id) WHERE last_read_rowid IS NULL")
-        with self.tx() as c:  # 0.14.0: who a message @mentions
+        with self.tx() as c:  # 0.14.0: who a message @mentions; folder opt-in; sessions present; invites
             c.execute("CREATE TABLE IF NOT EXISTS chat_mentions (message_id TEXT NOT NULL REFERENCES chat_messages(id),"
                       " member_id TEXT NOT NULL REFERENCES chat_members(id), PRIMARY KEY(message_id, member_id))")
+            c.execute("CREATE TABLE IF NOT EXISTS chat_folders (host TEXT NOT NULL, folder TEXT NOT NULL,"
+                      " enabled_at TEXT, enabled_by TEXT, PRIMARY KEY(host, folder))")
+            c.execute("CREATE TABLE IF NOT EXISTS chat_known_folders (host TEXT NOT NULL, folder TEXT NOT NULL,"
+                      " PRIMARY KEY(host, folder))")
+            c.execute("CREATE TABLE IF NOT EXISTS chat_presence (id TEXT PRIMARY KEY, host TEXT NOT NULL,"
+                      " folder TEXT NOT NULL, kind TEXT NOT NULL, session_id TEXT NOT NULL, pid INTEGER, pid_start TEXT,"
+                      " client_id TEXT, handle_sha256 TEXT NOT NULL, seen_at TEXT, started_at TEXT, status TEXT,"
+                      " status_at TEXT, active_at TEXT)")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_presence_session ON chat_presence(host, kind, session_id)")
+            c.execute("CREATE TABLE IF NOT EXISTS chat_invites (id TEXT PRIMARY KEY, group_id TEXT NOT NULL,"
+                      " presence_id TEXT NOT NULL, message_id TEXT NOT NULL, state TEXT NOT NULL, waiter_id TEXT,"
+                      " claimed_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_after TEXT, created_at TEXT,"
+                      " finished_at TEXT)")
+        if not had_adhoc:  # 0.14.0: a group open at the upgrade stays open as an ad-hoc group until it empties
+            self.conn.execute("UPDATE chat_groups SET adhoc=1 WHERE state='open'")
         self._name_open_members()
         # after the columns exist (an index in SCHEMA would fail on a pre-0.6.0 database)
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")

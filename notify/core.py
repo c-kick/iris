@@ -1522,6 +1522,7 @@ class NotifyService:
             # history requests point at the group and its members (foreign keys are on): they go first
             c.execute(f"DELETE FROM chat_history_requests WHERE group_id IN {old}"
                       f" OR member_id IN (SELECT id FROM chat_members WHERE group_id IN {old})", (cutoff, cutoff))
+            c.execute(f"DELETE FROM chat_invites WHERE group_id IN {old}", (cutoff,))
             c.execute(f"DELETE FROM chat_mentions WHERE message_id IN (SELECT id FROM chat_messages WHERE group_id IN {old})"
                       f" OR member_id IN (SELECT id FROM chat_members WHERE group_id IN {old})", (cutoff, cutoff))
             c.execute(f"DELETE FROM chat_messages WHERE group_id IN {old}", (cutoff,))

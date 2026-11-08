@@ -860,13 +860,18 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
         members.append({"id": m["id"], "name": m["name"], "kind": m["kind"], "joined_at": m["joined_at"],
                         "last_seen_at": m["last_seen_at"], "left_at": m["left_at"], "status": v.get("status"),
                         "status_since": v.get("since"), "quiet_minutes": v.get("quiet_minutes"),
-                        "claims": len(claims.get(m["id"], [])), "oldest_claim": (claims.get(m["id"]) or [None])[0]})
+                        "claims": len(claims.get(m["id"], [])), "oldest_claim": (claims.get(m["id"]) or [None])[0],
+                        "intent": m["intent"] if show_text else None})
+    presences = ([{"kind": p["kind"], "since": p["started_at"]} for p in svc.db.query(
+        "SELECT kind, started_at FROM chat_presence WHERE host=? AND folder=? ORDER BY rowid", (g["host"], g["folder"]))]
+        if g["state"] == "open" else [])
     last = svc.db.one("SELECT author, text, created_at FROM chat_messages WHERE group_id=? ORDER BY rowid DESC LIMIT 1",
                       (gid,))
     unread = svc.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE group_id=? AND author IN ('claude', 'codex')"
                            " AND (? IS NULL OR created_at > ?)", (gid, g["owner_seen_at"], g["owner_seen_at"])) or 0
     return {"id": gid, "host": g["host"], "folder": g["folder"], "state": g["state"], "opened_at": g["opened_at"],
-            "closed_at": g["closed_at"], "paused": bool(g["paused"]), "members": members,
+            "closed_at": g["closed_at"], "paused": bool(g["paused"]), "members": members, "presences": presences,
+            "adhoc": bool(g["adhoc"]), "enabled": svc.chat.folder_enabled(g["host"], g["folder"]),
             "last_message": ({"author": last["author"], "text_preview": _preview(last["text"]) if show_text else None,
                               "created_at": last["created_at"]} if last else None),
             "unread": unread}
@@ -1069,6 +1074,46 @@ async def chat_release_claim(message_id: str, request: Request, client: Client =
     except Invalid as e:
         raise HTTPException(409, str(e)) from e
     return Response(status_code=204)
+
+
+class ChatFolderIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    host: str = Field(min_length=1, max_length=100)
+    folder: str = Field(min_length=1, max_length=1024)
+    enabled: bool = True
+
+
+@router.get("/api/chats/folders")
+async def chat_folders(request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    """Folders the owner can switch chats on for: enabled ones, ones that had a group, ones with sessions now."""
+    svc = _svc(request)
+    return {"folders": svc.chat.folders(), "hosts": sorted(svc.chat.chat_hosts())}
+
+
+@router.put("/api/chats/folders")
+async def chat_folder_set(body: ChatFolderIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _check_browser_mutation(request)
+    try:
+        return _svc(request).chat.set_folder(body.host, body.folder, body.enabled)
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@router.post("/api/chats/folders/open", status_code=201)
+async def chat_folder_open(body: ChatFolderIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    """Open a folder's group now (an ad-hoc group) and invite the sessions there; the folder stays as it is."""
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    if body.host not in svc.chat.chat_hosts():
+        raise HTTPException(422, "host must be the chat host of an API client")
+    try:
+        return svc.chat.open_owner(body.host, body.folder)
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
 
 
 class ChatRenameIn(BaseModel):

@@ -39,11 +39,20 @@ class HeartbeatIn(BaseModel):
     alive: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
 
 
+@router.post("/presence", status_code=201)
+@_errors
+async def presence(body: JoinIn, request: Request, client: Client = Depends(require(Scope.chat))) -> dict[str, Any]:
+    """A session starts: joined (chats on in this folder, or a group is open here) or present (chats off)."""
+    return service(request).chat.presence(client, kind=body.kind, session_id=body.session_id, folder=body.folder,
+                                          pid=body.pid, pid_start=body.pid_start)
+
+
 @router.post("/join", status_code=201)
 @_errors
 async def join(body: JoinIn, request: Request, client: Client = Depends(require(Scope.chat))) -> dict[str, Any]:
-    return service(request).chat.join(client, kind=body.kind, session_id=body.session_id, folder=body.folder,
-                                      pid=body.pid, pid_start=body.pid_start)
+    """Kept for hook scripts from before 0.14.0: the same as /presence (a member handle either way)."""
+    return service(request).chat.presence(client, kind=body.kind, session_id=body.session_id, folder=body.folder,
+                                          pid=body.pid, pid_start=body.pid_start)
 
 
 @router.post("/leave", status_code=204)

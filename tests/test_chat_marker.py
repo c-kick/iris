@@ -78,10 +78,10 @@ def test_cleared_at_leave_and_never_shown(ctx):  # noqa: F811
     srv, b, bearer = ctx
     j = _join(srv, "host-a", "/srv/one", "s1")
     k = _join(srv, "host-a", "/srv/one", "s2")
-    srv.service.chat.post(j["member_handle"], f"look {k['marker']}")
-    for path in ("/admin/api/chats", f"/admin/api/chats/{j['group_id']}/messages"):
-        assert j["marker"] not in b.get(path).text and k["marker"][-9:-1] not in b.get(path).text.replace(
-            k["marker"], "")
+    srv.service.chat.post(j["member_handle"], "look")
+    for path in ("/admin/api/chats", f"/admin/api/chats/{j['group_id']}/messages", "/admin/api/chats/folders"):
+        text = b.get(path).text
+        assert j["marker"][-9:-1] not in text and k["marker"][-9:-1] not in text
     assert j["marker"] not in json.dumps([dict(r) for r in srv.service.db.query("SELECT data_json FROM events")])
     srv.service.chat.leave(j["member_handle"])
     assert srv.service.db.scalar("SELECT marker FROM chat_members WHERE id=?", (j["member_id"],)) is None

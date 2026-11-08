@@ -29,6 +29,7 @@ def chatlive(tmp_path, fake):
     srv = LiveServer(app, fake)
     srv.start()
     srv.service.resolve = fake_resolve
+    srv.service.chat.auto_enable = True  # tests from before the 0.14.0 folder opt-in
     TOKENS.update(CHAT_TOKENS)
     yield srv
     for k in CHAT_TOKENS:
