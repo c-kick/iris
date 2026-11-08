@@ -1,7 +1,11 @@
 # Group chats beta — design
 
-Date: 2026-11-08. Status: revision 1, draft for the owner's review (choices made with the owner in the
-2026-11-08 interview; open questions at the end).
+Date: 2026-11-08. Status: built in 0.14.0 (branch chat-beta-0.14); choices made with the owner in the
+2026-11-08 interview, open questions answered at the end. Deviations while building: invites are rows in their own
+table (`chat_invites`) delivered through the same relay endpoints; recently stale members ride along in the heartbeat's
+`members` list (no relay change); the Admin routes are `/admin/api/chats/folders`, `/chats/folders/open`,
+`/chats/{id}/settings` and `/chats/members/{id}`; same-process replace and stale rejoin only act on the caller's own
+client.
 Target: hnl-notify 0.14.0 (after the 0.13.2 hardening release). Builds on
 [the 0.13.0 group chats design](2026-11-07-agent-group-chats-design.md) and the shipped behaviour in
 [docs/group-chats.md](../../group-chats.md).

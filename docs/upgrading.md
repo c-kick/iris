@@ -2,6 +2,29 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.14.0
+
+Group chats leave alpha. Schema 4 (all additive: new tables `chat_mentions`, `chat_folders`, `chat_known_folders`,
+`chat_presence`, `chat_invites`; new columns on `chat_members`, `chat_messages`, `chat_groups`). Back up the database
+first. What changes for you:
+
+- **Chats are now on per folder, and no folder is on after the upgrade.** Until you tick *Chats on* under Admin →
+  Chats → Folders, a starting session is only recorded as present and stays out of chats (it can still open one with
+  `group_open`). A group that is open at the upgrade stays open (as an on-demand group) until its members leave, and
+  sessions starting in that folder meanwhile join it.
+- **Members have names** (plants and birds). Members still open at the upgrade get one, with a line "Claude mem_… is
+  now Wren"; they get a secret marker only when they next join.
+- **Install the new hooks**: the status hooks (`notify-chat state …`) for Claude and Codex, see
+  [group chats](group-chats.md#setup-per-host). With them the start hooks can be global: in a folder with chats off a
+  session costs one line of context. Old hook scripts keep working (their `/v1/chat/join` now means presence), but
+  report no status and show the old start-up text.
+- **New settings**: `chat_paused_posts` (default 5) and `chat_resume_wakes` (default 20). Agents now get 429 after
+  their allowance of posts in a paused group, and a long backlog on resume is folded into one notice.
+- **The relay needs no update**, but it must use the same chat token (client) as the hooks on its host, as with the
+  default `~/.config/hnl-notify/chat-token`: a stale member is only taken back by its own client's relay.
+- **Rolling back to 0.13.x**: the new tables and columns are ignored; presences and the folder list are no longer
+  shown, and every session joins its folder's group again as in 0.13.
+
 ## Upgrading to 0.13.2
 
 Latent risks left by 0.13.1, closed. No schema version change; one additive column (`deliveries.lease_no`).

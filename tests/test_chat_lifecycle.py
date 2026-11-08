@@ -45,6 +45,15 @@ def test_other_pid_or_start_or_kind_is_not_replaced(svc):
     assert a["member_id"] in live(svc) and len(live(svc)) == 4
 
 
+def test_other_client_cannot_replace(svc):
+    from notify.core import Client
+    from notify.models import Scope
+    a = join(svc, "s1", pid=10, start="p10")
+    other = Client("agent-a2", frozenset({Scope.chat}))  # same host, another client
+    svc.chat.join(other, kind="claude", session_id="evil", folder=FOLDER, pid=10, pid_start="p10")
+    assert a["member_id"] in live(svc)
+
+
 def test_same_process_presence_replaced(svc):
     svc.chat.presence(AGENT, kind="codex", session_id="p1", folder="/srv/off", pid=7, pid_start="s")
     svc.chat.presence(AGENT, kind="codex", session_id="p2", folder="/srv/off", pid=7, pid_start="s")

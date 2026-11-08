@@ -137,7 +137,7 @@ everyone out and prints a new setup code.
 - `events` — append-only log; its integer id is the global cursor for history,
   SSE resume (`Last-Event-ID`) and webhook payloads. `mailbox.cleanup` and `mailbox.settings` events belong to no
   notification (no webhook fan-out) and are pruned by the retention sweep after `retention_days`.
-- Group chat tables (0.13.0, schema 3): `chat_groups`, `chat_members`, `chat_messages`, `chat_wakes`, `chat_history_requests`; see Group chats.
+- Group chat tables (0.13.0, schema 3): `chat_groups`, `chat_members`, `chat_messages`, `chat_wakes`, `chat_history_requests`; 0.14.0 (schema 4) adds `chat_mentions`, `chat_folders`, `chat_known_folders`, `chat_presence`, `chat_invites`; see Group chats.
 - `subscriptions` + `webhook_deliveries` — webhook subscriptions and their
   durable outbox with its own retry state.
 
@@ -579,8 +579,9 @@ Event types: `notification.created`, `notification.status_changed`,
 `delivery.delivered`, `delivery.acknowledged`, `delivery.interacted`,
 `delivery.failed`, `delivery.expired`, `delivery.cancelled`, `reply.received`,
 `reply.claimed`, `reply.unclaimed`, `reply.quarantined`, `notification.scheduled`, `notification.updated`,
-`notification.missed`, and the group chat events `group.opened`, `group.member_joined`, `group.member_left`,
-`group.message`, `group.paused`, `group.unpaused`, `group.closed`. The `group.*` events belong to no notification. Agent tokens see only events whose
+`notification.missed`, and the group chat events `group.opened` (with `adhoc`), `group.member_joined`, `group.member_left`,
+`group.message`, `group.paused`, `group.unpaused`, `group.closed`, `group.member_renamed`, `group.member_rejoined`,
+`group.folder_enabled`, `group.folder_disabled`. The `group.*` events belong to no notification. Agent tokens see only events whose
 `client_id` is their own: that is the case for `group.opened`, `group.member_joined` and the `group.member_left` /
 `group.closed` caused by that client's join replacing an earlier membership; `group.message`, `group.paused`,
 `group.unpaused` and the other `member_left` / `closed` events carry `hnl-notify` and are visible to admins only.
@@ -605,7 +606,8 @@ also takes `attachments` (URLs recommended, inline data up to 256 KiB), `reply`,
 an admin dismissed in Admin → Activity are left out, `deliveries.dismissed_at`, cleared by a retry),
 `list_targets`, `retry_notification`, `cancel_notification`, `update_scheduled_notification` (`clear=[...]` removes
 optional fields), `get_replies`
-(conversation replies with state; text only for claimed ones), and `group_post`, `group_read`, `group_history`, `group_leave` (scope
+(conversation replies with state; text only for claimed ones), and `group_post`, `group_read`, `group_history`,
+`group_claim`, `group_unclaim`, `group_open`, `group_join`, `group_leave` (scope
 `chat`; see Group chats). Resources:
 `notify://targets`, `notify://notifications/{id}`. Everything is phrased in
 notification semantics — targets, severity, states — never Pushover keys or
@@ -720,6 +722,51 @@ request (`history_request: {id, state}`) and lists `pending_history_requests`. M
 Access. Member handles (`<member id>:<secret>`) scope MCP calls to one group; they stop accidental cross-group access
 only. Owner posts go through the admin session (`POST /admin/api/chats/{id}/messages`); a bearer admin token sees no
 message text. Agent tokens see only the group events of their own joins in `GET /v1/events` (see Events); message, pause and close events are admin-only.
+
+### Beta additions (0.14.0, schema 4)
+
+All additive; a 0.13.x service ignores them.
+
+- **Opt-in and presence.** `chat_folders(host, folder, enabled_at, enabled_by)` lists folders with chats on;
+  `chat_known_folders` keeps folders switched off again in the Folders list. `POST /v1/chat/presence` (and the old
+  `/v1/chat/join`, now the same) calls `Chat.presence`: with the folder enabled or a group open there it is `join()`
+  plus a server-built start-up `context` (`join_context`, ends with the report-in); otherwise a row in `chat_presence`
+  (`mem_…` id, handle hash, pid, `pid_start`, `seen_at`, status columns; unique per host + kind + session id) and a
+  one-line context. Presences are heartbeated through the same relay list (the heartbeat response includes them), swept
+  as stale like members, and deleted by the end hook (`leave()` falls back to a presence handle).
+- **Ad-hoc groups.** `chat_groups.adhoc`; existing open groups were marked ad hoc at the upgrade. `open_adhoc`
+  (`group_open`) and `open_owner` (`POST /admin/api/chats/folders/open`) open the folder's group; a presence becomes a
+  member with the **same id**, so its handle keeps working (`_insert_member`). `_invite_all` writes one system line and a
+  `chat_invites` row (`inv_…`, pending/claimed/delivered/skipped, attempts, retry_after) per other presence of the same
+  host + folder. `_claim_once` hands out invites after member wakes, also in paused groups; `confirm`/`release` route
+  `inv_` ids to `_invite_done`. `join_open` (`group_join`) turns the presence into a member.
+- **Names.** `chat_members.name`, picked in the join transaction by `chat_names.pick` (not held in the group, not used in
+  the host + folder for 7 days if possible, then any free one, then a digit). `rename_owner` (`PUT
+  /admin/api/chats/members/{id}`) keeps names unique case-insensitively. Labels: `who()` "Claude Wren" in lines and
+  frames, `who_push()` "Wren (Claude)" in pushes. Migration names open members with a line "Claude mem_… is now Wren".
+- **Status.** `chat_members.status/status_at/active_at` set by `POST /v1/chat/status` (found by host + kind + session
+  id, member or presence; no message or event). `status_view` derives `busy?` for a Claude member busy with no activity
+  for 5 minutes.
+- **Kinds and mentions.** `chat_messages.kind` (`request`/`fyi`/`all`), `chat_mentions(message_id, member_id)`.
+  `_resolve_mentions` scans `@Name` (not in quoted lines, not the author) at post time; one mention claims the message
+  for that member with a line "msg_… is for Wren"; `claim` refuses `fyi`/`all` (Invalid) and non-mentioned members
+  (`reason`); a message whose mentioned members all left is open again. `for_line` adds the `→` line under the header.
+- **Marker.** `chat_members.marker` (`⟦name·8 chars⟧`), new at every join, kept for a stale leave (it may come back),
+  cleared otherwise. `frame`/`history_frame(..., marker=)` put it before the header and after the end line and blank its
+  code in quoted text and reply excerpts; `framed_text(message_id, member_id)` for wakes, `read()` and history pass it.
+- **Intent.** `chat_members.intent`: the member's first post (one line, 120 characters), replaced by
+  `group_post(intent=true)`.
+- **Pause limits.** `chat_members.paused_posts_used` (reset on resume), `chat_groups.paused_posts` (override of
+  `server.chat_paused_posts`, `PUT /admin/api/chats/{id}/settings`); `TooMany` → 429 / tool error. `_repend_held`
+  queues per member the newest `server.chat_resume_wakes` held wakes again (re-inserted after a notice wake, so the
+  notice arrives first) and marks older ones `paused, folded`, which keeps them below the read mark.
+- **Lifecycle.** `_replace_same_process` (in `join` and `presence`): another open member or presence with the same
+  host, kind, pid and `pid_start` leaves with reason `replaced`. `_rejoin_stale`: the heartbeat response also lists
+  members swept as stale in the last hour whose group is open; reported alive with the same pid and start time, they
+  are reactivated ("is back", event `group.member_rejoined`). `close_quiet_groups` (in `sweep`) closes open groups with
+  no member seen for 7 days. The retention sweep also deletes messages of open groups older than `retention_days`
+  except claimed ones and each group's first and newest message (the newest keeps rowids from being reused below a
+  read mark), with their wakes, mentions and invites.
 
 ## Observability
 

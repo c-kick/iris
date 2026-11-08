@@ -423,7 +423,7 @@ class Chat:
         """Join the folder's group, opening it if needed. Callers decide whether the folder takes part (presence())."""
         host, folder = self._session_args(client, kind, session_id, folder)
         self._leave_other_folder(client, host, folder, kind, session_id)
-        self._replace_same_process(host, kind, session_id, pid, pid_start)
+        self._replace_same_process(client, host, kind, session_id, pid, pid_start)
         now = iso(self.now())
         with self.db.tx() as c:  # BEGIN IMMEDIATE: a second joiner waits, then finds the group open
             row = c.execute("SELECT m.* FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
@@ -536,7 +536,7 @@ class Chat:
             out["context"] = self.join_context(folder, out, report_in=True)
             return out
         self._leave_other_folder(client, host, folder, kind, session_id)
-        self._replace_same_process(host, kind, session_id, pid, pid_start)
+        self._replace_same_process(client, host, kind, session_id, pid, pid_start)
         now = iso(self.now())
         with self.db.tx() as c:
             pres = c.execute("SELECT * FROM chat_presence WHERE host=? AND kind=? AND session_id=?",
@@ -720,18 +720,19 @@ class Chat:
             c.execute("DELETE FROM chat_invites WHERE presence_id=?", (presence_id,))
             c.execute("DELETE FROM chat_presence WHERE id=?", (presence_id,))
 
-    def _replace_same_process(self, host: str, kind: str, session_id: str, pid: int | None,
+    def _replace_same_process(self, client: Client, host: str, kind: str, session_id: str, pid: int | None,
                               pid_start: str | None) -> None:
         """Codex /new or /resume, Claude /clear: a new session id from the same process. Its earlier member (or
-        presence) on this host is that window's old session: it leaves (reason replaced) and the new one starts fresh."""
+        presence) on this host is that window's old session: it leaves (reason replaced) and the new one starts fresh.
+        Only rows the same client created: another client on the host cannot evict a member by naming its pid."""
         if not pid or not pid_start:
             return
         for r in self.db.query("SELECT m.id FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=?"
-                               " AND m.left_at IS NULL AND m.kind=? AND m.pid=? AND m.pid_start=? AND m.session_id<>?",
-                               (host, kind, pid, pid_start, session_id)):
+                               " AND m.left_at IS NULL AND m.kind=? AND m.pid=? AND m.pid_start=? AND m.session_id<>?"
+                               " AND m.client_id=?", (host, kind, pid, pid_start, session_id, client.id)):
             self.remove_member(r["id"], "replaced")
         for r in self.db.query("SELECT id FROM chat_presence WHERE host=? AND kind=? AND pid=? AND pid_start=?"
-                               " AND session_id<>?", (host, kind, pid, pid_start, session_id)):
+                               " AND session_id<>? AND client_id=?", (host, kind, pid, pid_start, session_id, client.id)):
             self.remove_presence(r["id"])
 
     def remove_member(self, member_id: str, reason: str, by: str = "hnl-notify") -> bool:
@@ -1454,7 +1455,7 @@ class Chat:
                 mid = a.get("member_id") if isinstance(a, dict) else None
                 if not isinstance(mid, str):
                     continue
-                if self._rejoin_stale(c, host, mid, a, t):
+                if self._rejoin_stale(c, client, host, mid, a, t):
                     back.append(mid)
                     continue
                 c.execute("UPDATE chat_members SET last_seen_at=? WHERE id=? AND left_at IS NULL AND group_id IN"
@@ -1476,13 +1477,13 @@ class Chat:
         return {"members": [{"member_id": r["id"], "kind": r["kind"], "pid": r["pid"], "pid_start": r["pid_start"]}
                             for r in rows]}
 
-    def _rejoin_stale(self, c: sqlite3.Connection, host: str, member_id: str, alive: dict[str, Any],
+    def _rejoin_stale(self, c: sqlite3.Connection, client: Client, host: str, member_id: str, alive: dict[str, Any],
                       t: datetime) -> bool:
         """A member swept as stale is reported alive (same pid and start time) within the hour, its group still open:
         it is taken back with its handle, name and marker. Wakes from its absence are not replayed."""
         m = c.execute("SELECT m.*, g.state AS gstate, g.host AS ghost FROM chat_members m JOIN chat_groups g"
                       " ON g.id=m.group_id WHERE m.id=? AND m.leave_reason='stale'", (member_id,)).fetchone()
-        if (m is None or m["ghost"] != host or m["gstate"] != "open" or not m["left_at"]
+        if (m is None or m["ghost"] != host or m["client_id"] != client.id or m["gstate"] != "open" or not m["left_at"]
                 or m["left_at"] < iso(t - timedelta(seconds=STALE_REJOIN_SECONDS))
                 or alive.get("pid") != m["pid"] or str(alive.get("pid_start")) != str(m["pid_start"])):
             return False
