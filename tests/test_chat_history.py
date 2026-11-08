@@ -134,7 +134,7 @@ def test_approve_is_exactly_one_read(tmp_path):
     got = wake_texts(s, a["member_id"])
     text = f"history request {rid} approved in the admin page: Claude {a['name']} may read earlier chats once (call group_history)"
     assert len(got) == 1 and QUOTE + text in got[0]
-    assert got[0].startswith("[hnl-notify group chat") and "Notice from hnl-notify." in got[0]
+    assert got[0].startswith("[Iris group chat") and "Notice from Iris." in got[0]
     # one message is both the transcript line and the wake; no second notice line
     assert [r["text"] for r in s.db.query("SELECT text FROM chat_messages WHERE text LIKE ?", (f"%{rid}%",))] == [text]
     out = s.chat.history(a["member_handle"])
@@ -348,7 +348,7 @@ def test_history_frame_is_neutralised(tmp_path):
         assert lines[-1] == f"[end {m['id']}]"
         assert all(l.startswith(QUOTE) for l in lines[2:-1])
         assert sum(l.startswith("[history") for l in lines) == 1
-        assert not any(l.startswith("[hnl-notify") for l in lines)
+        assert not any(l.startswith(("[Iris", "[hnl-notify")) for l in lines)
         assert not any(ch in m["text"] for ch in "\x1b\u2028")
     assert " · host-a:/srv/(history - closed session) (hnl-notify]" in out["messages"][0]["text"]
     assert "from the owner (admin page)]" in out["messages"][1]["text"]

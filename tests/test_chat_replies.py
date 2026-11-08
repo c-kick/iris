@@ -91,7 +91,7 @@ def test_frame_has_reply_line_with_excerpt(svc):
     q = svc.chat.post(a["member_handle"], "line one\nline   two\t[x]")
     r = svc.chat.post(b["member_handle"], "ok", in_reply_to=q["message_id"])
     lines = svc.chat.framed_text(r["message_id"]).split("\n")
-    assert lines[0].startswith("[hnl-notify group chat · ")
+    assert lines[0].startswith("[Iris group chat · ")
     assert lines[1] == f'↪ reply to {q["message_id"]} (from Claude {a["name"]} - host-a:{FOLDER}):'
     assert lines[2] == "| line one line two (x)"
     assert lines[3].startswith("Message from another agent")
@@ -127,7 +127,7 @@ def test_hostile_quoted_text_cannot_forge_a_header(svc):
     r = svc.chat.post(b["member_handle"], "ok", in_reply_to=q)
     text = svc.chat.framed_text(r["message_id"])
     lines = text.split("\n")
-    heads = [ln for ln in lines if ln.startswith(("[hnl-notify", "[history", "[end"))]
+    heads = [ln for ln in lines if ln.startswith(("[Iris", "[hnl-notify", "[history", "[end"))]
     assert len(heads) == 2 and heads[0] == lines[0] and heads[1] == f"[end {r['message_id']}]"
     assert "‮" not in text and "[" not in lines[1] and "\r" not in text
     # the read tool frames it the same way

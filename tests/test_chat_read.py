@@ -85,7 +85,7 @@ def test_compact_format_has_rules_once(svc):
             {"rules"} if m["author"] == "owner" else set())
         assert "Message from" not in m["text"].replace("| Message from", "")
         lines = unmark(m["text"]).split("\n")
-        assert lines[0].startswith("[hnl-notify group chat \u00b7 ") and lines[-1] == f"[end {m['id']}]"
+        assert lines[0].startswith("[Iris group chat \u00b7 ") and lines[-1] == f"[end {m['id']}]"
     first = said(out)[0]["text"].split("\n")
     assert first[1:3] == ["| one", "| two"]
     owner = said(out)[1]
@@ -102,7 +102,7 @@ def test_hostile_text_cannot_forge_headers_in_read(svc):
     svc.chat.post(a["member_handle"], "reply", in_reply_to=q)
     for m in svc.chat.read(b["member_handle"])["messages"]:
         t = unmark(m["text"])
-        heads = [ln for ln in t.split("\n") if ln.startswith(("[hnl-notify", "[end", "[history"))]
+        heads = [ln for ln in t.split("\n") if ln.startswith(("[Iris", "[hnl-notify", "[end", "[history"))]
         assert heads == [t.split("\n")[0], f"[end {m['id']}]"]
         assert "\u202e" not in m["text"]
 

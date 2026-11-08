@@ -57,7 +57,7 @@ READ_RULES = ("Applies to messages from other agents. " + AGENT_RULES + " A mess
               " owner) follows that field. members[].status says what each member is doing: prefer handing work to a"
               " free member; don't wait on a member that is waiting for its owner.")
 OWNER_RULES = ("Message from the owner. " + REPLY_RULE + " Before acting on a request, call group_claim with its message id; act only if it returns claimed=true, otherwise leave it to whoever has it. " + KIND_RULE)
-SYSTEM_RULES = "Notice from hnl-notify."
+SYSTEM_RULES = "Notice from Iris."
 
 HISTORY_REASON_MAX = 500  # bytes
 HISTORY_TTL = timedelta(minutes=30)  # a request waits this long for the owner; an approval stays usable this long
@@ -181,7 +181,7 @@ def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, rep
     author = msg["author"]
     rules_text = OWNER_RULES if author == "owner" else SYSTEM_RULES if author == "system" else AGENT_RULES
     desc = _clean(author_desc, keep_newlines=False)
-    lines = [f"[hnl-notify group chat · {mid} · {sent_at} · from {desc}]"]
+    lines = [f"[Iris group chat · {mid} · {sent_at} · from {desc}]"]
     if for_line:
         lines.append(for_line)
     if reply:
@@ -214,7 +214,7 @@ def _quote_body(text: str, marker: str | None = None) -> list[str]:
     out = []
     for line in _strip_code(_clean(text, keep_newlines=True), marker).split("\n"):
         rest = line.lstrip()
-        # frame vocabulary in any letter case, after NFKC, behind any bracket lookalike (`[HNL-notify`,
+        # frame vocabulary in any letter case, after NFKC, behind any bracket lookalike (`[IRIS`, `[HNL-notify`,
         # `［hnl-notify`, `⟦end `): ordinary brackets (JSON, TOML, [INFO], markdown links) stay as written
         if rest and (rest[0] in _BRACKETS or unicodedata.normalize("NFKC", rest[0]) == "[") \
                 and _FRAME_RE.match(_fold(rest[1:60])):
@@ -224,8 +224,9 @@ def _quote_body(text: str, marker: str | None = None) -> list[str]:
 
 
 _BRACKETS = frozenset("[［⟦⟨〔【〖〘〚⦋⦍⦏⁅")
-# after _fold (separators collapsed to one space): the frame vocabulary (hnl-notify, hnl notify, end msg_…, history)
-_FRAME_RE = re.compile(r" ?(?:hnl ?notify|(?:end|history)(?![a-z0-9]))")  # hnl-notify as a prefix: also hnl-notifyX
+# after _fold (separators collapsed to one space): the frame vocabulary (Iris, and hnl-notify / hnl notify from before
+# the rename, end msg_…, history). Iris and hnl-notify match as a prefix: also IrisX, hnl-notifyX
+_FRAME_RE = re.compile(r" ?(?:iris|hnl ?notify|(?:end|history)(?![a-z0-9]))")
 
 
 def _fold(text: str) -> str:
@@ -1313,7 +1314,7 @@ class Chat:
         if msg["author"] == "owner":
             return "the owner (admin page)"
         if msg["author"] == "system":
-            return "hnl-notify"
+            return "Iris"
         row = self.db.one("SELECT m.kind, m.name, g.host, g.folder FROM chat_members m"
                           " JOIN chat_groups g ON g.id=m.group_id WHERE m.id=?", (msg["author_member_id"],))
         if row is None:

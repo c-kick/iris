@@ -59,7 +59,7 @@ def test_claim_host_all_kinds(svc):
     assert {g["member_id"] for g in got} == {a["member_id"], b["member_id"], c["member_id"]}
     for g in got:
         assert set(g) == {"wake_id", "message_id", "member_id", "kind", "session_id", "pid", "pid_start", "text"}
-        assert g["pid"] == 100 and unmark(g["text"]).startswith("[hnl-notify group chat")
+        assert g["pid"] == 100 and unmark(g["text"]).startswith("[Iris group chat")
     assert run(svc.chat.claim_host(AGENT, "w9", 0)) is None
     assert run(svc.chat.claim_host(OTHER_HOST, "w9", 0)) is None
 

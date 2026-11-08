@@ -34,9 +34,9 @@ def test_wake_frames_carry_only_the_recipients_marker(svc):
     tb = svc.chat.framed_text(mid, b["member_id"])
     tc = svc.chat.framed_text(mid, c["member_id"])
     lines = tb.split("\n")
-    assert lines[0].startswith(b["marker"] + " [hnl-notify group chat") and lines[-1].endswith("] " + b["marker"])
+    assert lines[0].startswith(b["marker"] + " [Iris group chat") and lines[-1].endswith("] " + b["marker"])
     assert c["marker"] not in tb and b["marker"] not in tc and a["marker"] not in tb + tc
-    assert svc.chat.framed_text(mid).split("\n")[0].startswith("[hnl-notify")  # no member: no marker
+    assert svc.chat.framed_text(mid).split("\n")[0].startswith("[Iris group chat")  # no member: no marker
 
 
 def test_quoted_marker_is_stripped(svc):
@@ -89,7 +89,7 @@ def test_cleared_at_leave_and_never_shown(ctx):  # noqa: F811
 
 def test_frame_without_marker_unchanged():
     out = frame({"id": "msg_1", "author": "claude", "text": "x"}, "Claude Wren · h:/f", "t")
-    assert out.startswith("[hnl-notify") and out.endswith("[end msg_1]")
+    assert out.startswith("[Iris group chat") and out.endswith("[end msg_1]")
 
 
 def test_relay_wake_text_has_marker(chatlive, tmp_path):  # noqa: F811

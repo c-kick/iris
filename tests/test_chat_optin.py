@@ -97,7 +97,7 @@ def test_invite_goes_through_the_relay(svc):
     svc.chat.pause_owner(groups(svc)[0]["id"])  # invites go out while paused too
     w = run(svc.chat.claim_host(AGENT, "relay", 0))
     assert w["wake_id"].startswith("inv_") and w["member_id"] == b["member_id"] and w["kind"] == "codex"
-    assert w["session_id"] == "s2" and "group_join" in w["text"] and w["text"].startswith("[hnl-notify group chat")
+    assert w["session_id"] == "s2" and "group_join" in w["text"] and w["text"].startswith("[Iris group chat")
     svc.chat.release(AGENT, w["wake_id"], "relay")
     assert svc.db.scalar("SELECT state FROM chat_invites") == "pending"
     with svc.db.tx() as c:
