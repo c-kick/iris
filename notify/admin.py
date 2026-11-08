@@ -34,7 +34,7 @@ from .cleanup_service import record_event
 from .device_check import clear_flag
 from .providers.email_inbound import run_locked
 from .schedule import local_zone
-from .chat import _clean_desc, reply_excerpt, who
+from .chat import _clean_desc, reply_excerpt, status_view, who
 from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
@@ -849,10 +849,18 @@ def _preview(text: str) -> str:
 
 def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
     gid = g["id"]
-    members = [{"id": m["id"], "name": m["name"], "kind": m["kind"], "joined_at": m["joined_at"],
-                "last_seen_at": m["last_seen_at"], "left_at": m["left_at"]}
-               for m in svc.db.query("SELECT id, name, kind, joined_at, last_seen_at, left_at FROM chat_members"
-                                     " WHERE group_id=? ORDER BY joined_at, rowid", (gid,))]
+    now = svc.chat.now()
+    members = []
+    claims: dict[str, list[str]] = {}  # member id -> the messages it holds, oldest first
+    for r in svc.db.query("SELECT id, claimed_by_member_id FROM chat_messages WHERE group_id=?"
+                          " AND claimed_by_member_id IS NOT NULL ORDER BY rowid", (gid,)):
+        claims.setdefault(r["claimed_by_member_id"], []).append(r["id"])
+    for m in svc.db.query("SELECT * FROM chat_members WHERE group_id=? ORDER BY joined_at, rowid", (gid,)):
+        v = status_view(m["kind"], m["status"], m["status_at"], m["active_at"], now) if m["left_at"] is None else {}
+        members.append({"id": m["id"], "name": m["name"], "kind": m["kind"], "joined_at": m["joined_at"],
+                        "last_seen_at": m["last_seen_at"], "left_at": m["left_at"], "status": v.get("status"),
+                        "status_since": v.get("since"), "quiet_minutes": v.get("quiet_minutes"),
+                        "claims": len(claims.get(m["id"], [])), "oldest_claim": (claims.get(m["id"]) or [None])[0]})
     last = svc.db.one("SELECT author, text, created_at FROM chat_messages WHERE group_id=? ORDER BY rowid DESC LIMIT 1",
                       (gid,))
     unread = svc.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE group_id=? AND author IN ('claude', 'codex')"

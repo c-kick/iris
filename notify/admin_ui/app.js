@@ -1746,6 +1746,52 @@ function chatMembersText(g) {
   return here.length ? `Here now: ${here.join(", ")}` : "Nobody here";
 }
 
+// ---- members of the open thread: status dot, name, kind, what it said it would do, claims held
+const CHAT_LEFT_SHOWN_MS = 30 * 60 * 1000; // members who left stay greyed out this long
+const CHAT_STATUS = {
+  busy: ["busy", "busy"],
+  "busy?": ["busyq", "busy?"],
+  waiting: ["waiting", "waiting for you"],
+  free: ["free", "free"],
+  unknown: ["unknown", "no status yet"],
+};
+function chatStatusOf(m) {
+  const [cls, text] = CHAT_STATUS[m.status] || CHAT_STATUS.unknown;
+  const quiet = m.status === "busy?" && m.quiet_minutes ? ` (quiet ${m.quiet_minutes} min)` : "";
+  return { cls, text: text + quiet };
+}
+function chatMembersShown(g) {
+  const now = Date.now();
+  return g.members.filter((m) => !m.left_at || now - Date.parse(m.left_at) < CHAT_LEFT_SHOWN_MS);
+}
+function chatMembersHtml(g) {
+  if (g.state !== "open") return "";
+  const rows = chatMembersShown(g).map((m) => {
+    const st = chatStatusOf(m);
+    const kind = CHAT_WHO[m.kind] || m.kind;
+    const name = m.name || kind;
+    if (m.left_at) {
+      return `<li class="cmem left"><span class="sdot" aria-hidden="true"></span><span class="nm">${esc(name)}</span> <small>${esc(kind)}</small><span class="sub">left ${esc(when(m.left_at))}</span></li>`;
+    }
+    const sub = [m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : "",
+      m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text)].filter(Boolean).join(" · ");
+    const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";
+    return `<li class="cmem"><button type="button" class="cmem-main" data-mention="${esc(m.name || "")}" title="${m.name ? `Mention ${esc(name)} in your message` : ""}">
+      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm">${esc(name)}</span> <small>${esc(kind)}</small>
+      <span class="sub">${sub}</span></button>${claims}</li>`;
+  }).join("");
+  const others = (g.presences || []).map((p) => `<li class="cmem away"><span class="sdot unknown" aria-hidden="true"></span><span class="nm">${esc(CHAT_WHO[p.kind] || p.kind)}</span> <small>not in the chat</small></li>`).join("");
+  return `<div class="chat-members" aria-label="Members"><ul>${rows || `<li class="cmem empty-row">Nobody here</li>`}</ul>${others ? `<div class="also">Also here</div><ul>${others}</ul>` : ""}</div>`;
+}
+// the same members folded into the thread header on a narrow screen: dots and names
+function chatMembersMini(g) {
+  if (g.state !== "open") return "";
+  return g.members.filter((m) => !m.left_at).map((m) => {
+    const st = chatStatusOf(m);
+    return `<span class="mini"><span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span>${esc(m.name || CHAT_WHO[m.kind] || m.kind)}</span>`;
+  }).join("");
+}
+
 function chatGroupRow(g) {
   const lm = g.last_message;
   const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${lm.text_preview ?? ""}` : "No messages yet";
@@ -1838,12 +1884,38 @@ async function chatsLoadList(el) {
 
 function chatsRenderList(el) {
   const list = el.querySelector("#chat-list");
-  list.innerHTML = chats.folders.map(chatGroupRow).join("") || `<div class="empty">No chats yet.</div>`;
+  list.innerHTML = chats.folders.map((f) => chatGroupRow(f) + (chatKey(f) === chats.selected ? chatMembersHtml(f) : "")).join("")
+    || `<div class="empty">No chats yet.</div>`;
   list.querySelectorAll("[data-key]").forEach((b) => (b.onclick = () => chatOpen(el, b.dataset.key)));
+  list.querySelectorAll("[data-mention]").forEach((b) => (b.onclick = () => chatMention(el, b.dataset.mention)));
+  list.querySelectorAll("[data-claim]").forEach((b) => (b.onclick = () => chatShowMessage(el, b.dataset.claim)));
   const nav = document.querySelector('[data-nav="chats"]');
   if (nav) nav.querySelector(".badge")?.remove();
   const n = chatUnread();
   if (nav && n) nav.insertAdjacentHTML("beforeend", ` <span class="badge" aria-label="${n} unread">${n}</span>`);
+}
+
+// a click on a member: "@Name " at the cursor in the composer
+function chatMention(el, name) {
+  const ta = el.querySelector("#chat-text");
+  if (!name || !ta || el.querySelector("#chat-compose")?.hidden) return;
+  const at = ta.selectionStart ?? ta.value.length;
+  const before = ta.value.slice(0, at);
+  const pad = before && !/\s$/.test(before) ? " " : "";
+  ta.value = `${before}${pad}@${name} ${ta.value.slice(ta.selectionEnd ?? at)}`;
+  const pos = before.length + pad.length + name.length + 2;
+  ta.focus();
+  ta.setSelectionRange(pos, pos);
+  ta.dispatchEvent(new Event("input"));
+}
+
+function chatShowMessage(el, id) {
+  const m = id && el.querySelector(`#chat-msgs > [data-id="${CSS.escape(id)}"]`);
+  if (!m) return;
+  m.scrollIntoView({ block: "center", behavior: "smooth" });
+  m.classList.remove("flash");
+  void m.offsetWidth;
+  m.classList.add("flash");
 }
 
 async function chatOpen(el, key, keep = false) {
@@ -1870,7 +1942,7 @@ async function chatOpen(el, key, keep = false) {
   chats.currentId = id;
   pane.innerHTML = `
     <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Folders</button>
-      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span>
+      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span><span class="chat-mini" id="chat-mini"></span>
         <span class="hint chat-watch" id="chat-watch" hidden>You're watching: no auto-pause</span></div>
       <button type="button" class="btn" id="chat-pausebtn" hidden></button></div>
     <div class="chat-paused" id="chat-paused" hidden></div>
@@ -1970,7 +2042,9 @@ async function chatToggleEarlier(bar) {
 
 function chatHeader(el, g, f) {
   el.querySelector("#chat-title").textContent = `${g.folder}`;
-  el.querySelector("#chat-sub").textContent = ` ${g.host} · ${chatMembersText(g)}`;
+  // open: the members are listed under the thread (or as dots in the header on a phone); closed: when it closed
+  el.querySelector("#chat-sub").textContent = g.state === "open" ? ` ${g.host}` : ` ${g.host} · ${chatMembersText(g)}`;
+  el.querySelector("#chat-mini").innerHTML = chatMembersMini(g);
   const p = el.querySelector("#chat-paused");
   p.hidden = !(g.paused && g.state === "open");
   p.textContent = "Paused. Post here or press Resume to let the agents continue.";
