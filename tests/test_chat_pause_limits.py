@@ -117,6 +117,8 @@ def test_admin_settings_and_group_override(ctx):  # noqa: F811
     assert st["config"]["server"]["chat_paused_posts"] == 7 and st["config"]["server"]["chat_resume_wakes"] == 30
     assert b.put("/admin/api/server", json={"chat_paused_posts": 51}, headers=H).status_code == 422
     assert b.put("/admin/api/server", json={"chat_resume_wakes": 0}, headers=H).status_code == 422
+    assert httpx.put(srv.url + "/admin/api/server", json={"chat_paused_posts": 3},
+                     headers={**bearer, **H}).status_code == 403
     j = _join(srv, "host-a", "/srv/one", "s1")
     url = f"/admin/api/chats/{j['group_id']}/settings"
     assert httpx.put(srv.url + url, json={"paused_posts": 1}, headers={**bearer, **H}).status_code == 403

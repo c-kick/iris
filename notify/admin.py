@@ -651,6 +651,8 @@ class ServerIn(BaseModel):
 async def put_server(body: ServerIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
     if body.trusted_proxies is not None:
         require_session(client)  # decides whose forwarded address the throttles believe: signed-in page only
+    if body.chat_paused_posts is not None or body.chat_resume_wakes is not None:
+        require_session(client)  # 0.14.0 owner chat settings: signed-in page only (the spec's ruling)
 
     def mutate(data: dict[str, Any]) -> None:
         s = data["server"]

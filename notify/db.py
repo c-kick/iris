@@ -355,6 +355,7 @@ class Database:
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_conversation ON notifications(conversation_id)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_notifications_scheduled ON notifications(status, send_at)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_chat_members_name ON chat_members(group_id, name)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_chat_messages_group ON chat_messages(group_id)")
         with self.tx() as c:
             c.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)", (str(SCHEMA_VERSION),))
 

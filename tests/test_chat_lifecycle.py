@@ -145,3 +145,20 @@ def test_retention_prunes_open_groups(tmp_path):
     assert s.db.scalar("SELECT COUNT(*) FROM chat_wakes WHERE message_id NOT IN (SELECT id FROM chat_messages)") == 0
     s.chat.post(a["member_handle"], "still works")
     s.db.close()
+
+
+def test_solo_member_clear_keeps_the_group(svc):
+    a = join(svc, "s1", pid=10, start="p10")
+    a2 = join(svc, "s1-new", pid=10, start="p10")
+    assert a2["group_id"] == a["group_id"]
+    assert svc.db.scalar("SELECT state FROM chat_groups WHERE id=?", (a["group_id"],)) == "open"
+    assert "closed" not in sysnotes(svc, a["group_id"])
+
+
+def test_stale_rejoin_refused_when_session_joined_again(svc):
+    a, b = join(svc, "s1", pid=10, start="t1"), join(svc, "s2", pid=20, start="t2")
+    _stale(svc, a)
+    again = join(svc, "s1", pid=10, start="t1")  # SessionStart again: a new member
+    svc.chat.heartbeat(AGENT, [{"member_id": a["member_id"], "pid": 10, "pid_start": "t1"}])
+    assert a["member_id"] not in live(svc) and again["member_id"] in live(svc)
+    del b
