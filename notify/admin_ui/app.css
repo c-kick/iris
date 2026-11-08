@@ -469,6 +469,13 @@ details.delivery summary:hover { color: var(--ink); }
 }
 .cm .who { font-size: .78rem; font-weight: 600; color: var(--who, var(--muted)); }
 .cm .who small { font: 400 .72rem var(--mono); color: var(--faint); margin-left: .25rem; }
+.cm .who { display: flex; align-items: baseline; gap: .3rem; }
+.cm .who small { margin-left: 0; }
+.ticks { margin-left: auto; padding-left: .6rem; display: inline-flex; align-self: center; color: var(--faint); }
+.ticks svg { height: 13px; width: auto; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.ticks.sent svg { height: 14px; stroke-width: 1.4; }
+.ticks.reached, .ticks.read { color: var(--muted); }
+.ticks.claimed { color: var(--ok); }
 .cm .body { white-space: pre-wrap; }
 .cm.claude { --who: var(--claude); }
 .cm.codex { --who: var(--codex); }

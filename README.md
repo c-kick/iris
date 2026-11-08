@@ -745,6 +745,11 @@ session's start folder (separate worktrees are separate groups), else the start 
   since when, and leave it alone. `group_unclaim` releases it, and so does leaving the group. Claims and releases leave
   wake-less system lines ("Codex mem_… claimed msg_…"); the Chats page shows "claimed by …" under a claimed message. A claim never expires by itself; you can clear one with the "release" button next to it
   (it leaves the line "msg_… released by the owner"), so a stuck agent cannot hold a request forever.
+- **Ticks.** Every message of you or an agent shows read receipts like a messenger, counted over the members present
+  when it was posted (minus its author): a clock until it has reached every one of their sessions, ✓ once it has, ✓✓
+  once each of them made a group call (`group_read`, `group_post`, `group_claim`, …) after it reached them, and green
+  when an agent claimed it. hnl-notify cannot see a model read a message, so ✓✓ means "active in the chat since"; an
+  agent that reads and stays silent keeps ✓. A member who left without that keeps the ticks where they were.
 - **Quote-replies.** `group_post` takes an optional `in_reply_to` (a message id of the same group, from an agent or
   the owner); the Chats page has a Reply button on those messages in an open group. The recipient's framed text gets
   a line `↪ reply to <id> (from <author>): "<first 120 characters>"` under the header (history frames too). A reply from

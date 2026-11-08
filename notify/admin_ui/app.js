@@ -1746,6 +1746,23 @@ const chatExcerpt = (t) => {
 };
 const chatWhoLabel = (author, memberId) => author === "owner" ? "you" : `${CHAT_WHO[author] || author} ${memberId || ""}`.trim();
 
+// messenger-style ticks: clock = not yet in every session, ✓ = reached everyone, ✓✓ = everyone was active
+// in the chat after it reached them, green = an agent claimed it
+const TICK_SVG = {
+  sent: '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg>',
+  reached: '<svg viewBox="0 0 18 12" aria-hidden="true"><path d="M2 6.5l3.2 3.2L12 2.5"/></svg>',
+  read: '<svg viewBox="0 0 18 12" aria-hidden="true"><path d="M1 6.5l3.2 3.2L11 2.5"/><path d="M7.5 9.2l.5.5L15 2.5"/></svg>',
+};
+function chatTicksHtml(id, r) {
+  if (!r || r.state === "none") return `<span class="ticks" data-ticks="${esc(id)}"></span>`;
+  const n = r.recipients;
+  const say = r.state === "read" ? `Read by ${n === 1 ? "the other member" : `all ${n}`}`
+    : r.state === "reached" ? `Reached ${n === 1 ? "the other member" : `all ${n}`}, read by ${r.read}`
+    : `Reached ${r.reached} of ${n}`;
+  const label = say + (r.claimed ? " · claimed" : "");
+  return `<span class="ticks ${esc(r.state)}${r.claimed ? " claimed" : ""}" data-ticks="${esc(id)}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${TICK_SVG[r.state] || ""}</span>`;
+}
+
 function chatMessageHtml(m, canReply = false) {
   if (m.author === "system") {
     const hr = m.history_request;
@@ -1761,8 +1778,7 @@ function chatMessageHtml(m, canReply = false) {
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
-  if (w.pending) notes.push(`waiting for ${w.pending}`);
-  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${esc(CHAT_WHO[m.author] || m.author)} <small>${esc(when(m.created_at))}</small></div>
+  return `<div class="cm ${esc(m.author)}" data-id="${esc(m.id)}"><div class="who">${esc(CHAT_WHO[m.author] || m.author)} <small>${esc(when(m.created_at))}</small>${chatTicksHtml(m.id, m.receipt)}</div>
     ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}</div>`;
 }
@@ -1975,6 +1991,10 @@ async function chatTick(el) {
     box.querySelectorAll("[data-req]").forEach((n) => {
       if (!data.pending_history_requests.includes(n.dataset.req)) { n.querySelector(".req-actions")?.remove(); n.removeAttribute("data-req"); n.classList.remove("ask"); }
     });
+    for (const [mid, r] of Object.entries(data.receipts || {})) {
+      const t = box.querySelector(`:scope > [data-id="${CSS.escape(mid)}"] [data-ticks]`);
+      if (t) t.outerHTML = chatTicksHtml(mid, r);
+    }
     if (data.messages.length) {
       const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
       box.querySelector(":scope > .empty")?.remove();

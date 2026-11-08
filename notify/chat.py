@@ -140,6 +140,13 @@ def normalise_folder(folder: str) -> str:
     return folder.rstrip("/") or "/"
 
 
+def _mark_acted(c: sqlite3.Connection, member_id: str) -> None:
+    """The member made a group call: everything that had reached it by now counts as read (read receipts).
+    last_read_rowid only covers delivered or group_read messages, so a wake still queued is not marked."""
+    c.execute("UPDATE chat_members SET acted_rowid=MAX(COALESCE(acted_rowid, 0), COALESCE(last_read_rowid, 0))"
+              " WHERE id=?", (member_id,))
+
+
 class Chat:
     def __init__(self, svc: NotifyService):
         self.svc = svc
@@ -279,6 +286,7 @@ class Chat:
         with self.db.tx() as c:
             if c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL", (member["id"],)).fetchone() is None:
                 raise MemberGone()
+            _mark_acted(c, member["id"])
             msg = c.execute("SELECT * FROM chat_messages WHERE id=? AND group_id=?",
                             (message_id, member["group_id"])).fetchone() if isinstance(message_id, str) else None
             if (msg is None or msg["author"] == "system" or msg["author_member_id"] == member["id"]):
@@ -301,6 +309,7 @@ class Chat:
         with self.db.tx() as c:
             if c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL", (member["id"],)).fetchone() is None:
                 raise MemberGone()
+            _mark_acted(c, member["id"])
             cur = c.execute("UPDATE chat_messages SET claimed_by_member_id=NULL, claimed_at=NULL WHERE id=? AND group_id=?"
                             " AND claimed_by_member_id=?", (message_id if isinstance(message_id, str) else "",
                                                             member["group_id"], member["id"]))
@@ -325,6 +334,31 @@ class Chat:
                 self._add_message(c, msg["group_id"], "system", None, f"{message_id} released by the owner")
                 return {"released": True}
         return {"released": False}
+
+    def receipts(self, group_id: str) -> dict[str, dict[str, Any]]:
+        """Read receipts per agent/owner message, like ticks in a messenger. Recipients are the members present
+        when the message was posted, minus its author. reached: the wake was delivered into the session (or the
+        member read it with group_read). read: reached, and the member made a group call afterwards (group_read,
+        group_post, group_claim, group_unclaim, group_history), so it was active in the chat since. hnl-notify
+        cannot see a model read a message; this is the closest observable fact."""
+        members = self.db.query("SELECT id, joined_at, left_at, last_read_rowid, acted_rowid FROM chat_members"
+                                " WHERE group_id=?", (group_id,))
+        delivered = {(r["message_id"], r["member_id"]) for r in self.db.query(
+            "SELECT w.message_id, w.member_id FROM chat_wakes w JOIN chat_messages m ON m.id=w.message_id"
+            " WHERE m.group_id=? AND w.state='delivered'", (group_id,))}
+        out: dict[str, dict[str, Any]] = {}
+        for m in self.db.query("SELECT rowid AS rid, id, author_member_id, created_at, claimed_by_member_id"
+                               " FROM chat_messages WHERE group_id=? AND author<>'system' ORDER BY rowid", (group_id,)):
+            to = [x for x in members if x["id"] != m["author_member_id"] and (x["joined_at"] or "") <= m["created_at"]
+                  and (x["left_at"] is None or x["left_at"] > m["created_at"])]
+            reached = [x for x in to if (m["id"], x["id"]) in delivered or (x["last_read_rowid"] or 0) >= m["rid"]]
+            read = [x for x in reached if (x["acted_rowid"] or 0) >= m["rid"]]
+            r: dict[str, Any] = {"recipients": len(to), "reached": len(reached), "read": len(read),
+                                 "claimed": bool(m["claimed_by_member_id"])}
+            r["state"] = ("none" if not to else "read" if len(read) == len(to)
+                          else "reached" if len(reached) == len(to) else "sent")
+            out[m["id"]] = r
+        return out
 
     # ------------------------------------------------------------------ post / read
     def post(self, member_handle: str, text: str, in_reply_to: str | None = None) -> dict[str, Any]:
@@ -353,6 +387,8 @@ class Chat:
             if not owner and c.execute("SELECT 1 FROM chat_members WHERE id=? AND left_at IS NULL",
                                        (member_id,)).fetchone() is None:
                 raise MemberGone()
+            if not owner:
+                _mark_acted(c, member_id)
             only: str | None = None  # an owner reply to an agent wakes just the member who wrote it
             if in_reply_to is not None:
                 q = (c.execute("SELECT author, author_member_id FROM chat_messages WHERE id=? AND group_id=?",
@@ -498,6 +534,7 @@ class Chat:
         member = self.member_from_handle(member_handle)
         now = self.now()
         with self.db.tx() as c:
+            _mark_acted(c, member["id"])
             ap = c.execute("SELECT id FROM chat_history_requests WHERE member_id=? AND state='approved'"
                            " ORDER BY rowid LIMIT 1", (member["id"],)).fetchone()
             if ap is not None:
@@ -645,6 +682,7 @@ class Chat:
             c.execute("UPDATE chat_members SET last_read_rowid=MAX(COALESCE(last_read_rowid, 0),"
                       " (SELECT COALESCE(MAX(rowid), 0) FROM chat_messages WHERE group_id=?)) WHERE id=?",
                       (gid, member["id"]))
+            _mark_acted(c, member["id"])
             members = self._members(c, gid)
             msgs = [{"id": r["id"], "author": r["author"], "author_desc": self.author_desc(r),
                      "created_at": r["created_at"], "in_reply_to": r["in_reply_to"],

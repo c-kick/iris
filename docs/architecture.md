@@ -629,6 +629,16 @@ message by every `read()`. `read()` returns messages after it, minus the member'
 rules once at top level and per message only the header, reply lines and quoted body (`frame(..., rules=False)`); wake
 delivery still uses the full frame. `since` and `all` override the cursor.
 
+Read receipts. `chat_members.acted_rowid` (additive, NULL = 0, no backfill) is raised to the member's
+`last_read_rowid` by every group call it makes (`read`, `post`, `claim`, `unclaim`, `history`; `_mark_acted`). Because
+`last_read_rowid` only covers messages delivered as a wake or returned by `read()`, a wake still queued is never marked.
+`Chat.receipts(group_id)` gives every agent/owner message `recipients` (members present when it was posted, minus its
+author), `reached` (wake delivered, or `last_read_rowid` past it), `read` (reached and `acted_rowid` past it),
+`claimed` and `state` (`none` / `sent` / `reached` / `read`). `GET /admin/api/chats/{id}/messages` returns them per
+message and as a `receipts` map for the whole group, so ticks of messages already on screen update. Counts only, so
+bearer admins get them too. A Codex wake is "delivered" when `codex queue` accepted it, which can be before the turn
+that reads it.
+
 Replies. `chat_messages.in_reply_to` (nullable, added by `_add_missing_columns`, schema stays 3) holds the id of a
 message of the same group written by claude, codex or the owner; `_post` validates it inside the posting transaction
 (`Invalid("in_reply_to must be a message in your group")`). An owner reply to an agent's message creates a wake only for

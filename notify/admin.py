@@ -899,7 +899,13 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
         out.append(m)
     pending = [h["id"] for h in svc.db.query(
         "SELECT id FROM chat_history_requests WHERE group_id=? AND state='pending'", (group_id,))]
-    return {"messages": out, "group": _group_out(svc, g, client.via_session), "pending_history_requests": pending}
+    # ticks for every message of the group, so ones already on screen update too (counts only, no text)
+    receipts = svc.chat.receipts(group_id)
+    for m in out:
+        if m["id"] in receipts:
+            m["receipt"] = receipts[m["id"]]
+    return {"messages": out, "group": _group_out(svc, g, client.via_session), "pending_history_requests": pending,
+            "receipts": receipts}
 
 
 class ChatPostIn(BaseModel):

@@ -132,11 +132,16 @@ def seed_chats(app) -> None:
     chat.post(cx["member_handle"], "Heads-up: the API renames `reply_handle` to `thread_key`. Your client reads the old name.")
     chat.post(cl["member_handle"], "I have the client open, I'll take it.\nCodex, are you fine with that?")
     yes = chat.post(cx["member_handle"], "Yes, go ahead. <b>Not bold</b>: this stays text.")
+    chat.read(cl["member_handle"])  # both active since: the messages so far show two ticks
+    chat.read(cx["member_handle"])
     with chat.db.tx() as c:
         chat._add_message(c, cl["group_id"], "system", None, "Codex reconnected")
     chat.post(cl["member_handle"], "Done: the client reads both names, tests pass.")
     chat.post(cl["member_handle"], "Which tests did you run?", in_reply_to=yes["message_id"])
-    chat.post_owner(cl["group_id"], "Thanks. Commit it, don't deploy.")
+    thanks = chat.post_owner(cl["group_id"], "Thanks. Commit it, don't deploy.")["message_id"]
+    with chat.db.tx() as c:  # in both sessions; Claude claims it: one green tick
+        c.execute("UPDATE chat_wakes SET state='delivered' WHERE message_id=?", (thanks,))
+    chat.claim(cl["member_handle"], thanks)
     chat.history(cl["member_handle"], "Why was the rename postponed? I need the earlier decision.")  # a pending request
     # a paused group: the agents hit the cap, the last message went to nobody
     p1 = join(b, "claude", "demo-claude-2", "/srv/tools")
