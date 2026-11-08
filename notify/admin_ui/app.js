@@ -1823,13 +1823,27 @@ function chatTicksHtml(id, r, author) {
   return `<span class="ticks ${done ? "seen" : "unseen"}" data-ticks="${esc(id)}" role="img" aria-label="${esc(label)}" title="${esc(label)}"><i></i></span>`;
 }
 
+// join and leave lines get an icon (the words stay: the icon is for scanning, screen readers read the text)
+const CHAT_NOTICE_ICONS = {
+  join: '<path d="M9.5 2.5h3v11h-3"/><path d="M2 8h7.5"/><path d="M6.5 5l3 3-3 3"/>',
+  leave: '<path d="M6.5 2.5h-3v11h3"/><path d="M6.5 8H14"/><path d="M11 5l3 3-3 3"/>',
+};
+function chatNoticeKind(text) {
+  const t = String(text ?? "");
+  if (/^(Claude|Codex|Agent) \S+ (joined the chat$|opened the chat: |is back$)/.test(t)) return "join";
+  if (/^(Claude|Codex|Agent) \S+ left the chat/.test(t)) return "leave";
+  return "";
+}
+
 function chatMessageHtml(m, canReply = false) {
   if (m.author === "system") {
     const hr = m.history_request;
     const ask = hr && hr.state === "pending"
       ? `<span class="req-reason">Reason: ${esc(hr.reason ?? "hidden")}</span><span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
       : "";
-    return `<div class="cm sys${ask ? " ask" : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
+    const kind = chatNoticeKind(m.text);
+    const icon = kind ? `<svg class="notice-ico ${kind}" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${CHAT_NOTICE_ICONS[kind]}</svg>` : "";
+    return `<div class="cm sys${ask ? " ask" : ""}${kind ? ` notice-${kind}` : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${icon}${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
   }
   chats.msgs[m.id] = { author: m.author, member_id: m.member_id, name: m.member_name, text: m.text };
   const quote = m.in_reply_to

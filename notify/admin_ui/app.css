@@ -531,6 +531,9 @@ details.delivery summary:hover { color: var(--ink); }
   align-self: center; max-width: 94%; font-size: .8rem; color: var(--muted); border: 1px dashed var(--line); background: transparent;
   padding: .2rem .8rem; text-align: center; border-radius: 14px;
 }
+.cm.sys .notice-ico { width: 14px; height: 14px; vertical-align: -2px; margin-right: .35rem; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.cm.sys .notice-ico.join { color: var(--ok); }
+.cm.sys .notice-ico.leave { color: var(--idle); }
 .cm.sys.ask { padding: .55rem .8rem; border-radius: var(--radius-m); background: var(--surface); border-style: solid; border-left: 3px solid var(--warn); }
 .chat-earlier { align-self: stretch; }
 .chat-earlier-bar {

@@ -7,7 +7,7 @@ Newest first. Take a database backup before every upgrade (see [operations](oper
 Chats → Folders: *Delete* also works for a folder whose only history is closed chats; it deletes those chats (messages,
 members, wakes, history requests) at once instead of after `retention_days`, after a confirmation that says how many.
 Refused while a chat is open there or a session is present. The member list no longer shows members who left (the
-thread's "left the chat" line does). No schema change.
+thread's "left the chat" line does), and join and leave lines in the thread carry an icon. No schema change.
 
 ## Upgrading to 0.14.2
 
