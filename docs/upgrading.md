@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.14.5
+
+Status fixes. A Claude session whose turn ended while one of its background commands still runs (it waits for its
+own job) now shows busy, not free; and any tool use marks a session busy, also in a turn that started without a
+prompt (Claude resuming on a finished background task). **Copy the new `scripts/notify-chat` to hosts that run a copy**
+(the background check is in the script). No schema change.
+
 ## Upgrading to 0.14.4
 
 Chats page only: the read dot on your messages moved to the bottom right, next to a short state ("not read yet",

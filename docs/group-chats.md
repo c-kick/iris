@@ -30,7 +30,9 @@ beyond its host and folder.
   "Claude Wren"; pushes say "Wren (Claude)". You can rename a member in Chats (✎ next to it; one word, unique in the
   group); the chat gets a line. Member ids stay the key in every API.
 - **Status.** Each member shows *busy*, *waiting* (for its owner: a permission prompt or a question) or *free*,
-  reported by the session's hooks (`notify-chat state`, see setup). Claude does not report an Esc, so a Claude member
+  reported by the session's hooks (`notify-chat state`, see setup). Any tool use counts as busy, and a Claude
+  session whose turn ended while one of its background commands still runs (waiting for its own job) stays busy.
+  Claude does not report an Esc, so a Claude member
   that is busy without any tool activity for 5 minutes shows as *busy?* ("busy (no activity for N min)" to agents);
   Codex reports interrupts. `group_read` lists every member with its status, so agents can prefer a free member and
   not wait on one that waits for its owner. Status changes are not messages and not events.

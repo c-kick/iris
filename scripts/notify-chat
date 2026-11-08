@@ -11,8 +11,9 @@ as present and can open a chat with group_open. Either way it keeps the member h
 ~/.cache/hnl-notify-chat/<agent>-<session_id>.json (0600, dir 0700) and prints the SessionStart
 additionalContext JSON. `end` leaves and deletes that file (1 s HTTP timeout).
 `state` reports what the session is doing (status hooks, 2 s timeout, only for a session that joined):
-busy (UserPromptSubmit), waiting (a prompt that needs the owner), free (Stop, Interrupt), active (PreToolUse;
-sent at most every 30 s per session) and notification (Claude's Notification hook: a permission prompt or
+busy (UserPromptSubmit), waiting (a prompt that needs the owner), free (Stop, Interrupt; for Claude busy instead
+while one of its background commands still runs), active (PreToolUse: also marks the session busy; sent at most
+every 30 s per session, at once after a change of state) and notification (Claude's Notification hook: a permission prompt or
 question is waiting, an idle prompt is free, anything else is ignored).
 URL: --url, else NOTIFY_URL, else the file ~/.config/hnl-notify/url. Token: --token-file, else
 ~/.config/hnl-notify/chat-token. The token is never printed.
@@ -282,10 +283,43 @@ def notification_state(hook: dict[str, Any]) -> str | None:
     return None
 
 
+def _stamp(agent: str, sid: str) -> Path:
+    return Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir()) / "hnl-notify" / f"active-{state_path(agent, sid).stem}"
+
+
+def background_jobs(pid: int | None, proc: str = "/proc") -> int:
+    """Claude shells still running under the session's process after its turn ended: background commands
+    (run_in_background, nohup … &, a waiting loop). Claude runs every command as
+    `bash -c source …/shell-snapshots/…`; the hook's own process chain is left out."""
+    if not pid:
+        return 0
+    mine, p = set(), os.getpid()
+    while p > 1 and p not in mine:
+        mine.add(p)
+        st = proc_stat(p) if proc == "/proc" else None
+        if not st:
+            break
+        p = st[1]
+    n = 0
+    for d in Path(proc).iterdir():
+        if not d.name.isdigit() or int(d.name) in mine:
+            continue
+        try:
+            fields = (d / "stat").read_text(errors="replace").rpartition(")")[2].split()
+            if int(fields[1]) != pid:
+                continue
+            args = (d / "cmdline").read_bytes().replace(b"\0", b" ")
+        except (OSError, ValueError, IndexError):
+            continue
+        if b"/shell-snapshots/" in args:
+            n += 1
+    return n
+
+
 def active_due(agent: str, sid: str, now: float | None = None) -> bool:
     """At most one "active" ping per session every 30 s (a stamp file in $XDG_RUNTIME_DIR/hnl-notify/)."""
-    base = Path(os.environ.get("XDG_RUNTIME_DIR") or state_dir()) / "hnl-notify"
-    stamp = base / f"active-{state_path(agent, sid).stem}"
+    stamp = _stamp(agent, sid)
+    base = stamp.parent
     now = time.time() if now is None else now
     try:
         if now - stamp.stat().st_mtime < ACTIVE_EVERY:
@@ -310,6 +344,18 @@ def do_state(args: argparse.Namespace, hook: dict[str, Any]) -> int:
     status = notification_state(hook) if args.state == "notification" else args.state
     if status is None or (status == "active" and not active_due(args.agent, sid)):
         return 0
+    if status != "active":
+        try:  # a change of state: the next tool use is reported at once, not up to 30 s later
+            _stamp(args.agent, sid).unlink()
+        except OSError:
+            pass
+    if status == "free" and args.agent == "claude":
+        try:
+            pid = int(os.environ.get("CLAUDE_PID", ""))
+        except ValueError:
+            pid = None
+        if background_jobs(pid):
+            status = "busy"  # the turn ended, but the session still waits on its own background command
     base, token = settings(args.url, args.token_file)
     body = {"kind": args.agent, "session_id": sid, "status": status}  # the session id finds the member
     code, _ = post(base, token, "/v1/chat/status", body, STATE_TIMEOUT)

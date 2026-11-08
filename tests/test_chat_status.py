@@ -163,3 +163,82 @@ def test_admin_members_show_status(svc):
     m = _group_out(svc, g, True)["members"][0]
     assert m["status"] == "waiting" and m["status_since"] and m["name"] == a["name"]
     assert iso(parse_iso(m["status_since"]))
+
+
+def test_tool_use_marks_busy(svc):
+    a = join(svc, "s1")
+    st(svc, "s1", "free")
+    st(svc, "s1", "active")  # a turn that started without a prompt (task notification) still shows busy
+    r = row(svc, a["member_id"])
+    assert r["status"] == "busy" and r["status_at"] == r["active_at"]
+    st(svc, "s1", "waiting")
+    st(svc, "s1", "active")  # the owner answered the prompt: working again
+    assert row(svc, a["member_id"])["status"] == "busy"
+
+
+def _fake_proc(root, pid, kids):
+    for kid, ppid, args in kids:
+        d = root / str(kid)
+        d.mkdir()
+        (d / "stat").write_text(f"{kid} (bash) S {ppid} 1 1 0 -1 0 0 0 0 0 0 0 0 20 0 1 0 12345\n")
+        (d / "cmdline").write_bytes(args.encode().replace(b" ", b"\0"))
+
+
+def test_background_jobs_detection(tmp_path):
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    _fake_proc(proc, 500, [
+        (601, 500, "/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-1.sh && eval sleep"),
+        (602, 500, "node /usr/lib/mcp-server.js"),  # an MCP server: not a background command
+        (603, 777, "/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-2.sh"),  # another session
+    ])
+    assert nc.background_jobs(500, str(proc)) == 1
+    assert nc.background_jobs(777, str(proc)) == 1
+    assert nc.background_jobs(888, str(proc)) == 0
+    assert nc.background_jobs(None, str(proc)) == 0
+
+
+def test_stop_with_background_job_reports_busy(chatlive, tmp_path):  # noqa: F811
+    e = Env(tmp_path, chatlive)
+    h = hook(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    # a stand-in Claude process with a background shell under it, like `nohup … &` from a Bash tool call
+    claude = subprocess.Popen(["/bin/bash", "-c", "exec -a claude-stand-in /bin/bash -c "
+                               "'bash -c \"sleep 30; true /x/shell-snapshots/snap.sh\" & wait'"])  # sleep not last: no exec
+    try:
+        import time as _t
+        for _ in range(50):
+            if nc.background_jobs(claude.pid):
+                break
+            _t.sleep(0.05)
+        assert nc.background_jobs(claude.pid) == 1
+        assert e.run("start", "claude", h, CLAUDE_PID=str(claude.pid)).returncode == 0
+        db = chatlive.service.db
+        run_state(e, "free", "claude", h, CLAUDE_PID=str(claude.pid), XDG_RUNTIME_DIR=str(run_dir))
+        assert db.scalar("SELECT status FROM chat_members") == "busy"
+        idle = subprocess.Popen(["sleep", "30"])  # a session process with nothing running under it
+        try:
+            run_state(e, "free", "claude", h, CLAUDE_PID=str(idle.pid), XDG_RUNTIME_DIR=str(run_dir))
+        finally:
+            idle.kill()
+            idle.wait()
+        assert db.scalar("SELECT status FROM chat_members") == "free"
+    finally:
+        subprocess.run(["pkill", "-P", str(claude.pid)])
+        claude.kill()
+        claude.wait()
+
+
+def test_state_change_resets_active_throttle(chatlive, tmp_path):  # noqa: F811
+    e = Env(tmp_path, chatlive)
+    h = hook(tmp_path)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    e.run("start", "claude", h, CLAUDE_PID=str(os.getpid()))
+    db = chatlive.service.db
+    run_state(e, "active", "claude", h, XDG_RUNTIME_DIR=str(run_dir))
+    run_state(e, "free", "claude", h, CLAUDE_PID=str(os.getpid()), XDG_RUNTIME_DIR=str(run_dir))
+    assert db.scalar("SELECT status FROM chat_members") == "free"
+    run_state(e, "active", "claude", h, XDG_RUNTIME_DIR=str(run_dir))  # within 30 s, but after a change: sent
+    assert db.scalar("SELECT status FROM chat_members") == "busy"

@@ -345,8 +345,10 @@ class Chat:
                                      (host, kind, session_id)).fetchone(), "chat_presence"
             if m is None:
                 raise NotFound("no member for this session")
-            if status == "active":
-                c.execute(f"UPDATE {table} SET active_at=? WHERE id=?", (now, m["id"]))
+            if status == "active":  # tool use: working, also in a turn that started without a prompt (a task
+                # notification resuming the session, an approved permission prompt)
+                c.execute(f"UPDATE {table} SET active_at=?, status='busy', status_at=CASE WHEN status='busy'"
+                          " THEN status_at ELSE ? END WHERE id=?", (now, now, m["id"]))
             else:
                 c.execute(f"UPDATE {table} SET status=?, status_at=?, active_at=? WHERE id=?",
                           (status, now, now, m["id"]))
