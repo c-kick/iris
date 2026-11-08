@@ -423,10 +423,18 @@ details.delivery summary:hover { color: var(--ink); }
 .crumb .btn.quiet { padding-inline: 0; min-height: 0; }
 
 /* ---------- chats ---------- */
-.main:has(.chats) { max-width: 1180px; }
+/* The Chats page fills the viewport: only the folder list and the message list scroll, never the page. */
+.shell:has(.chats) { height: 100vh; height: var(--app-h, 100dvh); min-height: 0; overflow: hidden; }
+.main:has(.chats) {
+  max-width: 1280px; display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  padding-top: 1.2rem; padding-bottom: 1.2rem;
+}
+.main:has(.chats) .section-head { margin-bottom: .9rem; padding-bottom: .7rem; flex: none; }
+/* the description lives in the empty pane, so the thread gets the height */
+.main:has(.chats) .section-head p { display: none; }
 .chats {
-  display: grid; grid-template-columns: minmax(240px, 33%) minmax(0, 1fr);
-  height: min(680px, calc(100vh - 12rem)); min-height: 400px;
+  display: grid; grid-template-columns: minmax(240px, 30%) minmax(0, 1fr);
+  flex: 1 1 auto; min-height: 0;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); overflow: hidden; box-shadow: var(--shadow-panel);
 }
 .chat-list { background: var(--sunken); border-right: 1px solid var(--line); overflow: auto; min-width: 0; }
@@ -493,7 +501,7 @@ details.delivery summary:hover { color: var(--ink); }
 .chat-compose { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; padding: .7rem; border-top: 1px solid var(--line); background: var(--surface); align-items: end; }
 .chat-compose[hidden], .chat-paused[hidden], .chat-watch[hidden], #chat-pausebtn[hidden], .chat-readonly[hidden] { display: none; }
 .chat-compose textarea {
-  font: inherit; font-size: .92rem; color: var(--ink); background: var(--sunken); resize: vertical; min-height: 44px;
+  font: inherit; font-size: .92rem; color: var(--ink); background: var(--sunken); resize: vertical; min-height: 44px; max-height: 40vh;
   border: 1px solid var(--line); border-radius: var(--radius-s); padding: .5rem .7rem;
 }
 .chat-compose textarea:focus-visible { outline: 2px solid var(--action); outline-offset: 0; border-color: var(--action); background: var(--surface); }
@@ -506,13 +514,28 @@ details.delivery summary:hover { color: var(--ink); }
 .chat-compose .form-error:empty { display: none; }
 .chat-readonly { padding: .65rem 1rem; border-top: 1px solid var(--line); background: var(--surface); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-@media (max-width: 640px) {
-  .chats { grid-template-columns: minmax(0, 1fr); height: calc(100vh - 12rem); }
+@media (max-width: 760px) {
+  /* edge to edge under the top bar: no page padding, no card border */
+  .shell:has(.chats) { grid-template-rows: auto minmax(0, 1fr); }
+  .main:has(.chats) { padding: 0; }
+  .main:has(.chats) .section-head { margin: 0; padding: .6rem 1rem; }
+  .main:has(.chats.thread) .section-head { display: none; }
+  .chats { grid-template-columns: minmax(0, 1fr); border: 0; border-radius: 0; box-shadow: none; }
   .chats .chat-pane { display: none; }
   .chats.thread .chat-list { display: none; }
   .chats.thread .chat-pane { display: flex; }
-  .chat-head .back { display: inline-flex; }
+  .chat-head { flex-wrap: nowrap; padding: .45rem .6rem; gap: .35rem; }
+  .chat-head .back { display: inline-flex; padding-inline: .5rem; white-space: nowrap; flex: none; }
+  .chat-head .grow { flex: 1 1 auto; }
+  .chat-head .grow > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-head #chat-pausebtn { flex: none; padding-inline: .6rem; }
+  .chat-paused { padding: .35rem .75rem; }
+  .chat-msgs { padding: .6rem .5rem; gap: .45rem; }
   .cm { max-width: 92%; }
+  .chat-compose { padding: .45rem .5rem calc(.45rem + env(safe-area-inset-bottom)); gap: .4rem; }
+  /* 16px stops iOS from zooming the page when the field gets focus */
+  .chat-compose textarea { font-size: 16px; resize: none; max-height: 30vh; }
+  .chat-readonly { padding-bottom: calc(.65rem + env(safe-area-inset-bottom)); }
 }
 
 /* ---------- settings and other single-column forms: a panel, not a stretched page ---------- */

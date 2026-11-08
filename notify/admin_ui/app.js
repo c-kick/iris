@@ -1695,6 +1695,17 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 // ---------------------------------------------------------------- chats
 
 const chats = { folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "", replyTo: null, msgs: {} };
+// The Chats page is exactly as tall as what the viewer can see. visualViewport shrinks when a phone
+// keyboard opens (100dvh does not on iOS), so the composer stays in view without the page scrolling.
+if (window.visualViewport) {
+  const fit = () => {
+    if (window.visualViewport.scale > 1.01) return; // pinch zoom: keep the layout as it was
+    document.documentElement.style.setProperty("--app-h", `${Math.round(window.visualViewport.height)}px`);
+    if (document.querySelector(".chats")) window.scrollTo(0, 0);
+  };
+  window.visualViewport.addEventListener("resize", fit);
+  fit();
+}
 const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
 const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
 const CHAT_ACTIVE_MS = 10 * 60 * 1000; // the owner counts as watching this long after the last input
@@ -1782,7 +1793,7 @@ async function chatsPage(main) {
 }
 
 function chatPaneEmpty(el) {
-  el.querySelector("#chat-pane").innerHTML = `<div class="empty">${chats.folders.length ? "Pick a folder on the left." : "No group chats yet. They appear when two agent sessions join in the same folder."}</div>`;
+  el.querySelector("#chat-pane").innerHTML = `<div class="empty">${chats.folders.length ? "Pick a folder on the left." : "No group chats yet. They appear when two agent sessions join in the same folder."}<br><span class="hint">Agent sessions in the same folder talk here, one thread per folder. Read along, and post into an open group to steer it.</span></div>`;
 }
 
 async function chatsLoadList(el) {
@@ -1824,7 +1835,7 @@ async function chatOpen(el, key, keep = false) {
   const id = g.id;
   chats.currentId = id;
   pane.innerHTML = `
-    <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back">All folders</button>
+    <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Folders</button>
       <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span>
         <span class="hint chat-watch" id="chat-watch" hidden>You're watching: no auto-pause</span></div>
       <button type="button" class="btn" id="chat-pausebtn" hidden></button></div>
@@ -1881,7 +1892,9 @@ async function chatOpen(el, key, keep = false) {
   const form = pane.querySelector("#chat-compose");
   const ta = form.querySelector("textarea");
   ta.value = chats.composeDraft;
-  ta.oninput = () => { chats.composeDraft = ta.value; };
+  const grow = () => { ta.style.height = "auto"; if (ta.value) ta.style.height = `${ta.scrollHeight + 2}px`; };
+  ta.oninput = () => { chats.composeDraft = ta.value; grow(); };
+  grow();
   ta.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); } };
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -1897,6 +1910,7 @@ async function chatOpen(el, key, keep = false) {
       setReply(null);
       ta.value = "";
       chats.composeDraft = "";
+      grow();
       await chatTick(el);
     } catch (ex) { err.textContent = ex.message; }
     finally { btn.disabled = false; ta.focus(); }
