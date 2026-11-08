@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+from urllib.parse import urlsplit
 from datetime import timedelta
 from typing import Any, Literal
 
@@ -223,6 +224,11 @@ def _state(request: Request) -> dict[str, Any]:
         "SELECT client_id, COUNT(*) FROM notifications WHERE status='scheduled' GROUP BY client_id")}
     for name, c in masked["clients"].items():
         c["scheduled"] = per_client.get(name, 0)
+    # webhooks turned off after failures, per client (host only: a webhook URL can carry a secret in its path)
+    for r in svc.db.query("SELECT id, client_id, url, last_error FROM subscriptions WHERE active=0 ORDER BY created_at"):
+        if r["client_id"] in masked["clients"]:
+            masked["clients"][r["client_id"]].setdefault("webhooks_off", []).append(
+                {"id": r["id"], "host": urlsplit(r["url"]).netloc[-200:], "last_error": r["last_error"]})
     return {
         "version": __version__,
         "pending_registrations": pending,
@@ -583,6 +589,16 @@ async def rotate_client(name: str, request: Request, _: Client = Depends(admin))
     out = _commit(request, mutate)
     out["token"] = token
     return out
+
+
+@router.post("/api/subscriptions/{sid}/enable")
+async def enable_subscription(sid: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    """Turn a webhook that was disabled after failures back on (not one of a deleted client)."""
+    try:
+        _svc(request).enable_subscription(client, sid)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from None
+    return _state(request)
 
 
 @router.delete("/api/clients/{name}")

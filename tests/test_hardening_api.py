@@ -314,3 +314,16 @@ def test_bearer_admin_cannot_set_trusted_proxies(live):
     assert r.status_code == 403
     assert live.service.config.server.trusted_proxies == []
     assert live.client("admin").put("/admin/api/server", json={"chat_cap": 12}).status_code == 200
+
+
+def test_admin_page_turns_a_disabled_webhook_on(live):
+    sid = live.client("reader").post("/v1/subscriptions", json={"url": "http://hooks.test/secret-path"}).json()["id"]
+    with live.service.db.tx() as c:
+        c.execute("UPDATE subscriptions SET active=0, last_error='disabled after 50 consecutive failures: timeout'")
+    b = setup_admin(live)
+    st = b.get("/admin/api/state").json()
+    (off,) = st["config"]["clients"]["reader"]["webhooks_off"]
+    assert off == {"id": sid, "host": "hooks.test", "last_error": "disabled after 50 consecutive failures: timeout"}
+    st = b.post(f"/admin/api/subscriptions/{sid}/enable", headers=H).json()
+    assert "webhooks_off" not in st["config"]["clients"]["reader"]
+    assert b.post("/admin/api/subscriptions/sub_nope/enable", headers=H).status_code == 404

@@ -685,7 +685,8 @@ const VIEWS = {
       <div class="rows">${Object.entries(c.clients).map(([n, cl]) => `
         <div class="row"><div class="grow"><div class="title">${esc(n)}</div>
           ${cl.description ? `<div class="sub">${esc(cl.description)}</div>` : ""}
-          <div class="chips">${cl.scopes.map((s) => `<span class="chip" title="${esc(SCOPE_HELP[s])}">${esc(s)}</span>`).join("")}</div></div>
+          <div class="chips">${cl.scopes.map((s) => `<span class="chip" title="${esc(SCOPE_HELP[s])}">${esc(s)}</span>`).join("")}</div>
+          ${(cl.webhooks_off || []).map((w) => `<div class="sub"><span class="problem">Webhook to ${esc(w.host)} is turned off</span>${w.last_error ? ` (${esc(w.last_error)})` : ""} <button class="btn" data-whon="${esc(w.id)}">Turn on</button></div>`).join("")}</div>
           <div class="actions"><button class="btn" data-cl="${esc(n)}">Edit</button><button class="btn" data-rot="${esc(n)}">Replace token</button><button class="btn danger" data-delcl="${esc(n)}">Revoke</button></div></div>`).join("") || `<div class="empty">No tokens yet. Create one for each service that should send notifications, for example Home Assistant.</div>`}
       </div>
       <p style="margin-top:1rem"><button class="btn primary" id="addcl">Create token</button></p>
@@ -700,6 +701,9 @@ const VIEWS = {
   -d '{"targets": ["${esc(exampleTarget)}"], "title": "Washing machine", "message": "The laundry is done"}'</pre>
         <p class="hint" style="margin-top:.5rem">Full API reference: <a href="/docs" target="_blank" rel="noopener">/docs</a></p></div>`;
     main.querySelector("#addcl").onclick = () => clientForm();
+    main.querySelectorAll("[data-whon]").forEach((b) => (b.onclick = () => confirmAction("Turn the webhook on again?",
+      "It gets events from now on. Events from while it was off are not sent again; the app can catch up with GET /v1/events.",
+      "Turn on", () => mutate("POST", `/subscriptions/${b.dataset.whon}/enable`, undefined, "Webhook turned on"))));
     main.querySelectorAll("[data-cl]").forEach((b) => (b.onclick = () => clientForm(b.dataset.cl)));
     main.querySelectorAll("[data-rot]").forEach((b) => (b.onclick = () => confirmAction("Replace token?",
       `The current token for <strong>${esc(b.dataset.rot)}</strong> stops working immediately.`, "Replace token", async () => {
