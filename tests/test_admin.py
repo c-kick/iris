@@ -487,3 +487,19 @@ def test_admin_state_counts(fresh, fake):
     assert st["scheduled_count"] == 3
     assert st["config"]["clients"]["sender"]["scheduled"] == 2
     assert st["config"]["clients"]["other"]["scheduled"] == 1
+
+
+def test_two_providers_cannot_share_one_reply_mailbox(fresh):
+    """0.13.2: each would quarantine the other's replies as no_thread, so saving the second one is refused."""
+    b = setup_admin(fresh())
+    box = {"reply_address": "r@example.org", "imap_host": "imap.example.org", "imap_user": "notify",
+           "imap_password": "pw-secret-1"}
+    assert _email_provider(b, **box).status_code == 200
+    r = b.put("/admin/api/providers/mail2", json={"type": "email", "settings": {
+        "host": "smtp.example.org", "from_address": "n2@example.org", "password": "x", **box,
+        "imap_host": "IMAP.example.org", "reply_inbox": "inbox"}}, headers=H)
+    assert r.status_code == 422 and "reply mailbox" in r.json()["detail"] and "mail" in r.json()["detail"]
+    r = b.put("/admin/api/providers/mail2", json={"type": "email", "settings": {
+        "host": "smtp.example.org", "from_address": "n2@example.org", "password": "x", **box,
+        "reply_inbox": "Other"}}, headers=H)
+    assert r.status_code == 200, r.text  # another folder of the same account is fine
