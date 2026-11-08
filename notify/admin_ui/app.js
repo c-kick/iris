@@ -1752,7 +1752,6 @@ function chatMembersText(g) {
 }
 
 // ---- members of the open thread: status dot, name, kind, what it said it would do, claims held
-const CHAT_LEFT_SHOWN_MS = 30 * 60 * 1000; // members who left stay greyed out this long
 const CHAT_STATUS = {
   busy: ["busy", "busy"],
   "busy?": ["busyq", "busy?"],
@@ -1765,19 +1764,14 @@ function chatStatusOf(m) {
   const quiet = m.status === "busy?" && m.quiet_minutes ? ` (quiet ${m.quiet_minutes} min)` : "";
   return { cls, text: text + quiet };
 }
-function chatMembersShown(g) {
-  const now = Date.now();
-  return g.members.filter((m) => !m.left_at || now - Date.parse(m.left_at) < CHAT_LEFT_SHOWN_MS);
-}
+// members still in the chat; one who left only shows as its "left the chat" line in the thread
+const chatMembersShown = (g) => g.members.filter((m) => !m.left_at);
 function chatMembersHtml(g) {
   if (g.state !== "open") return "";
   const rows = chatMembersShown(g).map((m) => {
     const st = chatStatusOf(m);
     const kind = CHAT_WHO[m.kind] || m.kind;
     const name = m.name || kind;
-    if (m.left_at) {
-      return `<li class="cmem left"><span class="sdot" aria-hidden="true"></span><span class="nm">${esc(name)}</span> <small>${esc(kind)}</small><span class="sub">left ${esc(when(m.left_at))}</span></li>`;
-    }
     const sub = [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
       m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
     const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";

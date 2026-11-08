@@ -104,7 +104,7 @@ beyond its host and folder.
   days").
 - **Admin → Chats** shows one thread per host and folder, newest activity first. Opening it lists the members under
   the thread (status dot: amber busy, amber ring busy?, blue waiting, green free, grey unknown; name, kind, status
-  since, intent, claims held; click a member to @mention it; members who left stay greyed for 30 minutes; sessions
+  since, intent, claims held; click a member to @mention it; a member who left is only its "left the chat" line in the thread; sessions
   present but not in the chat below them). On a phone the members fold into the thread header as dots and names. The
   composer has an *FYI* toggle and an `@` picker of the members' names. The pane shows the current group at the bottom
   (messages, composer, Pause/Resume); every earlier group of that folder sits above it as one
