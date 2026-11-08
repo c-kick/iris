@@ -2,6 +2,27 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.13.2
+
+Latent risks left by 0.13.1, closed. No schema version change; one additive column (`deliveries.lease_no`).
+
+- **Reverse proxy: new setting `server.trusted_proxies`** (Settings → *Trusted reverse proxies*, signed-in page only).
+  `X-Forwarded-For` and `X-Forwarded-Proto` now count only from those addresses. **Browser push behind a proxy needs
+  it**: without the proxy's address there, `X-Forwarded-Proto` is ignored and every `/push/` route answers 404. With it,
+  the login, decision-link and registration limits count per client instead of per proxy. The admin cookie is still
+  marked `Secure` whenever a request says https.
+- **Webhooks and attachment URLs** check the address the connection actually goes to, so a DNS answer that changes
+  between the check and the send cannot reach loopback or link-local addresses. Webhooks use their own HTTP client.
+- **Re-enable a webhook**: `POST /v1/subscriptions/{id}/enable` (owner or admin) or *Turn on* under Admin → *API
+  access*. Events from while it was off are not replayed. A deleted client's webhooks are re-owned to
+  `<name>#deleted` (also those deleted before 0.13.2) and can never be turned on again.
+- **Two providers on one reply mailbox folder** can no longer be saved (422). An existing pair keeps working as before
+  (still unsupported); a change that does not create a new pair is not blocked.
+- **Replies**: the skip list of failing messages is cleared when the folder's UIDVALIDITY changes; the admin page
+  shows how many moved messages a server without UIDPLUS left flagged deleted.
+- **Sends** are fenced by a lease number that never resets, so a send run whose lease was recovered cannot record
+  its result over a later run, also not after a manual retry.
+
 ## Upgrading to 0.13.1
 
 A hardening release (hostile review, fixes and a bug hunt). No schema change. What behaves differently:

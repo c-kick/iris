@@ -168,7 +168,11 @@ bounces), `no_thread` (not a reply to our mail), `not_reply_enabled`,
 block that is not plain CRLF `Name: value` lines, or one the parser cannot read), `too_complex`
 (more than 200 MIME parts), `header_mismatch`, `unreadable`. A message is listed once, even if it
 is seen again. A message whose handling fails three passes in a row (for example a move the server
-refuses) is skipped until the service restarts, and the admin page shows it as the poller's last error.
+refuses) is skipped until the service restarts or the folder's UIDVALIDITY changes, and the admin page shows it as
+the poller's last error. A server without UIDPLUS cannot expunge single messages: what was moved stays in the
+polled folder flagged `\Deleted` (hnl-notify never expunges the whole folder), and the admin page shows how many;
+remove them with a mail client. Two email providers may not read the same reply mailbox folder (same IMAP server,
+port, user and folder): saving the second is refused, because each would quarantine the other's replies.
 Reply text is capped at 8000 characters; at most 10 attachments
 and 10 MiB are kept.
 

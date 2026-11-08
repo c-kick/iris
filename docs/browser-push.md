@@ -10,8 +10,9 @@ screen, which this enrollment flow does not do).
 - **HTTPS is required.** Browsers only allow push on a secure origin, so `server.external_url` (Settings →
   "Address of this service") must be an `https://` address that reaches this service through your reverse proxy,
   for example `https://notify.example.org`. Enrollment links are refused (409) otherwise. The reverse proxy must pass the original `Host` header
-  (including the port, for example `notify.example.org:8931`) and `X-Forwarded-Proto: https`; otherwise every `/push/`
-  route answers 404 (the log says which origin was expected and which arrived).
+  (including the port, for example `notify.example.org:8931`) and `X-Forwarded-Proto: https`, and its address must be
+  listed in Settings → *Trusted reverse proxies* (`server.trusted_proxies`): `X-Forwarded-Proto` from any other peer
+  is ignored. Otherwise every `/push/` route answers 404 (the log says which origin was expected and which arrived).
 - **Set it up.** Admin → Providers → Add provider → Browser push (enter a `mailto:` contact such as
   `mailto:alex@example.org`; the key pair is generated for you and must never change, or every enrolled browser
   stops working). Then press **Enrollment link**, pick the person, and open the link in the browser to enroll.

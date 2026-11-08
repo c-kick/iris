@@ -10,6 +10,12 @@
 - Reply mailbox: *Providers* → *Manage…* in the admin UI (also linked from the size alert) shows the Processed and Quarantine folders, the cleanup
   settings and the last run; the poll, the connection test and cleanup share one lock per mailbox, so only one IMAP
   session of hnl-notify acts on it at a time.
+- Reverse proxy: list its address in Settings → *Trusted reverse proxies* (`server.trusted_proxies`, signed-in page
+  only). From those peers only, the client's address comes from `X-Forwarded-For` (the nearest hop that is not a trusted
+  proxy) and the scheme from `X-Forwarded-Proto`; the login, decision-link and registration limits then count per
+  client instead of per proxy. Requests through a proxy are never auto-approved for self-registration.
+- Stopping: a relay or `notify-wait` long-poll cut off by a restart loses nothing: the same waiter gets its claim
+  back first on its next call.
 - Stopping: a stop during a mailbox poll or cleanup step waits for that step to finish (bounded by the 120 s IMAP session limit), so `compose.yaml` sets `stop_grace_period: 130s`.
 - Delivery guarantee: at-least-once. If the container dies in the few ms after
   Pushover accepts a message but before the result is committed, that message

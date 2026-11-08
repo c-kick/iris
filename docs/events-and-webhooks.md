@@ -30,8 +30,12 @@ ok = hmac.compare_digest(v1, hmac.new(secret.encode(), f"{t}.".encode() + body, 
 
 Webhooks retry with backoff (10 attempts) from a durable outbox; a subscription
 is disabled after 50 consecutive failures once it has also gone a day without a success (visible in
-`GET /v1/subscriptions`). At most 20 standing subscriptions per client; webhooks never go to loopback or
-link-local addresses.
+`GET /v1/subscriptions`). `POST /v1/subscriptions/{id}/enable` (its owner or an admin, scope `read`) turns it on
+again with a clean failure count; events from while it was off are not replayed (catch up with `GET /v1/events`).
+The admin page lists turned-off webhooks under *API access* with a *Turn on* button. A deleted client's webhooks
+can never be turned on again. At most 20 standing subscriptions per client; webhooks never go to loopback or
+link-local addresses. That is checked on the address the connection actually goes to (the host name is resolved
+once, inside the connect), so a name that changes its DNS answer between a check and the send cannot reach them.
 
 Event types: `notification.created`, `notification.status_changed`,
 `delivery.queued`, `delivery.attempt_failed`, `delivery.dispatched`,
