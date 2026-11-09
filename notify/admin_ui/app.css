@@ -664,7 +664,14 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-compose[hidden], .chat-paused[hidden], .chat-watch[hidden], #chat-pausebtn[hidden], #chat-limitbtn[hidden], .chat-readonly[hidden] { display: none; }
 #chat-limitbtn { font-size: .76rem; color: var(--muted); }
 /* "Pause now" and "Resume" take the same room, so switching never moves the title */
-#chat-pausebtn { min-width: 6.9rem; }
+#chat-pausebtn { width: 8.25rem; padding-inline: .5rem; gap: .4rem; } /* one width for both labels */
+#chat-pausebtn svg { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+#chat-pausebtn svg .fill { fill: currentColor; stroke-width: 1.5; }
+/* a paused group says so in the header too: the control turns amber and offers Resume */
+#chat-pausebtn[data-act="resume"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); background: var(--warn-wash); }
+#chat-pausebtn[data-act="resume"]:hover { border-color: var(--warn); }
+.chat-head .back svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chat-watch i { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--action); margin-right: .35rem; vertical-align: 1px; }
 .chat-sync.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 .chat-sync.bad::before { display: none; }
 /* as tall as the FYI/Send column, so typing the first character does not make it jump */
@@ -697,20 +704,43 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
   .chats .chat-pane { display: none; }
   .chats.thread .chat-list { display: none; }
   .chats.thread .chat-pane { display: flex; }
+  /* the thread header: one grid. Back chevron and Pause span the two text rows; the members get the full width
+     below. Watching sits on the host line, which always exists, so it appearing moves nothing. */
   .chat-head { flex-wrap: nowrap; padding: .45rem .6rem; gap: .35rem; }
   .chat-head .back { display: inline-flex; padding-inline: .5rem; white-space: nowrap; flex: none; }
-  .chat-head .grow { flex: 1 1 auto; }
-  .chat-head .grow > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chat-mini {
-    all: unset; box-sizing: border-box; display: flex; align-items: center; gap: .3rem; max-width: 100%;
-    margin: .1rem 0 0 -.3rem; padding: .15rem .3rem; border-radius: var(--radius-s); cursor: pointer;
+  .chat-head:not(.thread-head) .grow { flex: 1 1 auto; }
+  .chat-head:not(.thread-head) .grow > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .thread-head {
+    display: grid; grid-template-columns: 2.5rem minmax(0, 1fr) auto auto; /* the host gives way, not Watching */
+    grid-template-areas: "back title title pause" "back host watch pause" "mini mini mini mini";
+    column-gap: .55rem; row-gap: 0; align-items: center; padding: .35rem .65rem 0 .2rem;
+  }
+  .thread-head .back { grid-area: back; justify-self: center; width: 2.5rem; height: 2.5rem; min-height: 0; padding: 0; color: var(--action); }
+  .thread-head .grow { display: contents; }
+  .thread-head #chat-title { grid-area: title; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 1rem/1.3 var(--mono); letter-spacing: -.01em; }
+  .thread-head #chat-sub { grid-area: host; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8rem; line-height: 1.4; color: var(--faint); }
+  .thread-head .chat-head-note { grid-area: watch; align-items: flex-start; min-width: 0; overflow: hidden; }
+  .thread-head .chat-watch { padding: 0; font-size: .8rem; line-height: 1.4; color: var(--action); }
+  .thread-head #chat-pausebtn { grid-area: pause; width: 7.4rem; min-height: 36px; padding: .3rem .5rem; font-size: .84rem; }
+  .thread-head .chat-mini {
+    all: unset; box-sizing: border-box; grid-area: mini; display: flex; align-items: center; gap: .6rem;
+    margin: .35rem -.65rem 0 -.2rem; padding: .4rem .75rem .45rem 1rem; border-top: 1px solid var(--line-soft); cursor: pointer;
   }
   .chat-mini[hidden] { display: none; }
-  .chat-mini:focus-visible { outline: 3px solid var(--focus); outline-offset: 0; }
+  .chat-mini:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
   .chat-mini[aria-expanded="true"] { background: var(--action-wash); }
-  .chat-mini .mini-list { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chat-mini .mini-more { flex: none; color: var(--action); font-size: .8rem; line-height: 1; }
-  .chat-head #chat-pausebtn { flex: none; padding-inline: .6rem; }
+  /* the names run out under a fade, not an ellipsis; the count stays put at the end */
+  .chat-mini .mini-list {
+    flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap;
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
+  }
+  .chat-mini .mini { font-size: .8rem; margin-right: .8rem; }
+  .chat-mini .mini-count {
+    flex: none; display: inline-flex; align-items: center; gap: .15rem; padding: .1rem .3rem .1rem .5rem; border-radius: 999px;
+    font: 600 .76rem var(--font); font-variant-numeric: tabular-nums; color: var(--action); background: var(--action-wash);
+  }
+  .chat-mini .mini-count svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .chat-mini[aria-expanded="true"] .mini-count svg { transform: rotate(180deg); }
   .chat-head #chat-limitbtn { display: none; }
   .chat-watch .long { display: none; }
   .chat-watch .short { display: inline; }

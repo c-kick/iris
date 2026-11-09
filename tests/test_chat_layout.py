@@ -137,7 +137,9 @@ def test_owner_presence_counts_real_input_only():
 
 
 def test_pause_button_keeps_its_width():
-    assert "min-width" in _rule("#chat-pausebtn")
+    # a fixed width, not a minimum: "Pause now" with its icon outgrew the minimum and moved the title on every toggle
+    assert re.search(r"(^|[; ])width: [\d.]+rem", _rule("#chat-pausebtn"))
+    assert re.search(r"(^|[; ])width: [\d.]+rem", _rule(".thread-head #chat-pausebtn", _mobile()))
 
 
 def test_chats_page_never_pans_or_bounces():
@@ -174,3 +176,20 @@ def test_paused_banner_review_fixes():
     assert ".chat-head:has(.chat-roster:not([hidden])) .chat-paused" in CSS
     # sign-out in the top bar: hidden by default, shown only by the phone query (no gap between two queries)
     assert "(min-width: 761px)" not in CSS
+
+
+def test_phone_thread_header_is_one_aligned_grid():
+    head = JS[JS.index('<div class="chat-head thread-head">'):JS.index('<div class="chat-msgs"')]
+    back = re.search(r'<button[^>]*id="chat-back"[^>]*>(.*?)</button>', head, re.S)
+    assert 'aria-label="All folders"' in back.group(0) and "<svg" in back.group(1), "a chevron with a spoken label"
+    mob = _mobile()
+    grid = _rule(".thread-head", mob)
+    assert "display: grid" in grid and "grid-template-areas" in grid
+    for area in ('"back title title pause"', '"back host watch pause"', '"mini mini mini mini"'):
+        assert area in grid, area
+    assert "display: contents" in _rule(".thread-head .grow", mob)
+    assert "mask-image" in _rule(".chat-mini .mini-list", mob), "fades out instead of ending in an ellipsis"
+    hdr = _fn("function chatHeader")
+    assert 'class="mini-count"' in hdr, "a fixed member count closes the rail"
+    assert "chatPauseLabel(" in hdr and "<svg" in _fn("function chatPauseLabel")
+    assert "--warn" in _rule('#chat-pausebtn[data-act="resume"]'), "a paused group shows it in the header"

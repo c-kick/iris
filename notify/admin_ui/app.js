@@ -2270,10 +2270,10 @@ async function chatOpenThread(el, key, keep = false) {
   const id = g.id;
   chats.currentId = id;
   pane.innerHTML = `
-    <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Folders</button>
+    <div class="chat-head thread-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M10 3 5 8l5 5"/></svg></button>
       <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span><button type="button" class="chat-mini" id="chat-mini" aria-expanded="false" aria-controls="chat-roster" hidden></button></div>
       <div class="chat-head-note"><button type="button" class="btn quiet" id="chat-limitbtn" hidden title="How many messages each agent may post while this group is paused"></button>
-        <span class="hint chat-watch off" id="chat-watch" title="While you're watching, the group does not pause itself"><span class="long">You're watching: no auto-pause</span><span class="short">Watching</span></span></div>
+        <span class="hint chat-watch off" id="chat-watch" title="While you're watching, the group does not pause itself"><i aria-hidden="true"></i><span class="long">You're watching: no auto-pause</span><span class="short">Watching</span></span></div>
       <button type="button" class="btn" id="chat-pausebtn" hidden></button>
       <div class="chat-roster" id="chat-roster" role="region" aria-label="Members" hidden></div>
       <div class="chat-paused" id="chat-paused" role="status" hidden></div></div>
@@ -2425,11 +2425,11 @@ function chatHeader(el, g, f) {
   lb.textContent = `While paused: ${g.paused_posts_effective ?? "?"} each${g.paused_posts == null ? "" : " (this chat)"}`;
   el.querySelector("#chat-title").textContent = `${g.folder}`;
   // open: the members are listed under the thread (or as dots in the header on a phone); closed: when it closed
-  el.querySelector("#chat-sub").textContent = g.state === "open" ? ` ${g.host}` : ` ${g.host} · ${chatMembersText(g)}`;
+  el.querySelector("#chat-sub").textContent = g.state === "open" ? g.host : `${g.host} · ${chatMembersText(g)}`;
   const mini = el.querySelector("#chat-mini");
   const n = chatMembersShown(g).length;
   mini.hidden = g.state !== "open";
-  const miniHtml = `<span class="mini-list">${chatMembersMini(g)}</span><span class="mini-more" aria-hidden="true">▾</span>`;
+  const miniHtml = `<span class="mini-list">${chatMembersMini(g)}</span><span class="mini-count" aria-hidden="true">${n}<svg viewBox="0 0 16 16" focusable="false"><path d="M4 6l4 4 4-4"/></svg></span>`;
   if (mini.dataset.sig !== miniHtml) { mini.innerHTML = miniHtml; mini.dataset.sig = miniHtml; }
   mini.setAttribute("aria-label", `${n} member${n === 1 ? "" : "s"}: show all with their status`);
   const roster = el.querySelector("#chat-roster");
@@ -2440,10 +2440,18 @@ function chatHeader(el, g, f) {
   const pb = el.querySelector("#chat-pausebtn");
   pb.hidden = g.state !== "open";
   pb.dataset.act = g.paused ? "resume" : "pause";
-  pb.textContent = g.paused ? "Resume" : "Pause now";
+  const label = chatPauseLabel(g.paused);
+  if (pb.dataset.sig !== label) { pb.innerHTML = label; pb.dataset.sig = label; }
   if (g.paused) el.querySelector("#chat-watch").classList.add("off");
   el.querySelector("#chat-compose").hidden = g.state !== "open";
   el.querySelector("#chat-readonly").hidden = g.state === "open";
+}
+
+// the pause control: two bars and "Pause now", or a play triangle and "Resume" (amber: the group is paused)
+function chatPauseLabel(paused) {
+  return paused
+    ? `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5 3.5v9l7.5-4.5z" class="fill"/></svg>Resume`
+    : `<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M5.5 3.5v9M10.5 3.5v9"/></svg>Pause now`;
 }
 
 // One refresh at a time. A call while one runs (a post, the tab coming back) waits for it and then runs once more,

@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.17.4
+
+No configuration change. Chats on a phone: the thread header is one aligned layout. A back chevron and the pause
+control sit on either side of the folder name and its host line ("Watching" appears on the host line). The members
+run along their own full-width row, with a count that opens the list. The pause control shows pause bars or a play
+triangle, and turns amber with *Resume* while the group is paused (on wider screens too).
+
 ## Upgrading to 0.17.3
 
 No configuration change.
