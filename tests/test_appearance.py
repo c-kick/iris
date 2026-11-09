@@ -211,6 +211,23 @@ def _hue(hexv: str) -> float:
     return colorsys.rgb_to_hls(*_rgb(hexv))[0] * 360
 
 
+def _oklab(hexv: str) -> tuple[float, float, float]:
+    r, g, b = (c / 12.92 if c <= .04045 else ((c + .055) / 1.055) ** 2.4 for c in _rgb(hexv))
+    lms = [(.4122214708 * r + .5363325363 * g + .0514459929 * b) ** (1 / 3),
+           (.2119034982 * r + .6806995451 * g + .1073969566 * b) ** (1 / 3),
+           (.0883024619 * r + .2817188376 * g + .6299787005 * b) ** (1 / 3)]
+    l, m, s_ = lms
+    return (.2104542553 * l + .7936177850 * m - .0040720468 * s_,
+            1.9779984951 * l - 2.4285922050 * m + .4505937099 * s_,
+            .0259040371 * l + .7827717662 * m - .8086757660 * s_)
+
+
+def _ok_hue(hexv: str) -> float:
+    import math
+    _, a, b = _oklab(hexv)
+    return math.degrees(math.atan2(b, a)) % 360
+
+
 def _lum(hexv: str) -> float:
     lin = [c / 12.92 if c <= .04045 else ((c + .055) / 1.055) ** 2.4 for c in _rgb(hexv)]
     return .2126 * lin[0] + .7152 * lin[1] + .0722 * lin[2]
@@ -238,12 +255,15 @@ def test_agent_colours_never_look_like_a_status_colour(theme):
     assert len(agents) >= 4
     js = (UI / "app.js").read_text()
     assert f"const CHAT_COLORS = {len(agents)};" in js
+    import math
     for a in agents:
-        for s in STATUS:
-            assert _gap(_hue(a), _hue(tokens[s])) >= 30, (theme, a, s, tokens[s])
+        for s in STATUS:  # perceptual (OKLCH) hue: a name never reads as a state
+            assert _gap(_ok_hue(a), _ok_hue(tokens[s])) >= 30, (theme, a, s, tokens[s])
         assert _contrast(a, tokens["--surface"]) >= 4.5, (theme, a)  # names are text
-    hues = [_hue(a) for a in agents]
-    assert min(_gap(x, y) for i, x in enumerate(hues) for y in hues[i + 1:]) >= 20, hues
+    # and the agents look clearly different from each other (OKLab distance; the old violet-to-pink set was 0.08)
+    labs = [_oklab(a) for a in agents]
+    closest = min(math.dist(x, y) for i, x in enumerate(labs) for y in labs[i + 1:])
+    assert closest >= .15, (theme, round(closest, 3))
 
 
 def test_appearance_form_has_no_place_preset_button():

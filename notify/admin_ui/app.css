@@ -24,8 +24,9 @@
   --focus: #2A74C6;
   --claude: #B0502A;
   --codex: #2C5CA6;
-  /* one colour per agent in a chat: four violet-to-pink hues, clear of every status colour, readable as text */
-  --a0: #5236CC; --a1: #7E22CE; --a2: #A21CAF; --a3: #B5177A;
+  /* one colour per agent in a chat: violet, lime, pink, magenta. Each is 30+ OKLCH degrees from every status colour
+     and at least 0.15 OKLab from the others (picked with ~/scripts palette-pick), readable as text */
+  --a0: #5906C6; --a1: #557500; --a2: #D4007A; --a3: #B000F0;
   --waiting: #2F6DB0;
   --overlay: rgba(18, 28, 31, .46);
   --shadow-panel: 0 1px 2px rgba(26, 36, 39, .05), 0 2px 8px rgba(26, 36, 39, .04);
@@ -65,7 +66,7 @@
     --focus: #6FA8EA;
     --claude: #E48C64;
     --codex: #84AAE8;
-    --a0: #9B8AF4; --a1: #C084FC; --a2: #EC79F0; --a3: #F472C4;
+    --a0: #C9BBFF; --a1: #A8CC3C; --a2: #FF5CAD; --a3: #E040FB;
     --waiting: #7AA9E6;
     --overlay: rgba(4, 8, 9, .66);
     --shadow-panel: none;
@@ -97,7 +98,7 @@
   --focus: #6FA8EA;
   --claude: #E48C64;
   --codex: #84AAE8;
-  --a0: #9B8AF4; --a1: #C084FC; --a2: #EC79F0; --a3: #F472C4;
+  --a0: #C9BBFF; --a1: #A8CC3C; --a2: #FF5CAD; --a3: #E040FB;
   --waiting: #7AA9E6;
   --overlay: rgba(4, 8, 9, .66);
   --shadow-panel: none;
@@ -648,6 +649,10 @@ details.delivery summary:hover { color: var(--ink); }
 .kind-tag.for { color: var(--action); border-color: color-mix(in srgb, var(--action) 40%, var(--line)); }
 .chat-compose[hidden], .chat-paused[hidden], .chat-watch[hidden], #chat-pausebtn[hidden], #chat-limitbtn[hidden], .chat-readonly[hidden] { display: none; }
 #chat-limitbtn { font-size: .76rem; color: var(--muted); }
+/* "Pause now" and "Resume" take the same room, so switching never moves the title */
+#chat-pausebtn { min-width: 6.9rem; }
+.chat-sync.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+.chat-sync.bad::before { display: none; }
 /* as tall as the FYI/Send column, so typing the first character does not make it jump */
 .chat-compose textarea {
   font: 400 15.5px/1.45 var(--read); color: var(--ink); background: var(--sunken); resize: vertical; min-height: 78px; max-height: 40vh;

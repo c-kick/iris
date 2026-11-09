@@ -1792,6 +1792,8 @@ if (window.visualViewport) {
     const s = document.documentElement.style;
     s.setProperty("--app-h", `${Math.round(vv.height)}px`);
     s.setProperty("--app-top", `${Math.max(0, Math.round(vv.offsetTop))}px`);
+    const el = document.getElementById("chats");
+    if (el) chatRosterSize(el); // the keyboard took or gave back room under an open roster
   };
   vv.addEventListener("resize", fit);
   vv.addEventListener("scroll", fit);
@@ -1801,7 +1803,7 @@ const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
 const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
 const CHAT_ACTIVE_MS = 10 * 60 * 1000; // the owner counts as watching this long after the last input
 let chatLastInput = Date.now();
-["mousemove", "keydown", "scroll", "touchstart", "click"].forEach((t) =>
+["mousemove", "keydown", "wheel", "touchstart", "click"].forEach((t) =>
   document.addEventListener(t, () => { chatLastInput = Date.now(); }, { passive: true, capture: true }));
 const chatWatchingNow = () => document.visibilityState === "visible" && Date.now() - chatLastInput < CHAT_ACTIVE_MS;
 const CHAT_LIVE_SECONDS = 180; // matches the server's stale sweep
@@ -1973,6 +1975,7 @@ async function chatsPage(main) {
       <div class="chat-pane" id="chat-pane"></div>
     </div>`;
   const el = main.querySelector("#chats");
+  chatRosterToggle(el, false); // drops listeners an earlier roster left on the document
   try { await chatsLoadList(el); } catch (ex) { el.querySelector("#chat-list").innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
   if (chats.foldersOpen) await chatFolders(el);
   else if (chats.selected && chatFolderOf(chats.selected)) await chatOpen(el, chats.selected, true);
@@ -2015,31 +2018,52 @@ function chatBindMembers(root, el, after = () => {}) {
 
 // On a phone the members fold into one line in the header; tapping it opens all of them, as on desktop, in a
 // panel that floats over the thread (nothing moves). Escape, a tap outside or picking someone closes it.
+// The 5 s poll refills it only when a member changed: replacing the rows under a finger ends an iOS swipe and
+// resets the scroll. Its buttons are handled by one listener on the roster (chatOpen), so a refill needs no rebinding.
 function chatRosterFill(el, g) {
   const roster = el.querySelector("#chat-roster");
-  roster.innerHTML = chatMembersHtml(g);
-  chatBindMembers(roster, el, () => chatRosterToggle(el, false));
+  const html = chatMembersHtml(g);
+  if (roster.dataset.sig === html) return;
+  const top = roster.scrollTop;
+  roster.innerHTML = html;
+  roster.dataset.sig = html;
+  roster.scrollTop = top;
+}
+// as tall as the space left between the header and the bottom of what the viewer sees (keyboard included)
+function chatRosterSize(el) {
+  const roster = el.querySelector("#chat-roster");
+  const head = el.querySelector(".chat-head");
+  if (!roster || roster.hidden || !head) return;
+  const room = el.getBoundingClientRect().bottom - head.getBoundingClientRect().bottom - 16;
+  roster.style.maxHeight = `${Math.max(120, Math.floor(room))}px`;
 }
 function chatRosterToggle(el, open) {
+  document.removeEventListener("pointerdown", chats.rosterOutside, true);
+  document.removeEventListener("keydown", chats.rosterKey, true);
+  chats.rosterOutside = chats.rosterKey = null;
   const roster = el.querySelector("#chat-roster");
   const mini = el.querySelector("#chat-mini");
   if (!roster || !mini) return;
   const g = chatFolderOf(chats.selected);
   open = open ?? roster.hidden;
+  const hadFocus = roster.contains(document.activeElement);
   if (open && g) chatRosterFill(el, g);
   roster.hidden = !open;
   mini.setAttribute("aria-expanded", String(open));
-  document.removeEventListener("pointerdown", chats.rosterOutside, true);
-  document.removeEventListener("keydown", chats.rosterKey, true);
-  if (!open) return;
+  if (!open) { if (hadFocus) mini.focus(); return; }
+  roster.scrollTop = 0;
+  chatRosterSize(el);
   chats.rosterOutside = (e) => {
     if (!roster.isConnected) { chatRosterToggle(el, false); return; }
     if (!roster.contains(e.target) && !mini.contains(e.target)) chatRosterToggle(el, false);
   };
-  chats.rosterKey = (e) => { if (e.key === "Escape") { chatRosterToggle(el, false); mini.focus(); } };
+  chats.rosterKey = (e) => { if (e.key === "Escape") { chatRosterToggle(el, false); if (mini.isConnected) mini.focus(); } };
   document.addEventListener("pointerdown", chats.rosterOutside, true);
   document.addEventListener("keydown", chats.rosterKey, true);
 }
+
+// a wider window has the member list beside the thread, so a roster left open there would float with no button
+matchMedia("(max-width: 760px)").addEventListener("change", () => { const el = document.getElementById("chats"); if (el) chatRosterToggle(el, false); });
 
 // "@" in the composer: a list of the members' names (and all) to pick from, filtered as you type
 function chatAtPicker(el, ta, list) {
@@ -2208,7 +2232,15 @@ function chatShowMessage(el, id) {
   m.classList.add("flash");
 }
 
+// Opening a thread replaces the pane; the poll skips its turn meanwhile (it would see no current group and open
+// the same thread a second time).
 async function chatOpen(el, key, keep = false) {
+  chatRosterToggle(el, false);
+  chats.opening = (chats.opening || 0) + 1;
+  try { await chatOpenThread(el, key, keep); } finally { chats.opening -= 1; }
+}
+
+async function chatOpenThread(el, key, keep = false) {
   const f = chatFolderOf(key);
   if (!f) return;
   chats.foldersOpen = false;
@@ -2258,8 +2290,20 @@ async function chatOpen(el, key, keep = false) {
     catch (ex) { toast(ex.message); }
     finally { btn.disabled = false; }
   };
-  pane.querySelector("#chat-mini").onclick = () => chatRosterToggle(el);
-  pane.querySelector("#chat-back").onclick = () => { chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
+  const roster = pane.querySelector("#chat-roster");
+  pane.querySelector("#chat-mini").onclick = (e) => {
+    chatRosterToggle(el);
+    if (e.detail === 0 && !roster.hidden) roster.querySelector(".cmem-main")?.focus(); // opened from the keyboard
+  };
+  roster.onclick = (e) => {
+    const b = e.target.closest("[data-mention], [data-claim], [data-rename]");
+    if (!b) return;
+    chatRosterToggle(el, false);
+    if (b.dataset.claim) chatShowMessage(el, b.dataset.claim);
+    else if (b.dataset.rename) chatRename(el, b.dataset.rename, b.dataset.name);
+    else chatMention(el, b.dataset.mention);
+  };
+  pane.querySelector("#chat-back").onclick = () => { chatRosterToggle(el, false); chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
   pane.querySelector("#chat-limitbtn").onclick = () => {
     const cur = chats.group || {};
     openForm({
@@ -2371,7 +2415,8 @@ function chatHeader(el, g, f) {
   const mini = el.querySelector("#chat-mini");
   const n = chatMembersShown(g).length;
   mini.hidden = g.state !== "open";
-  mini.innerHTML = `<span class="mini-list">${chatMembersMini(g)}</span><span class="mini-more" aria-hidden="true">▾</span>`;
+  const miniHtml = `<span class="mini-list">${chatMembersMini(g)}</span><span class="mini-more" aria-hidden="true">▾</span>`;
+  if (mini.dataset.sig !== miniHtml) { mini.innerHTML = miniHtml; mini.dataset.sig = miniHtml; }
   mini.setAttribute("aria-label", `${n} member${n === 1 ? "" : "s"}: show all with their status`);
   const roster = el.querySelector("#chat-roster");
   if (roster && !roster.hidden) { if (g.state === "open") chatRosterFill(el, g); else chatRosterToggle(el, false); }
@@ -2398,17 +2443,25 @@ function chatTick(el) {
 }
 
 // Back on the tab (or the window): the browser held the 5 s poll while it was away, so refresh now and show it.
+// Overlapping catch-ups share the pill: only the last one to finish hides it. A failed refresh says so.
 async function chatCatchUp(el) {
   const t0 = Date.now();
   chats.lastCatchUp = t0;
+  chats.syncing = (chats.syncing || 0) + 1;
   chatSync(el, true);
-  try { await chatTick(el); }
-  finally { setTimeout(() => chatSync(el, false), Math.max(0, 500 - (Date.now() - t0))); } // no one-frame flash
+  try { await chatTick(el); } catch { /* reported by chatTickOnce */ }
+  const failed = !!chats.tickError;
+  if (failed) chatSync(el, true, "Could not update; trying again in a few seconds");
+  setTimeout(() => {
+    chats.syncing -= 1;
+    if (!chats.syncing) chatSync(el, false);
+  }, failed ? 3000 : Math.max(0, 500 - (Date.now() - t0))); // no one-frame flash
 }
 const chatOnReturn = () => {
   const el = document.getElementById("chats");
   if (!el || section !== "chats" || document.visibilityState !== "visible") return;
   if (Date.now() - (chats.lastCatchUp || 0) < 1500) return; // focus and visibilitychange arrive together
+  chatLastInput = Date.now(); // coming back to the tab is the owner looking: they count as watching again
   chatCatchUp(el);
 };
 document.addEventListener("visibilitychange", chatOnReturn);
@@ -2416,7 +2469,7 @@ window.addEventListener("focus", chatOnReturn);
 window.addEventListener("pageshow", (e) => { if (e.persisted) chatOnReturn(); });
 
 // the "Updating…" pill: floats under the thread header (or over the folder list), so showing it moves nothing
-function chatSync(el, on) {
+function chatSync(el, on, text = "Updating…") {
   const pill = el.querySelector("#chat-sync");
   if (!pill) return;
   if (on) {
@@ -2430,13 +2483,15 @@ function chatSync(el, on) {
       pill.style.left = `${a.left - box.left + a.width / 2}px`;
     }
   }
-  pill.textContent = on ? "Updating…" : "";
+  pill.textContent = on ? text : "";
+  pill.classList.toggle("bad", on && text !== "Updating…");
   pill.classList.toggle("on", on);
 }
 
 async function chatTickOnce(el) {
   if (section !== "chats" || !el.isConnected) { clearInterval(chats.timer); return; }
-  if (document.visibilityState !== "visible") return;
+  if (document.visibilityState !== "visible" || chats.opening) return;
+  chats.tickError = null;
   try {
     await chatsLoadList(el);
     const key = chats.selected;
@@ -2476,5 +2531,5 @@ async function chatTickOnce(el) {
       if (stick) box.scrollTop = box.scrollHeight;
       if (data.group.unread) { await api("POST", `/chats/${encodeURIComponent(id)}/seen`); await chatsLoadList(el); }
     }
-  } catch { /* a missed poll is retried in 5 s; sign-out is handled by api() */ }
+  } catch (ex) { chats.tickError = ex; console.error("chat refresh failed (retried in 5 s)", ex); } // sign-out: api()
 }

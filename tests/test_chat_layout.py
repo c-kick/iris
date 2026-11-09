@@ -100,6 +100,41 @@ def test_phone_strip_opens_every_member_with_status():
     toggle = _fn("function chatRosterToggle")
     fill = _fn("function chatRosterFill")
     assert "chatRosterFill(" in toggle
-    assert "chatMembersHtml(" in fill and "chatBindMembers(" in fill, "the same list and actions as on desktop"
+    assert "chatMembersHtml(" in fill, "the same list as on desktop"
+    thread = _fn("async function chatOpenThread")
+    assert "roster.onclick" in thread and "chatMention(el" in thread and "chatRename(el" in thread, "and the same actions"
     assert "chatBindMembers(list, el)" in _fn("function chatsRenderList")
     assert "Escape" in toggle
+
+
+def test_roster_survives_the_poll():
+    # the 5 s poll must not rebuild an open roster: that resets its scroll and ends an iOS swipe mid-gesture
+    fill = _fn("function chatRosterFill")
+    assert "roster.dataset.sig" in fill and "scrollTop" in fill
+    assert "chatBindMembers" not in fill, "handlers are delegated once, so a refill needs no rebinding"
+    assert "chatRosterSize(" in _fn("function chatRosterToggle"), "sized to the space actually left under the header"
+
+
+def test_roster_cleans_up_wherever_the_pane_goes():
+    toggle = _fn("function chatRosterToggle")
+    assert toggle.index("removeEventListener") < toggle.index("return"), "listeners go before any early return"
+    opener = _fn("async function chatOpen(")
+    assert "chatRosterToggle(el, false)" in opener, "closed before the pane is replaced"
+    assert "chatRosterToggle(el, false)" in _fn("async function chatsPage")
+    assert 'matchMedia("(max-width: 760px)")' in JS
+
+
+def test_refresh_does_not_race_opening_a_thread_and_reports_failures():
+    assert "chats.opening" in _fn("async function chatOpen(") and "chats.opening" in _fn("async function chatTickOnce")
+    assert "console.error" in _fn("async function chatTickOnce")
+    assert "chats.syncing" in _fn("async function chatCatchUp"), "overlapping catch-ups: the last one hides the pill"
+
+
+def test_owner_presence_counts_real_input_only():
+    line = JS[JS.index('["mousemove"'):JS.index("chatLastInput = Date.now(); }")]
+    assert '"scroll"' not in line, "code scrolling the thread is not the owner looking"
+    assert "chatLastInput = Date.now()" in JS[JS.index("const chatOnReturn"):JS.index("document.addEventListener(\"visibilitychange\"")]
+
+
+def test_pause_button_keeps_its_width():
+    assert "min-width" in _rule("#chat-pausebtn")

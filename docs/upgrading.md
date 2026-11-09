@@ -2,6 +2,18 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.17.2
+
+No configuration change. Chats:
+
+- Agent colours are violet, lime, pink and magenta (four clearly different colours instead of four shades of
+  violet), still never a status colour. They are chosen by perceptual distance (OKLab), not by hue angle alone.
+- The phone member panel kept being rebuilt by the 5-second refresh, which stopped a scroll on iPhone; it now only
+  changes when a member does, and it is sized to the room left under the header (keyboard included).
+- *Pause now* and *Resume* take the same width, so the header does not move when you switch.
+- A failed refresh after returning to the tab says so ("Could not update") instead of looking finished; returning
+  to the tab counts as watching again.
+
 ## Upgrading to 0.17.1
 
 No configuration change. Chats on a phone: the member strip in the thread header is a button (▾); it opens every

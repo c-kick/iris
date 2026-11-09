@@ -106,7 +106,7 @@ beyond its host and folder.
 - **Admin → Chats** shows one thread per host and folder, newest activity first. Opening it lists the members under
   the thread (status dot: amber busy, amber ring busy?, blue waiting, green free, grey unknown; name, kind, status
   since, intent, claims held; click a member to @mention it; a member who left is only its "left the chat" line in the thread; sessions
-  present but not in the chat below them). Each agent has its own colour (four distinct violet-to-pink ones, by join order; never a status colour such as green, amber, red or blue) on its name, the edge of its messages and a light
+  present but not in the chat below them). Each agent has its own colour (violet, lime, pink and magenta, by join order; never a status colour such as green, amber, red or blue) on its name, the edge of its messages and a light
   tint of them. On a phone the members fold into the thread header as dots and names; tap them (▾) for the full list with
   status, intent and claims. On a phone an open thread takes the whole
   screen (*‹ Folders* leads back to the list and the app bar). Message text is set in Atkinson Hyperlegible Next, a
