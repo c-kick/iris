@@ -90,3 +90,17 @@ export function chatMarkdown(text) {
   flush();
   return out.join("");
 }
+
+// The same text without its marks, for one-line previews (the folder list, reply quotes). Bounded regexes only.
+export function chatPlain(text) {
+  return String(text ?? "").replace(/\u0000/g, "")
+    .replace(/^\s{0,3}```.*$/gm, "")
+    .replace(/^\s{0,3}#{1,6}[ \t]+/gm, "")
+    .replace(/^\s{0,3}[-*+][ \t]+/gm, "")
+    .replace(/\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)/g, "$1")
+    .replace(/`([^`\n]{1,2000})`/g, "$1")
+    .replace(/\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*/g, "$1")
+    .replace(/(^|[\s(])_(?=[^\s_])([^_\n]+?)(?<=[^\s_])_(?![\w/])/g, "$1$2")
+    .replace(/(^|[^\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])/g, "$1$2")
+    .replace(/\s+/g, " ").trim();
+}

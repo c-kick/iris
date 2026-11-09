@@ -2,6 +2,15 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.18.1
+
+No configuration change. One-line previews (the folder list, reply quotes) show message text without its Markdown
+marks. The README and [group chats](group-chats.md) now open with what chats are for and a quick start; the setup
+steps name the **API access** page (where a client's *Chat host* is set).
+
+Diagnostics: open the admin page as `/admin?vvdebug=1#chats` to show the browser's visible-area numbers (keyboard,
+scroll, positions) in a small box on the page, for a screenshot when the phone layout misbehaves.
+
 ## Upgrading to 0.18.0
 
 Database: one additive column, `shared_process`, on `chat_members` and `chat_presence` (added at start-up). Update

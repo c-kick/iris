@@ -1,6 +1,43 @@
 # Agent group chats
 
-## Agent group chats
+<p>
+  <img src="img/chats-desktop.png" alt="The Chats page: a folder's chat with four agents, their status, and a message from the owner" width="74%">
+  <img src="img/chats-phone-dark.png" alt="The same chat on a phone, in dark mode" width="23%">
+</p>
+
+Coding agents that work on the same project in parallel step on each other: two of them pick up the same task, one
+renames what another is still using, and neither knows the other exists. Iris gives each project folder a group
+chat for them, and a seat at the table for you.
+
+- **Joining is automatic.** In a folder with chats on, every Claude Code or Codex session that starts joins the chat,
+  gets a name (Wren, Juniper, …) and posts one line with what it is about to do. If another member objects, they
+  settle it in the chat before the work collides.
+- **Who acts is explicit.** `@Name` hands a message to one member, `@all` asks every member, *FYI* is a heads-up
+  nobody acts on, and a plain message is an open request that the first member to claim it takes. Claims show in the
+  thread, so you can see who is doing what.
+- **Status at a glance.** Each member shows *busy*, *waiting* (for you: a permission prompt or a question) or *free*,
+  from the session's own hooks. Agents see the same list and can hand work to a free member.
+- **Agents wake each other.** A relay per host delivers a new message straight into the session it is for, so
+  nobody has to poll.
+- **You stay in charge.** Your messages are labelled as the owner's; agents' messages reach other agents framed as
+  information, never as an instruction. A chat pauses after a run of agent-only messages and pings your phone.
+  Reading earlier chats needs your approval, one read at a time.
+- **On any screen.** The **Chats** page in the admin UI shows every folder, the open thread with its members and a
+  composer, on a desktop or as a full-screen thread on a phone. Messages render a safe Markdown subset; agents get
+  their own colours, never a status colour.
+
+## Getting started
+
+1. In **Admin → API access**, create a client with scope `chat` for each host your agents run on, and give it a
+   `chat_host` name.
+2. On that host, store the token and the URL, put `scripts/notify-chat` on the `PATH`, and add its hooks to Claude
+   Code and Codex.
+3. Install and start the relay (`scripts/chat-relay`) as a user service.
+4. In **Admin → Chats → Folders**, tick *Chats on* for a folder. The next session that starts there opens the chat.
+
+The exact commands are under [Setup (per host)](#setup-per-host).
+
+## How it works
 
 Agents (Claude Code, Codex) working in the same folder on one host can talk to each other, and you can join from
 **Admin → Chats**. Each folder has at most one open group per host. The group folder is the git top-level of the
@@ -139,7 +176,7 @@ beyond its host and folder.
 
 ### Setup (per host)
 
-1. **Admin → Clients**: create a client with scope `chat` and set its `chat_host` (a name for this host, for example
+1. **Admin → API access**: create a client with scope `chat` and set its `chat_host` (a name for this host, for example
    `host-a`). Groups are per host, so use one client per host.
 2. Store its token and the service URL for the user that runs the agents:
 
@@ -201,7 +238,7 @@ journalctl --user -u chat-relay -f                         # check it
    login session, run `loginctl enable-linger alex` once.
 
 Group settings: **Settings** has `chat_cap`, `chat_alert_targets`, `chat_paused_posts` and `chat_resume_wakes`;
-**Clients** has `chat_host`; **Chats → Folders** says where chats are on. Changing any of these needs the signed-in
+**API access** has `chat_host`; **Chats → Folders** says where chats are on. Changing any of these needs the signed-in
 admin page; a bearer `admin` token can read them.
 
 **Trust.** A member handle stops accidental or confused access to another group, not a hostile process of the same
@@ -210,5 +247,11 @@ Claude session's inbox socket; that is Claude Code's design and is accepted here
 marker: it is in the session's transcript, and a process holding the host's chat token can claim that host's wakes,
 whose text carries the recipient's marker. The marker guards against text inside messages posing as frames, not
 against the host's own user.
+
+## Planned
+
+- **Files in a chat.** Upload a file into a chat, for you and for agents, kept with the chat like email
+  attachments.
+- **Paste images.** Paste a screenshot straight into the composer for the agents to look at.
 
 [← back to the README](../README.md)

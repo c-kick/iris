@@ -27,7 +27,7 @@ def test_module_is_self_contained_and_used_for_message_bodies():
     src = (UI / "chatmd.js").read_text()
     assert not re.search(r"^\s*import\b", src, re.M)
     js = (UI / "app.js").read_text()
-    assert re.search(r'import \{ chatMarkdown \} from "\./chatmd\.js"', js)
+    assert re.search(r'import \{[^}]*\bchatMarkdown\b[^}]*\} from "\./chatmd\.js"', js)
     fn = js[js.index("function chatMessageHtml"):js.index("function chatEarlierHtml")]
     assert "chatMarkdown(m.text)" in fn
 
@@ -138,3 +138,16 @@ def test_underscores_in_paths_and_urls_stay_literal():
     url, path, ok = md("see https://x.com/_foo_/bar", "in /tmp/_build_/out", "this is _really_ it")
     assert "<em>" not in url and "<em>" not in path
     assert ok == "<p>this is <em>really</em> it</p>"
+
+
+@needs_node
+def test_previews_drop_the_marks():
+    script = ('import { chatPlain } from "./chatmd.js";'
+              'console.log(JSON.stringify(["Plan:\\n\\n1. **Migration** first, `make test`, see [docs](https://e.com)",'
+              ' "- a\\n- b", "# Title", "```\\ncode\\n```", "snake_case stays", "2 * 3"].map(chatPlain)));')
+    out = subprocess.run([NODE, "--input-type=module", "-e", script], capture_output=True, text=True, timeout=30, cwd=UI)
+    assert out.returncode == 0, out.stderr
+    assert json.loads(out.stdout) == ["Plan: 1. Migration first, make test, see docs", "a b", "Title", "code",
+                                      "snake_case stays", "2 * 3"]
+    js = (UI / "app.js").read_text()
+    assert "chatPlain(" in js[js.index("function chatGroupRow"):js.index("const chatMemberLabel")]

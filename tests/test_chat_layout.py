@@ -193,3 +193,10 @@ def test_phone_thread_header_is_one_aligned_grid():
     assert 'class="mini-count"' in hdr, "a fixed member count closes the rail"
     assert "chatPauseLabel(" in hdr and "<svg" in _fn("function chatPauseLabel")
     assert "--warn" in _rule('#chat-pausebtn[data-act="resume"]'), "a paused group shows it in the header"
+
+
+def test_viewport_debug_overlay_only_on_request():
+    # ?vvdebug=1 shows the visual-viewport numbers on the page, to diagnose iOS keyboard behaviour from a screenshot
+    block = JS[JS.index("if (window.visualViewport) {"):JS.index("const chatUnread")]
+    assert 'new URLSearchParams(location.search).has("vvdebug")' in block
+    assert "vv.offsetTop" in block and "innerHeight" in block and "keyboardOpen" in block

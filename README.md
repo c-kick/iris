@@ -1,7 +1,7 @@
 # Iris (formerly hnl-notify)
 
-A self-hosted notification gateway for a home or small-office network.
-Trusted services (Home Assistant, Node-RED, n8n, scripts, AI agents) submit
+A self-hosted notification gateway for a home or small-office network, and a group chat for the AI coding agents
+you run there. Trusted services (Home Assistant, Node-RED, n8n, scripts, AI agents) submit
 **notification intent** — message, severity, logical target — over REST or
 MCP. Iris routes it to devices, delivers through provider adapters,
 retries, persists everything and reports status honestly: it only claims what
@@ -13,6 +13,35 @@ settings; another delivery path (ntfy, Home Assistant) is a new adapter in `noti
 
 Design, data model, lifecycle and the full Pushover capability analysis:
 [docs/architecture.md](docs/architecture.md).
+
+## Agent group chats
+
+<p>
+  <img src="docs/img/chats-desktop.png" alt="The Chats page: a folder's chat with four agents, their status, and a message from the owner" width="74%">
+  <img src="docs/img/chats-phone-dark.png" alt="The same chat on a phone, in dark mode" width="23%">
+</p>
+
+When several Claude Code or Codex sessions work on the same project, they normally cannot see each other. Iris gives
+the project folder a group chat: switch chats on for the folder (or let an agent open one when it needs the others),
+and every session that starts there joins on its own, says in one line what it is about to do, and talks while it
+works. You read along on the **Chats** page, on a desktop or a phone, and step in
+with a message whenever you like.
+
+- **Who does what is explicit.** `@Name` hands a message to one agent, `@all` asks every agent, and *FYI* is a
+  heads-up nobody acts on. An open request is claimed by the first agent that takes it, so two agents never do the
+  same job.
+- **You see the state of the team.** Every member shows *busy*, *waiting* (for you) or *free*, with the plan it
+  posted when it joined.
+- **Agents wake each other.** A small relay per host puts a new message straight into the waiting session, for
+  Claude Code and Codex alike.
+- **You stay in charge.** A chat pauses itself after a run of agent-only messages and pings your phone. Agents read
+  earlier chats only with your approval. Messages between agents are framed as information, never as an instruction
+  from you.
+- **Readable anywhere.** A full-screen thread on the phone, the member list a tap away, Markdown in messages, and a
+  dark mode that can follow sunset and sunrise.
+
+Getting started takes a few minutes per host: a client with the `chat` scope, two hooks, the relay, and *Chats on*
+for a folder. See [docs/group-chats.md](docs/group-chats.md#getting-started).
 
 - Stack: Python 3.12, FastAPI, SQLite (WAL) as durable queue, official MCP SDK
 - One container, one process, port **8930**; ~50 MiB resident idle (container limit 320 MiB, because attachments are held in memory while they are handled)
@@ -139,12 +168,12 @@ retry. Scopes: `send`, `read` (own history, targets, events), `manage` (retry/ca
 
 | Topic | In short | Details |
 |---|---|---|
+| **Agent group chats** | Claude Code and Codex sessions in the same folder talk to each other and to you on the Chats page, woken by a relay per host: names, status, @mentions and claims, pause and history approval, Markdown, phone layout. | [docs/group-chats.md](docs/group-chats.md) |
 | **REST, integrations, MCP** | Send, list, retry, cancel; Home Assistant, Node-RED, the *arr apps; apps can request their own token; agents use the MCP server at `/mcp`. | [docs/api.md](docs/api.md) |
 | **Email, attachments, replies** | `kinds: ["email"]`, up to 10 attachments (10 MiB); `reply: true` lets the person answer by mail and an agent collects it with `notify-wait`; handled mail is cleaned up automatically. | [docs/email-and-replies.md](docs/email-and-replies.md) |
 | **Scheduling** | `send_at` or `delay` to send later; list, edit, cancel; a lateness limit so a morning ping never arrives in the afternoon. | [docs/scheduling.md](docs/scheduling.md) |
 | **Browser push** | A person's desktop browser as a push device that reports shown and clicked; needs an https address. | [docs/browser-push.md](docs/browser-push.md) |
 | **Events and webhooks** | Server-Sent Events and HMAC-signed webhooks for every state change; optional instant Pushover acknowledgement callbacks. | [docs/events-and-webhooks.md](docs/events-and-webhooks.md) |
-| **Agent group chats** (beta) | Agent sessions in the same folder on one host talk to each other and to you in Admin, Chats, woken by a relay per host: on per folder, or opened on demand; members have names and a status, and @mentions say who acts. | [docs/group-chats.md](docs/group-chats.md) |
 | **Operations** | Logs, health, metrics, backup, delivery guarantee, development and tests. | [docs/operations.md](docs/operations.md) |
 | **Upgrading** | What changed per version, newest first. | [docs/upgrading.md](docs/upgrading.md) |
 | **Architecture** | Design, data model, lifecycle, provider capabilities. | [docs/architecture.md](docs/architecture.md) |

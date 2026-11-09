@@ -1,7 +1,7 @@
 // Iris management UI. Vanilla JS, no build step.
 
 import { watchSun, nextChange, sunTimes, validPlace } from "./sun.js";
-import { chatMarkdown } from "./chatmd.js";
+import { chatMarkdown, chatPlain } from "./chatmd.js";
 
 const root = document.getElementById("root");
 const dialog = document.getElementById("dialog");
@@ -1799,7 +1799,31 @@ if (window.visualViewport) {
     s.setProperty("--app-top", `${keyboardOpen ? Math.max(0, Math.round(vv.offsetTop)) : 0}px`);
     const el = document.getElementById("chats");
     if (el) chatRosterSize(el); // the keyboard took or gave back room under an open roster
+    debug?.(keyboardOpen);
   };
+  // ?vvdebug=1 (before the #): the numbers iOS gives while the keyboard opens, on the page, for a screenshot
+  let debug = null;
+  if (new URLSearchParams(location.search).has("vvdebug")) {
+    const box = document.createElement("pre");
+    box.style.cssText = "position:fixed;left:4px;z-index:99;margin:0;padding:4px 6px;font:11px/1.3 monospace;"
+      + "background:rgba(0,0,0,.78);color:#fff;border-radius:4px;pointer-events:none;white-space:pre";
+    document.body.append(box);
+    const r = (q) => { const b = document.querySelector(q)?.getBoundingClientRect(); return b ? `${Math.round(b.top)}..${Math.round(b.bottom)}` : "-"; };
+    let last = false;
+    debug = (kb = last) => {
+      last = kb;
+      box.style.top = `${Math.round(vv.offsetTop) + 4}px`;
+      const a = document.activeElement;
+      box.textContent = [`vv ${Math.round(vv.width)}x${Math.round(vv.height)} offsetTop ${Math.round(vv.offsetTop)} pageTop ${Math.round(vv.pageTop)} scale ${vv.scale.toFixed(2)}`,
+        `inner ${innerWidth}x${innerHeight} scrollY ${Math.round(scrollY)} keyboardOpen ${kb}`,
+        `--app-top ${s0("--app-top")} --app-h ${s0("--app-h")}`,
+        `shell ${r(".shell")} composer ${r("#chat-compose")} field ${r("#chat-text")}`,
+        `focus ${a?.id || a?.tagName || "-"}`].join("\n");
+    };
+    const s0 = (v) => document.documentElement.style.getPropertyValue(v) || "-";
+    addEventListener("scroll", () => debug(), { passive: true });
+    setInterval(() => debug(), 500);
+  }
   vv.addEventListener("resize", fit);
   vv.addEventListener("scroll", fit);
   document.addEventListener("focusout", () => setTimeout(fit, 50)); // keyboard gone: back to the top
@@ -1894,7 +1918,7 @@ function chatMembersMini(g) {
 
 function chatGroupRow(g) {
   const lm = g.last_message;
-  const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${lm.text_preview ?? ""}` : "No messages yet";
+  const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${chatPlain(lm.text_preview)}` : "No messages yet";
   return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
       ${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span>
@@ -1907,7 +1931,7 @@ const chatAgentCount = (g) => { const n = (g.members || []).filter((m) => !m.lef
 
 const CHAT_EXCERPT = 120;
 const chatExcerpt = (t) => {
-  const x = String(t ?? "").replace(/\s+/g, " ").trim();
+  const x = chatPlain(t);
   return x.length > CHAT_EXCERPT ? `${x.slice(0, CHAT_EXCERPT)}…` : x;
 };
 const chatMemberLabel = (m) => m.name ? `${m.name} (${CHAT_WHO[m.kind] || m.kind})` : (CHAT_WHO[m.kind] || m.kind);
@@ -1950,7 +1974,7 @@ function chatMessageHtml(m, canReply = false) {
   }
   chats.msgs[m.id] = { author: m.author, member_id: m.member_id, name: m.member_name, text: m.text };
   const quote = m.in_reply_to
-    ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(m.reply_excerpt)}`}</div>`
+    ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(chatPlain(m.reply_excerpt))}`}</div>`
     : "";
   const tag = m.kind === "fyi" ? `<span class="kind-tag fyi" title="Everyone reads it, nobody acts on it">heads-up</span>`
     : m.kind === "all" ? `<span class="kind-tag all" title="Each member acts on it">for everyone</span>`
