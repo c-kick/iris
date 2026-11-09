@@ -2,6 +2,16 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.17.3
+
+No configuration change.
+
+- A phone on its side gets the phone layout (any screen at most 760 px wide, or at most 500 px tall on a touch
+  screen); before, iPhone landscape got the desktop layout with a thread a few lines tall.
+- The Chats page no longer pans, bounces or pulls to refresh when you swipe outside the lists; it follows the
+  visible area only while the keyboard is up.
+- The "Paused…" banner floats over the top of the thread instead of pushing it down.
+
 ## Upgrading to 0.17.2
 
 No configuration change. Chats:

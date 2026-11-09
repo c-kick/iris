@@ -1791,12 +1791,17 @@ if (window.visualViewport) {
     if (vv.scale > 1.01) return; // pinch zoom: keep the layout as it was
     const s = document.documentElement.style;
     s.setProperty("--app-h", `${Math.round(vv.height)}px`);
-    s.setProperty("--app-top", `${Math.max(0, Math.round(vv.offsetTop))}px`);
+    // Follow the visible area's offset only while a keyboard is up (iOS slides the view to show the field then).
+    // Otherwise it is a pan or a bounce of the page, and chasing it moved the whole page on every swipe (landscape).
+    const typing = document.activeElement?.matches?.("textarea, input, [contenteditable]");
+    const keyboardOpen = !!typing && vv.height < window.innerHeight - 80;
+    s.setProperty("--app-top", `${keyboardOpen ? Math.max(0, Math.round(vv.offsetTop)) : 0}px`);
     const el = document.getElementById("chats");
     if (el) chatRosterSize(el); // the keyboard took or gave back room under an open roster
   };
   vv.addEventListener("resize", fit);
   vv.addEventListener("scroll", fit);
+  document.addEventListener("focusout", () => setTimeout(fit, 50)); // keyboard gone: back to the top
   fit();
 }
 const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
@@ -2063,7 +2068,7 @@ function chatRosterToggle(el, open) {
 }
 
 // a wider window has the member list beside the thread, so a roster left open there would float with no button
-matchMedia("(max-width: 760px)").addEventListener("change", () => { const el = document.getElementById("chats"); if (el) chatRosterToggle(el, false); });
+matchMedia("(max-width: 760px), (max-height: 500px) and (hover: none)").addEventListener("change", () => { const el = document.getElementById("chats"); if (el) chatRosterToggle(el, false); });
 
 // "@" in the composer: a list of the members' names (and all) to pick from, filtered as you type
 function chatAtPicker(el, ta, list) {
@@ -2270,8 +2275,8 @@ async function chatOpenThread(el, key, keep = false) {
       <div class="chat-head-note"><button type="button" class="btn quiet" id="chat-limitbtn" hidden title="How many messages each agent may post while this group is paused"></button>
         <span class="hint chat-watch off" id="chat-watch" title="While you're watching, the group does not pause itself"><span class="long">You're watching: no auto-pause</span><span class="short">Watching</span></span></div>
       <button type="button" class="btn" id="chat-pausebtn" hidden></button>
-      <div class="chat-roster" id="chat-roster" role="region" aria-label="Members" hidden></div></div>
-    <div class="chat-paused" id="chat-paused" hidden></div>
+      <div class="chat-roster" id="chat-roster" role="region" aria-label="Members" hidden></div>
+      <div class="chat-paused" id="chat-paused" role="status" hidden></div></div>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
     <form class="chat-compose" id="chat-compose" hidden>
       <div class="chat-replying" id="chat-replying" hidden><span class="rq"></span><button type="button" class="btn quiet" id="chat-reply-cancel" aria-label="Cancel reply">✕</button></div>
@@ -2349,7 +2354,16 @@ async function chatOpenThread(el, key, keep = false) {
   // reading the newest message stays that way when the list gets shorter (keyboard, a longer draft, the reply bar)
   let stick = true;
   box.onscroll = () => { stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40; };
-  if (window.ResizeObserver) new ResizeObserver(() => { if (stick) box.scrollTop = box.scrollHeight; }).observe(box);
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => { if (stick) box.scrollTop = box.scrollHeight; }).observe(box);
+    // the floating "Paused" banner: the thread keeps exactly its height free at the top (it wraps on a phone),
+    // and a thread showing the newest message keeps showing it when the banner comes or goes
+    const banner = pane.querySelector("#chat-paused");
+    new ResizeObserver(() => {
+      pane.style.setProperty("--paused-h", `${banner.offsetHeight}px`);
+      if (stick) box.scrollTop = box.scrollHeight;
+    }).observe(banner);
+  }
   const form = pane.querySelector("#chat-compose");
   const ta = form.querySelector("textarea");
   ta.value = chats.composeDraft;

@@ -174,7 +174,7 @@ code, .mono { font-family: var(--mono); font-size: .86em; }
 .scope { font: 400 .76rem/1.4 var(--mono); color: var(--muted); margin-top: .3rem; font-variant-numeric: tabular-nums; }
 .scope b { color: var(--ink); font-weight: 500; }
 
-@media (max-width: 760px) {
+@media (max-width: 760px), (max-height: 500px) and (hover: none) {
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
   .side {
     position: sticky; top: 0; z-index: 5; height: auto; overflow: visible;
@@ -193,7 +193,9 @@ code, .mono { font-family: var(--mono); font-size: .86em; }
   .main { padding-top: 1.2rem; }
   h2 { font-size: 1.35rem; }
 }
-@media (min-width: 761px) { .side .top .signout { display: none; } }
+/* "phone" everywhere below: a narrow screen, or a short touch screen (a phone on its side gets the phone layout) */
+.side .top .signout { display: none; }
+@media (max-width: 760px), (max-height: 500px) and (hover: none) { .side .top .signout { display: inline-flex; } }
 
 /* ---------- signal path: the one bold element ---------- */
 .path {
@@ -216,7 +218,7 @@ code, .mono { font-family: var(--mono); font-size: .86em; }
 .hop .name span.label { position: relative; z-index: 1; background: var(--surface); padding-right: .35rem; }
 .hop-list { display: flex; flex-direction: column; }
 .hop .btn.quiet { padding: 0; min-height: 0; }
-@media (max-width: 760px) {
+@media (max-width: 760px), (max-height: 500px) and (hover: none) {
   .path { grid-template-columns: 1fr; gap: 1.1rem; }
   .hop .kind { padding-left: calc(10px + .55rem); }
   .hop::after { left: 4px; right: auto; top: 1.9rem; width: 2px; height: calc(100% - .5rem); }
@@ -467,6 +469,8 @@ details.delivery summary:hover { color: var(--ink); }
 /* ---------- chats ---------- */
 /* The Chats page fills the viewport: only the folder list and the message list scroll, never the page.
    It is pinned to the visible area (app.js tracks it), so an open phone keyboard never covers the composer. */
+/* nothing outside the lists may move the page: no pan, no rubber band, no pull-to-refresh (iOS landscape) */
+html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-behavior: none; }
 .shell:has(.chats) {
   position: fixed; left: 0; right: 0; top: var(--app-top, 0px);
   height: 100vh; height: var(--app-h, 100dvh); min-height: 0; overflow: hidden;
@@ -483,7 +487,7 @@ details.delivery summary:hover { color: var(--ink); }
   flex: 1 1 auto; min-height: 0;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); overflow: hidden; box-shadow: var(--shadow-panel);
 }
-.chat-list { background: var(--sunken); border-right: 1px solid var(--line); overflow: auto; min-width: 0; }
+.chat-list { background: var(--sunken); border-right: 1px solid var(--line); overflow: auto; min-width: 0; overscroll-behavior: contain; }
 .chat-row {
   all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: .1rem; width: 100%;
   padding: .7rem .9rem; border-bottom: 1px solid var(--line-soft); cursor: pointer;
@@ -515,7 +519,7 @@ details.delivery summary:hover { color: var(--ink); }
 /* back on the tab: a pill floats over the thread while it catches up (placed by chatSync in app.js) */
 .chats { position: relative; }
 .chat-sync {
-  position: absolute; z-index: 6; transform: translateX(-50%); pointer-events: none;
+  position: absolute; z-index: 8; transform: translateX(-50%); pointer-events: none;
   display: inline-flex; align-items: center; gap: .45rem; padding: .3rem .75rem; border-radius: 999px;
   font-size: .78rem; font-weight: 500; color: var(--action); background: var(--surface);
   border: 1px solid color-mix(in srgb, var(--action) 35%, var(--line)); box-shadow: var(--shadow-float);
@@ -549,7 +553,8 @@ details.delivery summary:hover { color: var(--ink); }
 .chat-head { position: relative; }
 .chat-roster {
   position: absolute; z-index: 7; top: calc(100% + 4px); left: .5rem; right: .5rem;
-  max-height: min(65vh, calc(var(--app-h, 100dvh) - 9rem)); overflow: auto; overscroll-behavior: contain;
+  max-height: min(65vh, calc(var(--app-h, 100dvh) - 9rem)); overflow: auto;
+  overscroll-behavior: contain;
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); box-shadow: var(--shadow-float);
 }
 .chat-roster[hidden] { display: none; }
@@ -571,17 +576,26 @@ details.delivery summary:hover { color: var(--ink); }
 .cf-name small { color: var(--muted); font-size: .76rem; }
 .cf-row > .btn { min-width: 7.2rem; justify-content: center; }
 .cf-edit { display: inline-flex; gap: .2rem; min-width: 7.6rem; justify-content: flex-end; }
-@media (max-width: 760px) { .cf-edit:empty { display: none; } }
+@media (max-width: 760px), (max-height: 500px) and (hover: none) { .cf-edit:empty { display: none; } }
 .cf-edit .btn { font-size: .8rem; padding-inline: .5rem; }
 .chat-mini .mini { display: inline-flex; align-items: center; gap: .25rem; margin-right: .55rem; font-size: .76rem; color: var(--muted); }
 @media (prefers-reduced-motion: no-preference) {
   .cm.flash { animation: cm-flash 1.4s ease-out; }
   @keyframes cm-flash { from { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 45%, transparent); } to { box-shadow: 0 0 0 3px transparent; } }
 }
-.chat-paused { padding: .45rem 1rem; color: var(--warn); background: var(--warn-wash); border-bottom: 1px solid var(--line); font-size: .86rem; }
+/* paused: a banner floating over the top of the thread (inside the header, which positions it), so nothing moves;
+   the thread gets matching room at its top, which only shows when it is scrolled all the way up */
+.chat-paused {
+  position: absolute; z-index: 6; top: 100%; left: 0; right: 0; padding: .45rem 1rem; font-size: .86rem;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, var(--surface)); border-bottom: 1px solid var(--line);
+  box-shadow: 0 6px 14px -10px rgba(0, 0, 0, .35);
+}
+.chat-pane:has(.chat-paused:not([hidden])) .chat-msgs { padding-top: calc(var(--paused-h, 3.6rem) + .6rem); }
+/* an open member list covers the banner whole, never half */
+.chat-head:has(.chat-roster:not([hidden])) .chat-paused { visibility: hidden; }
 /* A message: who (in their colour), what they said (the reading face, the loudest thing here), then a quiet
    foot with Reply on the left and the time and read dot on the right. */
-.chat-msgs { flex: 1; overflow: auto; background: var(--sunken); padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .75rem; min-height: 0; }
+.chat-msgs { flex: 1; overflow: auto; background: var(--sunken); padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .75rem; min-height: 0; overscroll-behavior: contain; }
 .cm {
   align-self: flex-start; max-width: min(78%, 46rem); padding: .55rem .9rem .4rem; border-radius: 4px 14px 14px 14px;
   background: var(--surface); border: 1px solid var(--line-soft); overflow-wrap: anywhere; font-size: .92rem;
@@ -670,7 +684,7 @@ details.delivery summary:hover { color: var(--ink); }
 .chat-compose .form-error:empty { display: none; }
 .chat-readonly { padding: .65rem 1rem; border-top: 1px solid var(--line); background: var(--surface); }
 .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-@media (max-width: 760px) {
+@media (max-width: 760px), (max-height: 500px) and (hover: none) {
   /* edge to edge under the top bar: no page padding, no card border */
   .shell:has(.chats) { grid-template-rows: auto minmax(0, 1fr); }
   .main:has(.chats) { padding: 0; }

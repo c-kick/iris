@@ -15,7 +15,7 @@ def _rule(selector: str, css: str = CSS) -> str:
 
 
 def _mobile() -> str:
-    start = CSS.index("@media (max-width: 760px) {\n  /* edge to edge")
+    start = CSS.index("@media (max-width: 760px), (max-height: 500px) and (hover: none) {\n  /* edge to edge")
     return CSS[start:CSS.index("\n}\n", start)]
 
 
@@ -121,7 +121,7 @@ def test_roster_cleans_up_wherever_the_pane_goes():
     opener = _fn("async function chatOpen(")
     assert "chatRosterToggle(el, false)" in opener, "closed before the pane is replaced"
     assert "chatRosterToggle(el, false)" in _fn("async function chatsPage")
-    assert 'matchMedia("(max-width: 760px)")' in JS
+    assert 'matchMedia("(max-width: 760px), (max-height: 500px) and (hover: none)")' in JS
 
 
 def test_refresh_does_not_race_opening_a_thread_and_reports_failures():
@@ -138,3 +138,39 @@ def test_owner_presence_counts_real_input_only():
 
 def test_pause_button_keeps_its_width():
     assert "min-width" in _rule("#chat-pausebtn")
+
+
+def test_chats_page_never_pans_or_bounces():
+    # landscape iPhone: a swipe on the header or composer dragged the whole document (and the shell, pinned to
+    # visualViewport.offsetTop, chased it down), and a pull at the top refreshed the page
+    rule = _rule("html:has(.chats), body:has(.chats)")
+    assert "overflow: hidden" in rule and "overscroll-behavior: none" in rule
+    for sel in (".chat-msgs", ".chat-list", ".chat-roster"):
+        assert "overscroll-behavior: contain" in _rule(sel), sel
+    fit = JS[JS.index("if (window.visualViewport) {"):JS.index("const chatUnread")]
+    assert "keyboardOpen" in fit, "the offset is followed only while the keyboard is open"
+
+
+def test_paused_banner_floats_over_the_thread():
+    # the last child of the header (position: relative), so showing it moves nothing under it
+    assert re.search(r'<div class="chat-paused" id="chat-paused" role="status" hidden></div></div>\s*<div class="chat-msgs"', JS)
+    rule = _rule(".chat-paused")
+    assert "position: absolute" in rule and "top: 100%" in rule
+
+
+def test_a_phone_on_its_side_gets_the_phone_layout():
+    # iPhone landscape is 844 wide: by width alone it got the desktop layout with a thread a few lines tall
+    assert "@media (max-width: 760px) {" not in CSS and "(max-width: 760px) {" not in CSS
+    assert CSS.count("@media (max-width: 760px), (max-height: 500px) and (hover: none) {") >= 3
+
+
+def test_paused_banner_review_fixes():
+    sync = int(re.search(r"z-index: (\d+)", _rule(".chat-sync")).group(1))
+    banner = int(re.search(r"z-index: (\d+)", _rule(".chat-paused")).group(1))
+    assert sync > banner, "the Updating pill shows over the banner"
+    assert "var(--paused-h" in CSS, "the thread's top room is the banner's measured height, not a guess"
+    thread = _fn("async function chatOpenThread")
+    assert "--paused-h" in thread and "if (stick) box.scrollTop = box.scrollHeight" in thread[thread.index("--paused-h") - 300:]
+    assert ".chat-head:has(.chat-roster:not([hidden])) .chat-paused" in CSS
+    # sign-out in the top bar: hidden by default, shown only by the phone query (no gap between two queries)
+    assert "(min-width: 761px)" not in CSS
