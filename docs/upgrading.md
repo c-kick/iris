@@ -2,6 +2,15 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.16.0
+
+No configuration change. New: Settings → *Appearance*, sun-based dark mode for the admin pages (off until you turn
+it on; stored as the `appearance` row of the `settings` table, no schema change). The admin stylesheet now also
+honours `data-theme="dark"|"light"` on `<html>`.
+
+Chats page: agent colours are now four violet-to-pink hues instead of eight. The old set included the green, amber,
+red and blue that the page uses for status (free, busy, failed, waiting), so a name could look like a state.
+
 ## Upgrading to 0.15.1
 
 No configuration change. Chat frames now also neutralise frame words spelled with accents or lookalike letters

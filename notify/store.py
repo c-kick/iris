@@ -159,6 +159,21 @@ class ConfigStore:
         v = loads(row["value"])
         return hmac.compare_digest(self._hash_password(password, bytes.fromhex(v["salt"])), v["hash"])
 
+    # --- admin account preferences ---
+    # sun-based dark mode for the admin pages: off until the owner turns it on; the default place is Houten (NL)
+    APPEARANCE_DEFAULT = {"sun_dark": False, "latitude": 52.0281, "longitude": 5.1686}
+
+    def appearance(self) -> dict[str, Any]:
+        row = self.db.one("SELECT value FROM settings WHERE key='appearance'")
+        saved = loads(row["value"]) if row else {}
+        return {**self.APPEARANCE_DEFAULT, **{k: saved[k] for k in self.APPEARANCE_DEFAULT if k in saved}}
+
+    def set_appearance(self, value: dict[str, Any]) -> None:
+        with self.db.tx() as c:
+            c.execute("INSERT INTO settings(key, value, updated_at) VALUES ('appearance', ?, ?)"
+                      " ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                      (dumps({k: value[k] for k in self.APPEARANCE_DEFAULT}), now_iso()))
+
     def new_setup_code(self) -> str:
         code = "-".join(secrets.token_hex(3) for _ in range(3))
         with self.db.tx() as c:

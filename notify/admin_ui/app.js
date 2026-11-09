@@ -1,5 +1,7 @@
 // Iris management UI. Vanilla JS, no build step.
 
+import { watchSun, nextChange, sunTimes, validPlace } from "./sun.js";
+
 const root = document.getElementById("root");
 const dialog = document.getElementById("dialog");
 const toastEl = document.getElementById("toast");
@@ -366,7 +368,45 @@ async function boot() {
 
 async function refresh() {
   state = await api("GET", "/state");
+  applyAppearance(state.appearance);
   render();
+}
+
+// Sun-based dark mode (Settings > Appearance, stored with the admin account): while on, the page is dark from sunset
+// to sunrise at the chosen place, whatever the device's own setting; off, it follows the device. The last choice and
+// how long it holds are cached in this browser so theme-boot.js can apply it before the first paint.
+let stopSun = null;
+let appearanceKey = "";
+const THEME_CACHE = "iris.theme";
+
+function applyAppearance(a) {
+  const key = JSON.stringify(a || {});
+  if (key === appearanceKey) return; // unchanged: keep the running schedule
+  appearanceKey = key;
+  if (stopSun) { stopSun(); stopSun = null; }
+  const el = document.documentElement;
+  if (!a?.sun_dark || !validPlace(a.latitude, a.longitude)) {
+    delete el.dataset.theme;
+    try { localStorage.removeItem(THEME_CACHE); } catch { /* storage blocked */ }
+    return;
+  }
+  stopSun = watchSun({
+    latitude: a.latitude, longitude: a.longitude,
+    onChange: (dark) => {
+      el.dataset.theme = dark ? "dark" : "light";
+      const next = nextChange(new Date(), a.latitude, a.longitude);
+      const until = next ? next.getTime() : Date.now() + 6 * 3600 * 1000; // polar day/night: look again later
+      try { localStorage.setItem(THEME_CACHE, JSON.stringify({ theme: el.dataset.theme, until })); } catch { /* storage blocked */ }
+    },
+  });
+}
+
+function sunLine(lat, lon) {
+  if (!validPlace(lat, lon)) return "Enter a latitude from -90 to 90 and a longitude from -180 to 180.";
+  const t = sunTimes(new Date(), lat, lon);
+  if (t.polar) return t.polar === "day" ? "Here the sun does not set today: the pages stay light." : "Here the sun does not rise today: the pages stay dark.";
+  const hm = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return `Today at this place: sunrise ${hm(t.sunrise)}, sunset ${hm(t.sunset)} (this device's time zone).`;
 }
 
 function render() {
@@ -752,6 +792,18 @@ const VIEWS = {
       <div class="section-head"><h2>Settings</h2></div>
       <div class="block"><h3>Admin password</h3><p class="hint">Changing it signs out every other browser.</p>
         <button class="btn" id="pw">Change password</button></div>
+      <div class="block"><h3>Appearance</h3>
+        <p class="hint">Off: the pages follow this device's light or dark setting. On: dark from sunset to sunrise at the place below, on every browser you sign in with.</p>
+        <form class="stack" id="appearance">
+          ${fieldHtml({ name: "sun_dark", label: "Dark mode from sunset to sunrise", kind: "check", value: state.appearance.sun_dark })}
+          <div class="place">
+            ${fieldHtml({ name: "latitude", label: "Latitude", kind: "text", value: state.appearance.latitude, help: "Decimal degrees, north positive." })}
+            ${fieldHtml({ name: "longitude", label: "Longitude", kind: "text", value: state.appearance.longitude, help: "Decimal degrees, east positive." })}
+          </div>
+          <p class="hint" id="sun-today"></p>
+          <div class="form-error" role="alert"></div>
+          <div class="form-actions"><button class="btn" type="button" id="houten">Use Houten</button><button class="btn primary" type="submit">Save appearance</button></div>
+        </form></div>
       <div class="block"><h3>Access requests</h3>
         <form class="stack" id="reg">
           ${fieldHtml({ name: "enabled", label: "Let apps ask for access themselves", kind: "check", value: r.enabled })}
@@ -797,6 +849,25 @@ const VIEWS = {
           <div class="form-error" role="alert"></div>
           <div class="form-actions"><button class="btn primary" type="submit">Save settings</button></div>
         </form></div>`;
+    const ap = main.querySelector("#appearance");
+    const place = () => [Number(ap.elements.latitude.value.trim().replace(",", ".")), Number(ap.elements.longitude.value.trim().replace(",", "."))];
+    const showSun = () => { const [la, lo] = place(); ap.querySelector("#sun-today").textContent = sunLine(la, lo); };
+    ap.elements.latitude.inputMode = ap.elements.longitude.inputMode = "decimal";
+    ap.elements.latitude.oninput = ap.elements.longitude.oninput = showSun;
+    showSun();
+    ap.querySelector("#houten").onclick = () => { ap.elements.latitude.value = "52.0281"; ap.elements.longitude.value = "5.1686"; showSun(); };
+    ap.onsubmit = async (e) => {
+      e.preventDefault();
+      const err = ap.querySelector(".form-error");
+      err.textContent = "";
+      const [latitude, longitude] = place();
+      if (!validPlace(latitude, longitude)) { err.textContent = sunLine(latitude, longitude); return; }
+      try {
+        state.appearance = await api("PUT", "/appearance", { sun_dark: ap.elements.sun_dark.checked, latitude, longitude });
+        applyAppearance(state.appearance);
+        toast(state.appearance.sun_dark ? "Dark mode now follows the sun" : "Pages follow this device's setting again");
+      } catch (x) { err.textContent = x.message; }
+    };
     main.querySelector("#pw").onclick = () => openForm({
       title: "Change password",
       fields: [{ name: "current", label: "Current password", kind: "secret" },
@@ -1751,8 +1822,10 @@ function chatMembersText(g) {
   return here.length ? `Here now: ${here.join(", ")}` : "Nobody here";
 }
 
-// ---- one colour per agent: 8 distinct ones by join order within its chat (the first 8 members never share one)
-const CHAT_COLORS = 8;
+// ---- one colour per agent, by join order within its chat (the first 4 members never share one). Only violet to pink:
+// green, amber, red, blue and teal mean a status or an action on this page, orange and blue the Claude/Codex kinds,
+// so a name never looks like a state (tests/test_appearance.py keeps the hues apart)
+const CHAT_COLORS = 4;
 function chatLearnColors(g) {
   (g?.members || []).forEach((m, i) => { chats.colors[m.id] = i % CHAT_COLORS; });
 }

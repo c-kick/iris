@@ -10,6 +10,12 @@
 - Reply mailbox: *Providers* → *Manage…* in the admin UI (also linked from the size alert) shows the Processed and Quarantine folders, the cleanup
   settings and the last run; the poll, the connection test and cleanup share one lock per mailbox, so only one IMAP
   session of Iris acts on it at a time.
+- Appearance: Settings → *Appearance* turns on dark mode from sunset to sunrise for the admin pages (off by default;
+  default place Houten, 52.0281 N 5.1686 E). It is stored with the admin account (`GET`/`PUT /admin/api/appearance`,
+  also in `/admin/api/state`), so every signed-in browser follows it; off, the pages follow the device's own light/dark
+  setting. Sunrise and sunset are computed in the browser (`admin_ui/sun.js`, NOAA equations, no network), which also
+  caches its last choice so the next page load starts in the right theme (`theme-boot.js`). `sun.js` has no imports
+  and can be copied into another app unchanged.
 - Reverse proxy: list its address in Settings → *Trusted reverse proxies* (`server.trusted_proxies`, signed-in page
   only). From those peers only, the client's address comes from `X-Forwarded-For` (the nearest hop that is not a trusted
   proxy) and the scheme from `X-Forwarded-Proto`; the login, decision-link and registration limits then count per

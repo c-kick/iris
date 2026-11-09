@@ -231,6 +231,7 @@ def _state(request: Request) -> dict[str, Any]:
                 {"id": r["id"], "host": urlsplit(r["url"]).netloc[-200:], "last_error": r["last_error"]})
     return {
         "version": __version__,
+        "appearance": _store(request).appearance(),
         "pending_registrations": pending,
         "scheduled_count": sum(per_client.values()),
         "config": masked,
@@ -247,6 +248,26 @@ def _state(request: Request) -> dict[str, Any]:
         "scopes": [s.value for s in Scope],
         "stats": svc.stats(),
     }
+
+
+class AppearanceIn(BaseModel):
+    """The admin account's appearance: dark from sunset to sunrise at this place, when sun_dark is on."""
+    model_config = ConfigDict(extra="forbid", strict=True)
+    sun_dark: bool
+    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
+    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+
+
+@router.get("/api/appearance")
+async def get_appearance(request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
+    return _store(request).appearance()
+
+
+@router.put("/api/appearance")
+async def put_appearance(body: AppearanceIn, request: Request, _: Client = Depends(admin)) -> dict[str, Any]:
+    store = _store(request)
+    store.set_appearance(body.model_dump())
+    return store.appearance()
 
 
 @router.get("/api/state")
