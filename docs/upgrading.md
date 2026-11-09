@@ -2,6 +2,12 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.16.2
+
+Settings → *Appearance* has no default place any more: latitude and longitude stay empty until you enter them, and
+the sun-based dark mode can only be turned on with both. A place you already saved is kept. `sun.js` exports
+`GREENWICH` (a reference place for examples) instead of a town constant.
+
 ## Upgrading to 0.16.1
 
 Settings → *Appearance* no longer has a button that fills in one particular place; type the latitude and longitude.

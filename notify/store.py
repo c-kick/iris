@@ -160,8 +160,8 @@ class ConfigStore:
         return hmac.compare_digest(self._hash_password(password, bytes.fromhex(v["salt"])), v["hash"])
 
     # --- admin account preferences ---
-    # sun-based dark mode for the admin pages: off until the owner turns it on; the default place is Houten (NL)
-    APPEARANCE_DEFAULT = {"sun_dark": False, "latitude": 52.0281, "longitude": 5.1686}
+    # sun-based dark mode for the admin pages: off until the owner turns it on, with no place until they enter one
+    APPEARANCE_DEFAULT = {"sun_dark": False, "latitude": None, "longitude": None}
 
     def appearance(self) -> dict[str, Any]:
         row = self.db.one("SELECT value FROM settings WHERE key='appearance'")

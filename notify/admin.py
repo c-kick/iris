@@ -14,11 +14,11 @@ import secrets
 import time
 from urllib.parse import urlsplit
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from . import __version__, timeline
 from .auth import hash_token, new_token
@@ -251,11 +251,20 @@ def _state(request: Request) -> dict[str, Any]:
 
 
 class AppearanceIn(BaseModel):
-    """The admin account's appearance: dark from sunset to sunrise at this place, when sun_dark is on."""
+    """The admin account's appearance: dark from sunset to sunrise at this place, when sun_dark is on. There is no
+    default place: both coordinates are null until the owner enters them, and turning it on needs them."""
     model_config = ConfigDict(extra="forbid", strict=True)
     sun_dark: bool
-    latitude: float = Field(ge=-90, le=90, allow_inf_nan=False)
-    longitude: float = Field(ge=-180, le=180, allow_inf_nan=False)
+    latitude: Annotated[float, Field(ge=-90, le=90, allow_inf_nan=False)] | None
+    longitude: Annotated[float, Field(ge=-180, le=180, allow_inf_nan=False)] | None
+
+    @model_validator(mode="after")
+    def _place(self) -> "AppearanceIn":
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("give both latitude and longitude, or neither")
+        if self.sun_dark and self.latitude is None:
+            raise ValueError("dark mode from sunset to sunrise needs a place: latitude and longitude")
+        return self
 
 
 @router.get("/api/appearance")

@@ -3,7 +3,8 @@
 // Times come from the NOAA solar equations (accurate to a minute or two at mid latitudes); sunrise and sunset are
 // when the sun's upper edge crosses the horizon (zenith 90.833 degrees, refraction included).
 
-export const HOUTEN = Object.freeze({ latitude: 52.0281, longitude: 5.1686 }); // Houten, The Netherlands
+// a reference place for examples and tests (the Royal Observatory, Greenwich); never a default for anyone
+export const GREENWICH = Object.freeze({ latitude: 51.4779, longitude: -0.0015 });
 
 const RAD = Math.PI / 180;
 const DAY_MS = 86400000;

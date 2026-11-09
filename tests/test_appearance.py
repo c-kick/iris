@@ -1,4 +1,4 @@
-"""Appearance: sun-based dark mode for the admin account (off by default, Houten as the default place)."""
+"""Appearance: sun-based dark mode for the admin account (off by default, no default place)."""
 
 from __future__ import annotations
 
@@ -15,13 +15,20 @@ from tests.test_admin import H, fresh, setup_admin  # noqa: F401  (fixture re-ex
 
 ROOT = Path(__file__).resolve().parent.parent
 UI = ROOT / "notify" / "admin_ui"
-HOUTEN = {"sun_dark": False, "latitude": 52.0281, "longitude": 5.1686}
+NEUTRAL = {"sun_dark": False, "latitude": None, "longitude": None}
 
 
-def test_appearance_defaults_off_with_houten(fresh):
+def test_appearance_defaults_off_without_a_place(fresh):
     b = setup_admin(fresh())
-    assert b.get("/admin/api/state").json()["appearance"] == HOUTEN
-    assert b.get("/admin/api/appearance").json() == HOUTEN
+    assert b.get("/admin/api/state").json()["appearance"] == NEUTRAL
+    assert b.get("/admin/api/appearance").json() == NEUTRAL
+
+
+def test_appearance_off_may_have_no_place_and_keeps_one_it_has(fresh):
+    b = setup_admin(fresh())
+    assert b.put("/admin/api/appearance", json=NEUTRAL, headers=H).json() == NEUTRAL
+    kept = {"sun_dark": False, "latitude": 40.71, "longitude": -74.01}
+    assert b.put("/admin/api/appearance", json=kept, headers=H).json() == kept
 
 
 def test_appearance_saved_for_the_account_and_survives_restart(fresh):
@@ -44,11 +51,13 @@ def test_appearance_saved_for_the_account_and_survives_restart(fresh):
     {"sun_dark": True, "latitude": "52,03", "longitude": 5},
     {"sun_dark": True, "latitude": 52},
     {"sun_dark": True, "latitude": 52, "longitude": 5, "extra": 1},
+    {"sun_dark": True, "latitude": None, "longitude": None},   # on needs a place
+    {"sun_dark": False, "latitude": 52, "longitude": None},    # both or neither
 ])
 def test_appearance_rejects_bad_places(fresh, body):
     b = setup_admin(fresh())
     assert b.put("/admin/api/appearance", json=body, headers=H).status_code == 422
-    assert b.get("/admin/api/appearance").json() == HOUTEN
+    assert b.get("/admin/api/appearance").json() == NEUTRAL
 
 
 def test_appearance_rejects_nan(fresh):
@@ -62,7 +71,7 @@ def test_appearance_needs_admin_and_csrf(fresh):
     srv = fresh()
     b = setup_admin(srv)
     assert httpx.get(f"{srv.url}/admin/api/appearance").status_code == 401
-    assert b.put("/admin/api/appearance", json={**HOUTEN, "sun_dark": True}).status_code in (400, 403)
+    assert b.put("/admin/api/appearance", json={"sun_dark": True, "latitude": 52, "longitude": 5}).status_code in (400, 403)
     send_tok = b.post("/admin/api/clients/sender", json={"scopes": ["send"]}, headers=H).json()["token"]
     no = httpx.get(f"{srv.url}/admin/api/appearance", headers={"Authorization": f"Bearer {send_tok}"})
     assert no.status_code == 403
@@ -117,20 +126,21 @@ def _node(script: str):
 
 
 @pytest.mark.skipif(not NODE, reason="node not installed")
-def test_sun_times_houten_match_published_values():
-    # reference times for Utrecht/Houten (almanac values, rounded to the minute), Europe/Amsterdam; NOAA: within 3 minutes
+def test_sun_times_greenwich_match_reference_values():
+    # London/Greenwich solstice times (rounded to the minute, Europe/London); NOAA equations: within 3 minutes.
+    # At the March equinox the day is a little over 12 hours (refraction and the sun's disc).
     res = _node("""
-        import { sunTimes, HOUTEN as H } from "./sun.js";
-        const f = (d) => d.toLocaleTimeString("en-GB", { timeZone: "Europe/Amsterdam", hour: "2-digit", minute: "2-digit" });
+        import { sunTimes, GREENWICH as G } from "./sun.js";
+        const f = (d) => d.toLocaleTimeString("en-GB", { timeZone: "Europe/London", hour: "2-digit", minute: "2-digit" });
         const out = {};
-        for (const day of ["2026-06-21", "2026-12-21", "2026-03-20", "2026-11-09"]) {
-          const t = sunTimes(new Date(day + "T12:00:00Z"), H.latitude, H.longitude);
+        for (const day of ["2026-06-21", "2026-12-21"]) {
+          const t = sunTimes(new Date(day + "T12:00:00Z"), G.latitude, G.longitude);
           out[day] = [f(t.sunrise), f(t.sunset)];
         }
-        console.log(JSON.stringify({ out, H }));""")
-    assert res["H"] == {"latitude": 52.0281, "longitude": 5.1686}
-    want = {"2026-06-21": ("05:17", "22:04"), "2026-12-21": ("08:46", "16:29"),
-            "2026-03-20": ("06:44", "18:53"), "2026-11-09": ("07:47", "17:00")}
+        const eq = sunTimes(new Date("2026-03-20T12:00:00Z"), G.latitude, G.longitude);
+        console.log(JSON.stringify({ out, G, equinoxMinutes: (eq.sunset - eq.sunrise) / 60000 }));""")
+    assert res["G"] == {"latitude": 51.4779, "longitude": -0.0015}
+    want = {"2026-06-21": ("04:43", "21:21"), "2026-12-21": ("08:04", "15:53")}
 
     def minutes(hhmm):
         h, m = hhmm.split(":")
@@ -138,27 +148,28 @@ def test_sun_times_houten_match_published_values():
     for day, (rise, sset) in want.items():
         got = res["out"][day]
         assert abs(minutes(got[0]) - minutes(rise)) <= 3 and abs(minutes(got[1]) - minutes(sset)) <= 3, (day, got)
+    assert 720 <= res["equinoxMinutes"] <= 740
 
 
 @pytest.mark.skipif(not NODE, reason="node not installed")
 def test_is_dark_and_next_change_around_the_clock_and_at_the_poles():
     res = _node("""
         import { isDarkAt, nextChange, sunTimes, validPlace } from "./sun.js";
-        const H = [52.0281, 5.1686], S = [-33.87, 151.21], N = [78.22, 15.65];
+        const G = [51.4779, -0.0015], S = [-33.87, 151.21], N = [78.22, 15.65];
         const at = (s) => new Date(s);
         console.log(JSON.stringify({
-          houtenNight: isDarkAt(at("2026-11-09T22:00:00Z"), ...H),
-          houtenNoon: isDarkAt(at("2026-11-09T11:00:00Z"), ...H),
-          houtenBeforeDawn: isDarkAt(at("2026-11-09T05:00:00Z"), ...H),
-          next: nextChange(at("2026-11-09T22:00:00Z"), ...H).toISOString(),
+          greenwichNight: isDarkAt(at("2026-11-09T22:00:00Z"), ...G),
+          greenwichNoon: isDarkAt(at("2026-11-09T12:00:00Z"), ...G),
+          greenwichBeforeDawn: isDarkAt(at("2026-11-09T05:00:00Z"), ...G),
+          next: nextChange(at("2026-11-09T22:00:00Z"), ...G).toISOString(),
           sydneyLocalNight: isDarkAt(at("2026-06-21T12:00:00Z"), ...S),
           polarDay: [sunTimes(at("2026-06-21T12:00:00Z"), ...N).polar, isDarkAt(at("2026-06-21T23:00:00Z"), ...N),
                      nextChange(at("2026-06-21T12:00:00Z"), ...N)],
           polarNight: [sunTimes(at("2026-12-21T12:00:00Z"), ...N).polar, isDarkAt(at("2026-12-21T12:00:00Z"), ...N)],
           valid: [validPlace(52, 5), validPlace(90, -180), validPlace(91, 0), validPlace(0, 181), validPlace(NaN, 0)],
         }));""")
-    assert res["houtenNight"] is True and res["houtenNoon"] is False and res["houtenBeforeDawn"] is True
-    assert res["next"].startswith("2026-11-10T06:4")  # the next sunrise, ~07:48 local
+    assert res["greenwichNight"] is True and res["greenwichNoon"] is False and res["greenwichBeforeDawn"] is True
+    assert res["next"].startswith("2026-11-10T07:")  # the next sunrise, a little after 07:00 UTC
     assert res["sydneyLocalNight"] is True
     assert res["polarDay"] == ["day", False, None]
     assert res["polarNight"] == ["night", True]
@@ -240,3 +251,11 @@ def test_appearance_form_has_no_place_preset_button():
     js = (UI / "app.js").read_text()
     form = js[js.index('<form class="stack" id="appearance">'):js.index("</form>", js.index('id="appearance"'))]
     assert form.count("<button") == 1 and 'type="submit"' in form
+
+
+def test_no_personal_place_in_the_shipped_code_or_docs():
+    # an open-source project: no default town, no preset for one
+    for path in [*(ROOT / "notify").rglob("*.*"), *ROOT.glob("docs/*.md"), ROOT / "README.md"]:
+        if path.suffix in (".py", ".js", ".css", ".html", ".md", ".yaml"):
+            text = path.read_text(errors="replace").lower()
+            assert "houten" not in text and "52.0281" not in text, path

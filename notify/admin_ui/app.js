@@ -402,6 +402,7 @@ function applyAppearance(a) {
 }
 
 function sunLine(lat, lon) {
+  if (lat === null && lon === null) return "Enter the latitude and longitude of your place to use this.";
   if (!validPlace(lat, lon)) return "Enter a latitude from -90 to 90 and a longitude from -180 to 180.";
   const t = sunTimes(new Date(), lat, lon);
   if (t.polar) return t.polar === "day" ? "Here the sun does not set today: the pages stay light." : "Here the sun does not rise today: the pages stay dark.";
@@ -797,8 +798,8 @@ const VIEWS = {
         <form class="stack" id="appearance">
           ${fieldHtml({ name: "sun_dark", label: "Dark mode from sunset to sunrise", kind: "check", value: state.appearance.sun_dark })}
           <div class="place">
-            ${fieldHtml({ name: "latitude", label: "Latitude", kind: "text", value: state.appearance.latitude, help: "Decimal degrees, north positive." })}
-            ${fieldHtml({ name: "longitude", label: "Longitude", kind: "text", value: state.appearance.longitude, help: "Decimal degrees, east positive." })}
+            ${fieldHtml({ name: "latitude", label: "Latitude", kind: "text", value: state.appearance.latitude ?? "", placeholder: "e.g. 51.4779", help: "Decimal degrees, north positive." })}
+            ${fieldHtml({ name: "longitude", label: "Longitude", kind: "text", value: state.appearance.longitude ?? "", placeholder: "e.g. -0.0015", help: "Decimal degrees, east positive." })}
           </div>
           <p class="hint" id="sun-today"></p>
           <div class="form-error" role="alert"></div>
@@ -850,7 +851,8 @@ const VIEWS = {
           <div class="form-actions"><button class="btn primary" type="submit">Save settings</button></div>
         </form></div>`;
     const ap = main.querySelector("#appearance");
-    const place = () => [Number(ap.elements.latitude.value.trim().replace(",", ".")), Number(ap.elements.longitude.value.trim().replace(",", "."))];
+    const coord = (el) => { const v = el.value.trim().replace(",", "."); return v === "" ? null : Number(v); };
+    const place = () => [coord(ap.elements.latitude), coord(ap.elements.longitude)];
     const showSun = () => { const [la, lo] = place(); ap.querySelector("#sun-today").textContent = sunLine(la, lo); };
     ap.elements.latitude.inputMode = ap.elements.longitude.inputMode = "decimal";
     ap.elements.latitude.oninput = ap.elements.longitude.oninput = showSun;
@@ -860,7 +862,8 @@ const VIEWS = {
       const err = ap.querySelector(".form-error");
       err.textContent = "";
       const [latitude, longitude] = place();
-      if (!validPlace(latitude, longitude)) { err.textContent = sunLine(latitude, longitude); return; }
+      const none = latitude === null && longitude === null;
+      if (!(none && !ap.elements.sun_dark.checked) && !validPlace(latitude, longitude)) { err.textContent = sunLine(latitude, longitude); return; }
       try {
         state.appearance = await api("PUT", "/appearance", { sun_dark: ap.elements.sun_dark.checked, latitude, longitude });
         applyAppearance(state.appearance);
