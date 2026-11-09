@@ -8,7 +8,7 @@
 Description=Iris agent group chat relay
 
 [Service]
-ExecStart=%h/hnl-notify/scripts/chat-relay
+ExecStart=%h/iris/scripts/chat-relay
 Restart=on-failure
 RestartSec=5
 # 78: configuration error (no token or URL); restarting cannot fix it

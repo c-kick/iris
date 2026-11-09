@@ -229,10 +229,21 @@ _BRACKETS = frozenset("[［⟦⟨〔【〖〘〚⦋⦍⦏⁅")
 _FRAME_RE = re.compile(r" ?(?:iris|hnl ?notify|(?:end|history)(?![a-z0-9]))")
 
 
+# letters that look like the Latin letters of the frame vocabulary but survive NFKC + casefold: dotless i, Cyrillic
+# and Greek homoglyphs, Latin small capitals. Not a full confusables table: it covers i r s h n l o t f y e d
+_LOOKALIKES = str.maketrans({
+    "ı": "i", "і": "i", "ι": "i", "ɪ": "i", "ӏ": "l", "ǀ": "l", "ʟ": "l", "ѕ": "s", "ꜱ": "s", "һ": "h", "ʜ": "h",
+    "ո": "n", "ɴ": "n", "о": "o", "ο": "o", "ᴏ": "o", "е": "e", "ᴇ": "e", "ԁ": "d", "ᴅ": "d", "у": "y", "ʏ": "y",
+    "ʀ": "r", "ᴦ": "r", "ᴛ": "t", "т": "t", "ꜰ": "f",
+})
+
+
 def _fold(text: str) -> str:
-    """NFKC + casefold, every dash (Unicode Pd) to '-', every whitespace or invisible format char to one space."""
+    """NFKC + casefold, accents dropped, lookalike letters to Latin, every dash (Unicode Pd) to '-', every whitespace
+    or invisible format char to one space."""
     out = []
-    for ch in unicodedata.normalize("NFKC", text).casefold():
+    text = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", text).casefold())
+    for ch in "".join(c for c in text if unicodedata.category(c) != "Mn").translate(_LOOKALIKES):
         cat = unicodedata.category(ch)
         out.append("-" if cat == "Pd" else " " if ch.isspace() or cat in ("Zs", "Cf") else ch)
     return re.sub(r"[^a-z0-9]+", " ", "".join(out))  # any run of separators/punctuation is one space

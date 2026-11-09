@@ -106,7 +106,7 @@ def test_messages_raw_text_and_wake_summary(ctx):
     gid = a["group_id"]
     msgs = [m for m in b.get(f"/admin/api/chats/{gid}/messages").json()["messages"] if m["author"] != "system"]
     assert [m["id"] for m in msgs] == [first, second]
-    assert msgs[0]["text"] == "<b>raw</b> text" and "hnl-notify group chat" not in msgs[0]["text"]
+    assert msgs[0]["text"] == "<b>raw</b> text" and not any(h in msgs[0]["text"] for h in ("Iris group chat", "hnl-notify group chat", "[end "))
     assert msgs[0]["wakes"] == {"delivered": 1, "skipped": 0, "pending": 1}  # claimed counts as pending
     assert msgs[1]["author"] == "owner" and msgs[1]["wakes"]["pending"] == 3
     with srv.service.db.tx() as cx:

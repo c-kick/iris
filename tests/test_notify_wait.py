@@ -420,3 +420,16 @@ def test_mcp_entry_ignores_non_dict_values(tmp_path, _no_env):
     f = _write(tmp_path, {"mcpServers": {"iris": "garbage", "hnl-notify": _entry("http://old:1/mcp", "t")},
                           "projects": ["not", "a", "dict"]})
     assert nw.settings(None, nw.mcp_entry(f)) == ("http://old:1", "t")
+
+
+@pytest.mark.parametrize("entry", [
+    {"url": 5, "headers": {"Authorization": "Bearer t"}},
+    {"url": "http://x:1/mcp", "headers": "Bearer t"},
+    {"url": "http://x:1/mcp", "headers": {"Authorization": ["Bearer t"]}},
+    {"url": ["http://x:1/mcp"], "headers": None},
+])
+def test_mcp_entry_wrong_field_types_are_a_clean_error(tmp_path, _no_env, entry):
+    f = _write(tmp_path, {"mcpServers": {"iris": entry}})
+    with pytest.raises(nw.Fatal) as e:
+        nw.settings(None, nw.mcp_entry(f))
+    assert "iris" in str(e.value)

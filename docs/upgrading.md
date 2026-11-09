@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.15.1
+
+No configuration change. Chat frames now also neutralise frame words spelled with accents or lookalike letters
+(`[İris`, Cyrillic `[һnl-notify`, small capitals) in quoted text. `notify-wait` reports a wrongly typed `url`,
+`headers` or `Authorization` field in its MCP entry as a configuration error instead of a traceback; copies of
+`notify-wait` on other hosts can be refreshed. The relay unit template now points at `%h/iris`.
+
 ## Upgrading to 0.15.0: the rename to Iris
 
 hnl-notify is now **Iris**: the product, the repository (`https://github.com/c-kick/iris`, the old URL redirects),
@@ -36,6 +43,13 @@ move or re-clone the checkout under another name (for example `iris`), first put
 that checkout's `.env` (git-ignored, host-local), or Compose starts a second stack beside the old one. Never put the
 name in `compose.yaml` and never run `docker compose` for production from a worktree or another clone: a copy with the
 production project name would replace the running container with one on its own (empty) `data/` and `secrets/`.
+
+To move the checkout to `iris` and let the project follow the new name instead (what the reference host did),
+stop the old stack first, from the old directory: `docker compose down` (removes the `iris` container and the
+`hnl-notify_default` network; `data/` and `secrets/` are bind mounts and move with the directory). Then
+`mv ~/hnl-notify ~/iris`, `cd ~/iris && docker compose up -d`: project `iris`, network `iris_default`, same data.
+Update everything that named the old path: Claude and Codex hook commands (`…/scripts/notify-chat`), the chat relay
+unit's `ExecStart`, and any `notify-wait` symlink.
 
 A mail provider saved in the admin UI usually stored the old default sender name `hnl-notify` explicitly; change
 **From name** under Providers if mails should say Iris.

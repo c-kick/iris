@@ -97,8 +97,16 @@ def _entry_note(entry: dict[str, Any], field: str) -> str:
 
 
 def settings(url: str | None, entry: dict[str, Any], token_file: str | Path | None = None) -> tuple[str, str]:
-    base = url or os.environ.get("NOTIFY_URL") or re.sub(r"/mcp/?$", "", entry.get("url") or "")
-    auth = (entry.get("headers") or {}).get("Authorization") or ""
+    entry_url, headers = entry.get("url"), entry.get("headers")
+    auth = headers.get("Authorization") if isinstance(headers, dict) else None
+    for field, value, ok in (("url", entry_url, entry_url is None or isinstance(entry_url, str)),
+                             ("headers", headers, headers is None or isinstance(headers, dict)),
+                             ("Authorization header", auth, auth is None or isinstance(auth, str))):
+        if not ok:  # a hand-edited ~/.claude.json: say which field is wrong instead of a traceback
+            raise Fatal(f"the {entry.get('_name')} MCP entry in ~/.claude.json has a {field} that is not "
+                        f"{'an object' if field == 'headers' else 'a string'} ({type(value).__name__})")
+    base = url or os.environ.get("NOTIFY_URL") or re.sub(r"/mcp/?$", "", entry_url or "")
+    auth = auth or ""
     if token_file is not None:
         try:
             token = Path(token_file).read_text().strip()
