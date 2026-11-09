@@ -1782,15 +1782,19 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 // ---------------------------------------------------------------- chats
 
 const chats = { colors: {}, folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "", replyTo: null, msgs: {} };
-// The Chats page is exactly as tall as what the viewer can see. visualViewport shrinks when a phone
-// keyboard opens (100dvh does not on iOS), so the composer stays in view without the page scrolling.
+// The Chats page covers exactly what the viewer can see. visualViewport shrinks when a phone keyboard
+// opens (100dvh does not on iOS), and iOS also slides the visible area down (offsetTop) to show the
+// field; the page is pinned to that area (top + height), so the composer sits right above the keyboard.
 if (window.visualViewport) {
+  const vv = window.visualViewport;
   const fit = () => {
-    if (window.visualViewport.scale > 1.01) return; // pinch zoom: keep the layout as it was
-    document.documentElement.style.setProperty("--app-h", `${Math.round(window.visualViewport.height)}px`);
-    if (document.querySelector(".chats")) window.scrollTo(0, 0);
+    if (vv.scale > 1.01) return; // pinch zoom: keep the layout as it was
+    const s = document.documentElement.style;
+    s.setProperty("--app-h", `${Math.round(vv.height)}px`);
+    s.setProperty("--app-top", `${Math.max(0, Math.round(vv.offsetTop))}px`);
   };
-  window.visualViewport.addEventListener("resize", fit);
+  vv.addEventListener("resize", fit);
+  vv.addEventListener("scroll", fit);
   fit();
 }
 const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
@@ -1944,9 +1948,9 @@ function chatMessageHtml(m, canReply = false) {
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
-  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name)} <small>${esc(when(m.created_at))}</small>${tag}</div>
+  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name)}${tag}</div>
     ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
-    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}${(canReply && m.text != null) || m.author === "owner" ? `<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}${chatTicksHtml(m.id, m.receipt, m.author)}</div>` : ""}</div>`;
+    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }
 
 // an earlier session of the folder: one bar (expandable), or one small line when nobody said anything
@@ -1964,6 +1968,7 @@ async function chatsPage(main) {
   main.innerHTML = `
     <div class="section-head"><h2>Chats</h2><p>Agent sessions in the same folder talk here, one thread per folder. Read along, and post into an open group to steer it.</p></div>
     <div class="chats${chats.selected ? " thread" : ""}" id="chats">
+      <div class="chat-sync" id="chat-sync" role="status" aria-live="polite"></div>
       <div class="chat-list" id="chat-list"><div class="empty">Loading…</div></div>
       <div class="chat-pane" id="chat-pane"></div>
     </div>`;
@@ -2196,19 +2201,19 @@ async function chatOpen(el, key, keep = false) {
   chats.currentId = id;
   pane.innerHTML = `
     <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Folders</button>
-      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span><span class="chat-mini" id="chat-mini"></span>
-        <span class="hint chat-watch" id="chat-watch" hidden>You're watching: no auto-pause</span></div>
-      <button type="button" class="btn quiet" id="chat-limitbtn" hidden title="How many messages each agent may post while this group is paused"></button>
+      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span><span class="chat-mini" id="chat-mini"></span></div>
+      <div class="chat-head-note"><button type="button" class="btn quiet" id="chat-limitbtn" hidden title="How many messages each agent may post while this group is paused"></button>
+        <span class="hint chat-watch off" id="chat-watch" title="While you're watching, the group does not pause itself"><span class="long">You're watching: no auto-pause</span><span class="short">Watching</span></span></div>
       <button type="button" class="btn" id="chat-pausebtn" hidden></button></div>
     <div class="chat-paused" id="chat-paused" hidden></div>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
     <form class="chat-compose" id="chat-compose" hidden>
       <div class="chat-replying" id="chat-replying" hidden><span class="rq"></span><button type="button" class="btn quiet" id="chat-reply-cancel" aria-label="Cancel reply">✕</button></div>
       <label class="sr" for="chat-text">Message this group</label>
-      <textarea id="chat-text" rows="2" placeholder="Message this group… @Name hands it to one member, @all to everyone" aria-autocomplete="list" aria-controls="chat-at"></textarea>
+      <textarea id="chat-text" rows="2" placeholder="Message the group (@name: one member, @all: everyone)" aria-autocomplete="list" aria-controls="chat-at"></textarea>
       <ul class="chat-at" id="chat-at" role="listbox" aria-label="Members to mention" hidden></ul>
-      <label class="fyi-toggle" title="A heads-up: everyone reads it, nobody acts on it"><input type="checkbox" id="chat-fyi"> FYI</label>
-      <button type="submit" class="btn primary">Send</button>
+      <div class="compose-side"><label class="fyi-toggle" title="A heads-up: everyone reads it, nobody acts on it"><input type="checkbox" id="chat-fyi"> FYI</label>
+      <button type="submit" class="btn primary">Send</button></div>
       <div class="form-error" role="alert"></div>
     </form>
     <div class="chat-readonly hint" id="chat-readonly" hidden>This group is closed. It is read-only.</div>`;
@@ -2262,6 +2267,10 @@ async function chatOpen(el, key, keep = false) {
   chats.lastId = data.messages.length ? data.messages[data.messages.length - 1].id : null;
   chatHeader(el, g, f);
   box.scrollTop = box.scrollHeight;
+  // reading the newest message stays that way when the list gets shorter (keyboard, a longer draft, the reply bar)
+  let stick = true;
+  box.onscroll = () => { stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40; };
+  if (window.ResizeObserver) new ResizeObserver(() => { if (stick) box.scrollTop = box.scrollHeight; }).observe(box);
   const form = pane.querySelector("#chat-compose");
   const ta = form.querySelector("textarea");
   ta.value = chats.composeDraft;
@@ -2332,12 +2341,59 @@ function chatHeader(el, g, f) {
   pb.hidden = g.state !== "open";
   pb.dataset.act = g.paused ? "resume" : "pause";
   pb.textContent = g.paused ? "Resume" : "Pause now";
-  if (g.paused) el.querySelector("#chat-watch").hidden = true;
+  if (g.paused) el.querySelector("#chat-watch").classList.add("off");
   el.querySelector("#chat-compose").hidden = g.state !== "open";
   el.querySelector("#chat-readonly").hidden = g.state === "open";
 }
 
-async function chatTick(el) {
+// One refresh at a time. A call while one runs (a post, the tab coming back) waits for it and then runs once more,
+// so the caller always sees what was there after its own action.
+function chatTick(el) {
+  if (chats.ticking) { chats.tickAgain = true; return chats.ticking; }
+  chats.ticking = (async () => {
+    do { chats.tickAgain = false; await chatTickOnce(el); } while (chats.tickAgain);
+  })().finally(() => { chats.ticking = null; });
+  return chats.ticking;
+}
+
+// Back on the tab (or the window): the browser held the 5 s poll while it was away, so refresh now and show it.
+async function chatCatchUp(el) {
+  const t0 = Date.now();
+  chats.lastCatchUp = t0;
+  chatSync(el, true);
+  try { await chatTick(el); }
+  finally { setTimeout(() => chatSync(el, false), Math.max(0, 500 - (Date.now() - t0))); } // no one-frame flash
+}
+const chatOnReturn = () => {
+  const el = document.getElementById("chats");
+  if (!el || section !== "chats" || document.visibilityState !== "visible") return;
+  if (Date.now() - (chats.lastCatchUp || 0) < 1500) return; // focus and visibilitychange arrive together
+  chatCatchUp(el);
+};
+document.addEventListener("visibilitychange", chatOnReturn);
+window.addEventListener("focus", chatOnReturn);
+window.addEventListener("pageshow", (e) => { if (e.persisted) chatOnReturn(); });
+
+// the "Updating…" pill: floats under the thread header (or over the folder list), so showing it moves nothing
+function chatSync(el, on) {
+  const pill = el.querySelector("#chat-sync");
+  if (!pill) return;
+  if (on) {
+    const head = el.querySelector(".chat-head");
+    const list = el.querySelector("#chat-list");
+    const box = el.getBoundingClientRect();
+    const underHead = !!(head && head.getClientRects().length);
+    const a = underHead ? head.getBoundingClientRect() : list?.getBoundingClientRect();
+    if (a) {
+      pill.style.top = `${(underHead ? a.bottom : a.top) - box.top + 8}px`;
+      pill.style.left = `${a.left - box.left + a.width / 2}px`;
+    }
+  }
+  pill.textContent = on ? "Updating…" : "";
+  pill.classList.toggle("on", on);
+}
+
+async function chatTickOnce(el) {
   if (section !== "chats" || !el.isConnected) { clearInterval(chats.timer); return; }
   if (document.visibilityState !== "visible") return;
   try {
@@ -2351,9 +2407,9 @@ async function chatTick(el) {
     const watch = el.querySelector("#chat-watch");
     const open = f.state === "open";
     if (open && chatWatchingNow()) {
-      try { await api("POST", `/chats/${encodeURIComponent(id)}/watching`); if (watch) watch.hidden = !!f.paused; }
-      catch { if (watch) watch.hidden = true; }
-    } else if (watch) watch.hidden = true;
+      try { await api("POST", `/chats/${encodeURIComponent(id)}/watching`); watch?.classList.toggle("off", !!f.paused); }
+      catch { watch?.classList.add("off"); }
+    } else watch?.classList.add("off");
     const path = `/chats/${encodeURIComponent(id)}/messages${chats.lastId ? `?after=${encodeURIComponent(chats.lastId)}` : ""}`;
     const data = await api("GET", path);
     if (chats.selected !== key || chats.currentId !== id) return;

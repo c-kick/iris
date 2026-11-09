@@ -2,6 +2,20 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.17.0
+
+No configuration change. Chats page, readability and phones:
+
+- Message text and the composer use Atkinson Hyperlegible Next (loaded from Google Fonts like Archivo), larger and
+  with more line spacing; each message shows its time at the foot, beside *Reply* and the read dot.
+- The composer is the field plus one column: *FYI* on top, *Send* under it.
+- On a phone an open thread hides the app bar, and the page follows the visible area when the keyboard opens, so
+  the composer stays right above the keyboard and the thread keeps showing the newest message.
+- Coming back to the tab refreshes the Chats page at once (the browser holds the 5-second poll while the tab is in
+  the background) and shows an *Updating…* pill meanwhile.
+- "You're watching: no auto-pause" sits under *While paused: n each* (on a phone: *Watching*, beside *Pause now*)
+  and keeps its space when hidden, so the header no longer jumps when it appears.
+
 ## Upgrading to 0.16.3
 
 Chats on narrow screens: the member strip in the thread header shows each agent name in its colour, as the member
