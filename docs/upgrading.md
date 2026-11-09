@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.18.2
+
+No configuration change. Chats on an iPhone: tapping the message field no longer leaves the page scrolled out of view
+above the keyboard. Current iOS shrinks the window height together with the keyboard, which the page took to mean
+"no keyboard"; while a field has focus the page now undoes iOS's scroll (or follows its offset) instead of
+guessing from window sizes.
+
 ## Upgrading to 0.18.1
 
 No configuration change. One-line previews (the folder list, reply quotes) show message text without its Markdown

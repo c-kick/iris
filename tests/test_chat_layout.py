@@ -200,3 +200,26 @@ def test_viewport_debug_overlay_only_on_request():
     block = JS[JS.index("if (window.visualViewport) {"):JS.index("const chatUnread")]
     assert 'new URLSearchParams(location.search).has("vvdebug")' in block
     assert "vv.offsetTop" in block and "innerHeight" in block and "keyboardOpen" in block
+
+
+def test_keyboard_correction_does_not_guess_from_window_sizes():
+    # iPhone (2026-11-09, ?vvdebug): with the keyboard up iOS reported inner 402x384 = visual 402x384, offsetTop 330,
+    # scrollY 330. innerHeight shrinks with the keyboard there, so "vv.height < innerHeight - 80" said no keyboard and
+    # the page stayed 330 px above the view. While a field has focus: undo iOS's scroll, else follow its offset.
+    fit = JS[JS.index("const fit = () => {"):JS.index("// ?vvdebug=1")]
+    assert "innerHeight" not in fit
+    assert "window.scrollTo(0, 0)" in fit
+    assert "keyboardOpen = !!typing" in fit
+
+
+def test_scroll_reset_only_on_the_chats_page():
+    # elsewhere (a long Settings form) the page scrolls normally, and typing in a field must not jump to the top
+    fit = JS[JS.index("const fit = () => {"):JS.index("// ?vvdebug=1")]
+    assert re.search(r'const onChats = !!document\.getElementById\("chats"\);', fit)
+    assert "keyboardOpen = !!typing && onChats;" in fit
+
+
+def test_leftover_scroll_on_chats_is_reset_even_without_focus():
+    # the field lost focus while iOS still had the page scrolled: the pinned page would sit shifted up again
+    fit = JS[JS.index("const fit = () => {"):JS.index("// ?vvdebug=1")]
+    assert "if (onChats && (window.scrollY > 0 || (keyboardOpen && vv.offsetTop > 0))) window.scrollTo(0, 0);" in fit

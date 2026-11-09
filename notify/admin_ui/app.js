@@ -1792,10 +1792,16 @@ if (window.visualViewport) {
     if (vv.scale > 1.01) return; // pinch zoom: keep the layout as it was
     const s = document.documentElement.style;
     s.setProperty("--app-h", `${Math.round(vv.height)}px`);
-    // Follow the visible area's offset only while a keyboard is up (iOS slides the view to show the field then).
-    // Otherwise it is a pan or a bounce of the page, and chasing it moved the whole page on every swipe (landscape).
+    // While a field has focus the keyboard is up, and iOS scrolls the view down to show the field (it reported
+    // offsetTop 330 with the page left 330 px above the view). Undo that scroll, so the page sits right above the
+    // keyboard; if iOS keeps an offset anyway, follow it. Window sizes say nothing here: on current iOS the window
+    // height shrinks with the keyboard too. Without focus nothing is followed: a swipe or bounce must not move the page.
     const typing = document.activeElement?.matches?.("textarea, input, [contenteditable]");
-    const keyboardOpen = !!typing && vv.height < window.innerHeight - 80;
+    // only the Chats page is pinned to the view; other pages scroll normally and are left alone
+    const onChats = !!document.getElementById("chats");
+    const keyboardOpen = !!typing && onChats;
+    // nothing on Chats scrolls the page itself (html and body are overflow: hidden), so a leftover scroll is iOS's
+    if (onChats && (window.scrollY > 0 || (keyboardOpen && vv.offsetTop > 0))) window.scrollTo(0, 0);
     s.setProperty("--app-top", `${keyboardOpen ? Math.max(0, Math.round(vv.offsetTop)) : 0}px`);
     const el = document.getElementById("chats");
     if (el) chatRosterSize(el); // the keyboard took or gave back room under an open roster
@@ -1826,6 +1832,7 @@ if (window.visualViewport) {
   }
   vv.addEventListener("resize", fit);
   vv.addEventListener("scroll", fit);
+  document.addEventListener("focusin", () => setTimeout(fit, 50)); // a field got focus: the keyboard comes up
   document.addEventListener("focusout", () => setTimeout(fit, 50)); // keyboard gone: back to the top
   fit();
 }
