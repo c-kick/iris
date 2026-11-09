@@ -40,6 +40,10 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 MAX_WAKE_ATTEMPTS = 5
 WATCH_SECONDS = 30  # the owner watching a thread suspends the cap for this long
 STALE_SECONDS = 180  # no liveness heartbeat for this long: the member is gone
+# A session inside a process other sessions share (codex app-server): its pid stays alive after the session ends, and
+# Codex does not always run SessionEnd. It counts as alive only while it showed activity (a status hook) this recently;
+# then it leaves as idle, and its next activity takes it back with its handle, name and marker.
+SHARED_IDLE_SECONDS = 2 * 3600
 CLAIM_TIMEOUT_SECONDS = 120  # a claimed wake not confirmed in this time goes back to pending
 STATUSES = ("busy", "waiting", "free")  # reported by the session's hooks; "active" only stamps active_at
 BUSY_QUIET_SECONDS = 300  # Claude busy with no activity this long: shown as "busy?" (Esc fires no Stop hook)
@@ -346,11 +350,19 @@ class Chat:
             raise Invalid("status must be busy, waiting, free or active")
         if kind not in KINDS or not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
             raise Invalid("kind and session_id are required")
-        now = iso(self.now())
+        t = self.now()
+        now = iso(t)
+        back = False
         with self.db.tx() as c:
             m = c.execute("SELECT m.id FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=?"
                           " AND g.state='open' AND m.kind=? AND m.session_id=? AND m.left_at IS NULL",
                           (host, kind, session_id)).fetchone()
+            if m is None:  # left as idle (shared process) and active again: back in the chat
+                idle = c.execute("SELECT m.* FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=?"
+                                 " AND m.kind=? AND m.session_id=? AND m.leave_reason='idle' AND m.client_id=?"
+                                 " ORDER BY m.left_at DESC LIMIT 1", (host, kind, session_id, client.id)).fetchone()
+                if self._take_back_idle(c, idle, t):
+                    m, back = idle, True
             table = "chat_members"
             if m is None:  # a session present without a chat keeps its status for when it joins
                 m, table = c.execute("SELECT id FROM chat_presence WHERE host=? AND kind=? AND session_id=?",
@@ -364,6 +376,8 @@ class Chat:
             else:
                 c.execute(f"UPDATE {table} SET status=?, status_at=?, active_at=? WHERE id=?",
                           (status, now, now, m["id"]))
+        if back:
+            self.svc._after_commit()
 
     @staticmethod
     def _add_message(c: sqlite3.Connection, group_id: str, author: str, member_id: str | None, text: str,
@@ -392,6 +406,15 @@ class Chat:
             row = self.db.one("SELECT * FROM chat_members WHERE id=? AND left_at IS NULL", (parsed[0],))
             if row is not None and handle_matches(member_handle, row["id"], row["handle_sha256"]):
                 return row
+            idle = self.db.one("SELECT * FROM chat_members WHERE id=? AND leave_reason='idle'", (parsed[0],))
+            if idle is not None and handle_matches(member_handle, idle["id"], idle["handle_sha256"]):
+                with self.db.tx() as c:  # a chat call is activity: an idle member is back
+                    c.execute("UPDATE chat_members SET active_at=? WHERE id=?", (iso(self.now()), idle["id"]))
+                    back = self._take_back_idle(c, c.execute("SELECT * FROM chat_members WHERE id=?",
+                                                             (idle["id"],)).fetchone(), self.now())
+                if back:
+                    self.svc._after_commit()
+                    return self.db.one("SELECT * FROM chat_members WHERE id=?", (idle["id"],))
         raise MemberGone()
 
     def check_handle_host(self, client: Client, member_handle: str) -> None:
@@ -433,11 +456,11 @@ class Chat:
             self.remove_member(old["id"], "left", client.id)
 
     def join(self, client: Client, *, kind: str, session_id: str, folder: str,
-             pid: int | None, pid_start: str | None) -> dict[str, Any]:
+             pid: int | None, pid_start: str | None, shared_process: bool = False) -> dict[str, Any]:
         """Join the folder's group, opening it if needed. Callers decide whether the folder takes part (presence())."""
         host, folder = self._session_args(client, kind, session_id, folder)
         self._leave_other_folder(client, host, folder, kind, session_id)
-        self._replace_same_process(client, host, folder, kind, session_id, pid, pid_start)
+        self._replace_same_process(client, host, folder, kind, session_id, pid, pid_start, shared_process)
         now = iso(self.now())
         with self.db.tx() as c:  # BEGIN IMMEDIATE: a second joiner waits, then finds the group open
             row = c.execute("SELECT m.* FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
@@ -449,7 +472,9 @@ class Chat:
                 group_id, member_id = row["group_id"], row["id"]
                 handle, sha = new_handle(member_id)
                 c.execute("UPDATE chat_members SET handle_sha256=?, pid=?, pid_start=?, client_id=?, last_seen_at=?,"
-                          " marker=? WHERE id=?", (sha, pid, pid_start, client.id, now, new_marker(row["name"]), member_id))
+                          " marker=?, shared_process=?, active_at=? WHERE id=?",
+                          (sha, pid, pid_start, client.id, now, new_marker(row["name"]), int(shared_process), now,
+                           member_id))
             else:
                 group_id = self._open_or_get(c, host, folder, client.id)
                 pres = c.execute("SELECT * FROM chat_presence WHERE host=? AND kind=? AND session_id=?",
@@ -459,7 +484,7 @@ class Chat:
                 member_id = pres["id"] if pres is not None else new_id("mem")  # a presence keeps its id
                 handle, sha = new_handle(member_id)
                 self._insert_member(c, group_id, host, folder, member_id, kind, session_id, pid, pid_start,
-                                    client.id, sha, now, pres)
+                                    client.id, sha, now, pres, shared=shared_process)
             out = self._join_out(c, group_id, member_id, handle)
         self.svc._after_commit()
         return out
@@ -476,15 +501,17 @@ class Chat:
 
     def _insert_member(self, c: sqlite3.Connection, group_id: str, host: str, folder: str, member_id: str, kind: str,
                        session_id: str, pid: int | None, pid_start: str | None, client_id: str, sha: str, now: str,
-                       pres: sqlite3.Row | None = None, note: str = "joined the chat") -> None:
-        """A new member row (from a presence: the same id, so its handle keeps working, and its last status)."""
+                       pres: sqlite3.Row | None = None, note: str = "joined the chat", shared: bool = False) -> None:
+        """A new member row (from a presence: the same id, so its handle keeps working, its last status and its
+        shared-process flag)."""
         name = self._pick_name(c, group_id, host, folder)
         st = (pres["status"], pres["status_at"], pres["active_at"]) if pres is not None else (None, None, None)
+        shared_ = int(pres["shared_process"]) if pres is not None else int(shared)
         c.execute("INSERT INTO chat_members(id, group_id, kind, session_id, pid, pid_start, client_id, handle_sha256,"
-                  " joined_at, last_seen_at, name, marker, status, status_at, active_at)"
-                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  " joined_at, last_seen_at, name, marker, status, status_at, active_at, shared_process)"
+                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                   (member_id, group_id, kind, session_id, pid, pid_start, client_id, sha, now, now, name,
-                   new_marker(name), *st))
+                   new_marker(name), *st, shared_))
         if pres is not None:
             c.execute("DELETE FROM chat_invites WHERE presence_id=?", (pres["id"],))
             c.execute("DELETE FROM chat_presence WHERE id=?", (pres["id"],))
@@ -541,18 +568,19 @@ class Chat:
                                                (host, folder)) is not None
 
     def presence(self, client: Client, *, kind: str, session_id: str, folder: str,
-                 pid: int | None, pid_start: str | None) -> dict[str, Any]:
+                 pid: int | None, pid_start: str | None, shared_process: bool = False) -> dict[str, Any]:
         """A session starts (SessionStart hook). In a folder with chats on, or with an open group, it joins; anywhere
         else it is only recorded as present (no messages, no wakes but an invite) and can open a group itself."""
         host, folder = self._session_args(client, kind, session_id, folder)
         open_group = self.db.one("SELECT id FROM chat_groups WHERE host=? AND folder=? AND state='open'", (host, folder))
         if open_group is not None or self.folder_enabled(host, folder):
-            out = self.join(client, kind=kind, session_id=session_id, folder=folder, pid=pid, pid_start=pid_start)
+            out = self.join(client, kind=kind, session_id=session_id, folder=folder, pid=pid, pid_start=pid_start,
+                            shared_process=shared_process)
             out["state"] = "joined"
             out["context"] = self.join_context(folder, out, report_in=True)
             return out
         self._leave_other_folder(client, host, folder, kind, session_id)
-        self._replace_same_process(client, host, folder, kind, session_id, pid, pid_start)
+        self._replace_same_process(client, host, folder, kind, session_id, pid, pid_start, shared_process)
         now = iso(self.now())
         with self.db.tx() as c:
             pres = c.execute("SELECT * FROM chat_presence WHERE host=? AND kind=? AND session_id=?",
@@ -562,13 +590,15 @@ class Chat:
             pid_ = pres["id"] if pres is not None else new_id("mem")
             handle, sha = new_handle(pid_)
             if pres is not None:
-                c.execute("UPDATE chat_presence SET folder=?, pid=?, pid_start=?, handle_sha256=?, seen_at=? WHERE id=?",
-                          (folder, pid, pid_start, sha, now, pid_))
+                c.execute("UPDATE chat_presence SET folder=?, pid=?, pid_start=?, handle_sha256=?, seen_at=?,"
+                          " shared_process=?, active_at=? WHERE id=?",
+                          (folder, pid, pid_start, sha, now, int(shared_process), now, pid_))
                 c.execute("DELETE FROM chat_invites WHERE presence_id=?", (pid_,))
             else:
                 c.execute("INSERT INTO chat_presence(id, host, folder, kind, session_id, pid, pid_start, client_id,"
-                          " handle_sha256, seen_at, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                          (pid_, host, folder, kind, session_id, pid, pid_start, client.id, sha, now, now))
+                          " handle_sha256, seen_at, started_at, shared_process) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                          (pid_, host, folder, kind, session_id, pid, pid_start, client.id, sha, now, now,
+                           int(shared_process)))
         return {"state": "present", "member_id": pid_, "member_handle": handle,
                 "context": (f"Group chats are off in {folder}. To open one with the other agent sessions in this folder,"
                             f" call group_open(member_handle, reason). Your member handle is {handle}.")}
@@ -803,6 +833,22 @@ class Chat:
     def leave(self, member_handle: str, reason: str = "ended") -> None:
         if reason not in LEAVE_REASONS:
             raise Invalid("reason must be ended, stale or left")
+        parsed = parse_handle(member_handle)
+        if parsed is not None:  # an idle member ending: it is already out; no "is back" first
+            idle = self.db.one("SELECT id, handle_sha256 FROM chat_members WHERE id=? AND leave_reason='idle'",
+                               (parsed[0],))
+            if idle is not None and handle_matches(member_handle, idle["id"], idle["handle_sha256"]):
+                with self.db.tx() as c:
+                    c.execute("UPDATE chat_members SET leave_reason=? WHERE id=?", (reason, idle["id"]))
+                    gid = c.execute("SELECT group_id FROM chat_members WHERE id=?", (idle["id"],)).fetchone()[0]
+                    if c.execute("SELECT 1 FROM chat_groups WHERE id=? AND state='open'", (gid,)).fetchone() and \
+                            c.execute("SELECT 1 FROM chat_members WHERE group_id=? AND (left_at IS NULL"
+                                      " OR leave_reason='idle')", (gid,)).fetchone() is None:
+                        c.execute("UPDATE chat_groups SET state='closed', closed_at=? WHERE id=?", (iso(self.now()), gid))
+                        self._add_message(c, gid, "system", None, "closed")
+                        self._event(c, "group.closed", "hnl-notify", {"group_id": gid})
+                self.svc._after_commit()
+                return
         try:
             member = self.member_from_handle(member_handle)
         except MemberGone:
@@ -817,20 +863,21 @@ class Chat:
             c.execute("DELETE FROM chat_presence WHERE id=?", (presence_id,))
 
     def _replace_same_process(self, client: Client, host: str, folder: str, kind: str, session_id: str,
-                              pid: int | None, pid_start: str | None) -> None:
+                              pid: int | None, pid_start: str | None, shared: bool = False) -> None:
         """Codex /new or /resume, Claude /clear: a new session id from the same process. Its earlier member (or
         presence) on this host is that window's old session: it leaves (reason replaced) and the new one starts fresh.
         Only rows the same client created: another client on the host cannot evict a member by naming its pid."""
-        if not pid or not pid_start:
+        if not pid or not pid_start or shared:  # a shared process hosts many sessions at once: none replaces another
             return
         for r in self.db.query("SELECT m.id, g.folder FROM chat_members m JOIN chat_groups g ON g.id=m.group_id"
                                " WHERE g.host=? AND m.left_at IS NULL AND m.kind=? AND m.pid=? AND m.pid_start=?"
-                               " AND m.session_id<>? AND m.client_id=?",
+                               " AND m.session_id<>? AND m.client_id=? AND m.shared_process=0",
                                (host, kind, pid, pid_start, session_id, client.id)):
             # the new session joins right after: a group it was alone in stays open for it (claims, pause, invites)
             self.remove_member(r["id"], "replaced", keep_open=r["folder"] == folder)
         for r in self.db.query("SELECT id FROM chat_presence WHERE host=? AND kind=? AND pid=? AND pid_start=?"
-                               " AND session_id<>? AND client_id=?", (host, kind, pid, pid_start, session_id, client.id)):
+                               " AND session_id<>? AND client_id=? AND shared_process=0",
+                               (host, kind, pid, pid_start, session_id, client.id)):
             self.remove_presence(r["id"])
 
     def remove_member(self, member_id: str, reason: str, by: str = "hnl-notify", keep_open: bool = False) -> bool:
@@ -843,8 +890,8 @@ class Chat:
                 return False
             gid = m["group_id"]
             # a stale member may come back within the hour (rejoin_stale) with the same handle, name and marker
-            c.execute("UPDATE chat_members SET left_at=?, leave_reason=?, marker=CASE WHEN ?='stale' THEN marker END"
-                      " WHERE id=?", (now, reason, reason, member_id))
+            c.execute("UPDATE chat_members SET left_at=?, leave_reason=?,"
+                      " marker=CASE WHEN ? IN ('stale', 'idle') THEN marker END WHERE id=?", (now, reason, reason, member_id))
             c.execute("UPDATE chat_wakes SET state='skipped', reason='member gone', finished_at=?"
                       " WHERE member_id=? AND state IN ('pending', 'claimed')", (now, member_id))
             c.execute("UPDATE chat_history_requests SET state='expired', decision_sha256=NULL"
@@ -852,6 +899,7 @@ class Chat:
             self._event(c, "group.member_left", by, {"group_id": gid, "member_id": member_id, "reason": reason})
             self._add_message(c, gid, "system", None, f"{who(m['kind'], m['name'], member_id)} left the chat"
                               + {"stale": " (no longer running)",
+                                 "idle": f" (quiet for {SHARED_IDLE_SECONDS // 3600} hours)",
                                  "replaced": " (new session in the same window)"}.get(reason, ""))
             for held in c.execute("SELECT id FROM chat_messages WHERE claimed_by_member_id=? ORDER BY rowid",
                                   (member_id,)).fetchall():
@@ -1549,6 +1597,9 @@ class Chat:
         since, last = self.relay_seen.get(host, (t, t))
         self.relay_seen[host] = (since if t - last < timedelta(seconds=STALE_SECONDS) else t, t)
         back: list[str] = []
+        idle_members: list[str] = []
+        idle_presences: list[str] = []
+        quiet_before = iso(t - timedelta(seconds=SHARED_IDLE_SECONDS))
         with self.db.tx() as c:
             for a in alive:
                 mid = a.get("member_id") if isinstance(a, dict) else None
@@ -1556,6 +1607,18 @@ class Chat:
                     continue
                 if self._rejoin_stale(c, client, host, mid, a, t):
                     back.append(mid)
+                    continue
+                # a shared process (codex app-server) outlives its sessions: alive counts only with recent activity
+                quiet = c.execute("SELECT 'm' FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE m.id=?"
+                                  " AND g.host=? AND m.client_id=? AND m.left_at IS NULL AND m.shared_process=1"
+                                  " AND MAX(COALESCE(m.status_at, ''), COALESCE(m.active_at, ''),"
+                                  " COALESCE(m.joined_at, ''))<?"
+                                  " UNION ALL SELECT 'p' FROM chat_presence WHERE id=? AND host=? AND client_id=?"
+                                  " AND shared_process=1"
+                                  " AND MAX(COALESCE(status_at, ''), COALESCE(active_at, ''), COALESCE(started_at, ''))<?",
+                                  (mid, host, client.id, quiet_before, mid, host, client.id, quiet_before)).fetchone()
+                if quiet is not None:
+                    (idle_members if quiet[0] == "m" else idle_presences).append(mid)
                     continue
                 c.execute("UPDATE chat_members SET last_seen_at=? WHERE id=? AND left_at IS NULL AND group_id IN"
                           " (SELECT id FROM chat_groups WHERE host=?)", (now, mid, host))
@@ -1573,8 +1636,15 @@ class Chat:
                               (host, iso(t - timedelta(seconds=STALE_REJOIN_SECONDS)))).fetchall()
         if back:
             self.svc._after_commit()
+        for mid in idle_members:  # re-checked: a status that arrived since the heartbeat transaction keeps it
+            if self._still_quiet("chat_members", mid, host, client.id):
+                self.remove_member(mid, "idle", keep_open=True)  # it may come back; close_quiet_groups closes later
+        for pid_ in idle_presences:
+            if self._still_quiet("chat_presence", pid_, host, client.id):
+                self.remove_presence(pid_)
+        gone = set(idle_members) | set(idle_presences)
         return {"members": [{"member_id": r["id"], "kind": r["kind"], "pid": r["pid"], "pid_start": r["pid_start"]}
-                            for r in rows]}
+                            for r in rows if r["id"] not in gone]}
 
     def _rejoin_stale(self, c: sqlite3.Connection, client: Client, host: str, member_id: str, alive: dict[str, Any],
                       t: datetime) -> bool:
@@ -1586,10 +1656,44 @@ class Chat:
                 or m["left_at"] < iso(t - timedelta(seconds=STALE_REJOIN_SECONDS))
                 or alive.get("pid") != m["pid"] or str(alive.get("pid_start")) != str(m["pid_start"])):
             return False
+        same_process = "" if m["shared_process"] else " OR (x.pid=? AND x.pid_start=?)"  # siblings share a server pid
         if c.execute("SELECT 1 FROM chat_members x JOIN chat_groups g ON g.id=x.group_id WHERE g.host=?"
-                     " AND x.left_at IS NULL AND x.kind=? AND (x.session_id=? OR (x.pid=? AND x.pid_start=?))",
-                     (host, m["kind"], m["session_id"], m["pid"], m["pid_start"])).fetchone():
+                     f" AND x.left_at IS NULL AND x.kind=? AND (x.session_id=?{same_process})",
+                     (host, m["kind"], m["session_id"], *(() if m["shared_process"] else (m["pid"], m["pid_start"])))
+                     ).fetchone():
             return False  # the session already joined again (or its process did): never two members for one
+        self._take_back(c, m, t)
+        return True
+
+    def _still_quiet(self, table: str, row_id: str, host: str, client_id: str) -> bool:
+        """The idle check again, outside the heartbeat transaction: activity may have arrived in between."""
+        before = iso(self.now() - timedelta(seconds=SHARED_IDLE_SECONDS))
+        if table == "chat_members":
+            return self.db.one("SELECT 1 FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE m.id=?"
+                               " AND g.host=? AND m.client_id=? AND m.left_at IS NULL AND m.shared_process=1 AND"
+                               " MAX(COALESCE(m.status_at, ''), COALESCE(m.active_at, ''), COALESCE(m.joined_at, ''))<?",
+                               (row_id, host, client_id, before)) is not None
+        return self.db.one("SELECT 1 FROM chat_presence WHERE id=? AND host=? AND client_id=? AND shared_process=1 AND"
+                           " MAX(COALESCE(status_at, ''), COALESCE(active_at, ''), COALESCE(started_at, ''))<?",
+                           (row_id, host, client_id, before)) is not None
+
+    def _take_back_idle(self, c: sqlite3.Connection, m: sqlite3.Row | None, t: datetime) -> bool:
+        """A member that left as idle (shared process, no activity for SHARED_IDLE_SECONDS) shows activity again: it
+        is taken back, if its group is still open and its session has not joined again meanwhile."""
+        if m is None or m["leave_reason"] != "idle" or not m["left_at"]:
+            return False
+        if c.execute("SELECT state FROM chat_groups WHERE id=?", (m["group_id"],)).fetchone()[0] != "open":
+            return False
+        if c.execute("SELECT 1 FROM chat_members x JOIN chat_groups g ON g.id=x.group_id WHERE g.host="
+                     "(SELECT host FROM chat_groups WHERE id=?) AND x.left_at IS NULL AND x.kind=? AND x.session_id=?",
+                     (m["group_id"], m["kind"], m["session_id"])).fetchone():
+            return False  # never two members for one session
+        self._take_back(c, m, t)
+        return True
+
+    def _take_back(self, c: sqlite3.Connection, m: sqlite3.Row, t: datetime) -> None:
+        """Back in the group with its handle, name (a new one if taken meanwhile) and marker, and an "is back" line."""
+        member_id = m["id"]
         name = m["name"]
         if name and c.execute("SELECT 1 FROM chat_members WHERE group_id=? AND left_at IS NULL AND lower(name)=lower(?)",
                               (m["group_id"], name)).fetchone():
@@ -1599,7 +1703,6 @@ class Chat:
                   " marker=COALESCE(marker, ?) WHERE id=?", (iso(t), name, new_marker(name), member_id))
         self._add_message(c, m["group_id"], "system", None, f"{who(m['kind'], name, member_id)} is back")
         self._event(c, "group.member_rejoined", "hnl-notify", {"group_id": m["group_id"], "member_id": member_id})
-        return True
 
     def close_quiet_groups(self, now: datetime) -> int:
         """Open groups in which no member was seen for 7 days are closed (a relay gone for good never sweeps them).
@@ -1607,8 +1710,8 @@ class Chat:
         cutoff = iso(now - timedelta(seconds=STALE_GROUP_SECONDS))
         n = 0
         for g in self.db.query("SELECT id, opened_at FROM chat_groups WHERE state='open'"):
-            last = self.db.scalar("SELECT MAX(last_seen_at) FROM chat_members WHERE group_id=? AND left_at IS NULL",
-                                  (g["id"],))
+            last = self.db.scalar("SELECT MAX(last_seen_at) FROM chat_members WHERE group_id=?"
+                                  " AND (left_at IS NULL OR leave_reason='idle')", (g["id"],))
             if (last or g["opened_at"] or "") >= cutoff:
                 continue
             with self.db.tx() as c:

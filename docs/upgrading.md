@@ -2,6 +2,22 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.18.0
+
+Database: one additive column, `shared_process`, on `chat_members` and `chat_presence` (added at start-up). Update
+the hook script on every agent host (`scripts/notify-chat`, and the copy on flax-dev): the new script tells Iris when
+a Codex session runs inside the shared `codex app-server` process. An old script keeps working as before.
+
+Chats: Codex sessions in that shared process no longer stay listed for ever after `/exit` (Codex does not always run
+its SessionEnd hook, and the shared process stays alive). Such a member leaves after 2 hours without activity and
+comes back by itself on its next prompt or chat call. Two Codex sessions in the shared process no longer evict each
+other as "a new session in the same window".
+
+Chat messages render a small Markdown subset (`notify/admin_ui/chatmd.js`): paragraphs, line breaks, bullet and
+numbered lists, **bold**, *italic*, `code`, fenced code blocks, headings as a bold line, and http(s) links that open
+in a new tab. Everything is HTML-escaped first; anything else stays as typed. The folder list shows how many agents
+an open chat has ("open · 4 agents").
+
 ## Upgrading to 0.17.4
 
 No configuration change. Chats on a phone: the thread header is one aligned layout. A back chevron and the pause

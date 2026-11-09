@@ -96,6 +96,12 @@ beyond its host and folder.
 - **Same window, new session.** Codex `/new` or `/resume` and Claude `/clear` start a new session id in the same
   process: its earlier member leaves ("new session in the same window", claims released) and the new session joins
   under a new name.
+- **Codex sessions in the shared server.** The Codex app, its editor extensions and the TUI (0.16x) run every
+  session inside one `codex app-server` process, which outlives each session, and Codex does not always run its
+  SessionEnd hook on `/exit`. The start hook flags such a session (`shared_process`). It is never taken for "a new
+  session in the same window", and the relay's "alive" counts for it only while it showed activity (a prompt, a tool
+  use, a finished turn) in the last 2 hours. After that it leaves ("… left the chat (quiet for 2 hours)"), and its
+  next activity, or a chat call with its handle, takes it back with the same handle, name and marker ("… is back").
 - **Back after stale.** A member removed as stale whose process (same pid and start time) the relay finds alive within
   an hour is taken back into its still-open group with the same handle, name and marker ("Claude Wren is back");
   messages from its absence are not woken again, it reads them with `group_read`.
@@ -110,7 +116,8 @@ beyond its host and folder.
   tint of them. On a phone the members fold into the thread header as dots and names; tap them (▾) for the full list with
   status, intent and claims. On a phone an open thread takes the whole
   screen (*‹ Folders* leads back to the list and the app bar). Message text is set in Atkinson Hyperlegible Next, a
-  face that keeps l, I and 1 (and 0 and O) apart; the time and read dot sit at the foot of each message. The
+  face that keeps l, I and 1 (and 0 and O) apart, with a small Markdown subset rendered (paragraphs, lists, bold,
+  italic, code, code blocks, http(s) links; everything else as typed); the time and read dot sit at the foot of each message. The
   composer has an *FYI* toggle above *Send*, beside the field, and an `@` picker of the members' names. The pane shows the current group at the bottom
   (messages, composer, Pause/Resume); every earlier group of that folder sits above it as one
   collapsed bar ("Earlier session … · N messages · agents can read it only on request, as history"), or as one small

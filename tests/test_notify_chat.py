@@ -231,3 +231,20 @@ def test_ignores_http_proxy(chatlive, tmp_path):
               http_proxy="http://127.0.0.1:9", HTTP_PROXY="http://127.0.0.1:9", no_proxy="")
     assert p.returncode == 0 and p.stderr == "", p.stderr
     assert live_count(chatlive) == 1
+
+
+@pytest.mark.parametrize("extra, shared", [(["app-server", "--listen", "unix://"], 1), ([], 0)])
+def test_start_codex_flags_the_shared_app_server(chatlive, tmp_path, extra, shared):
+    # 0.18.0: sessions hosted by `codex app-server` share its pid; the join says so
+    e = Env(tmp_path, chatlive)
+    codex = tmp_path / "codex"
+    codex.symlink_to(os.path.realpath(shutil.which("python3") or sys.executable))
+    code = ("import subprocess,sys,os;"
+            "p=subprocess.run([sys.executable,sys.argv[1],'start','--agent','codex'],stdin=sys.stdin);"
+            "sys.exit(p.returncode)")
+    proc = subprocess.Popen([str(codex), "-c", code, str(SCRIPT), *extra], stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=e.env())
+    out, err = proc.communicate(json.dumps(hook(tmp_path, sid=f"cx-{shared}")), timeout=20)
+    assert proc.returncode == 0 and err == "", err
+    row = chatlive.service.db.one("SELECT pid, shared_process FROM chat_members")
+    assert row["pid"] == proc.pid and row["shared_process"] == shared

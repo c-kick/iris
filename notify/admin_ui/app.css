@@ -611,7 +611,18 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .ticks i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; }
 .ticks.unseen { color: var(--warn); }
 .ticks.seen { color: var(--ok); }
-.cm .body { white-space: pre-wrap; margin-top: .2rem; max-width: 68ch; font: 400 15.5px/1.5 var(--read); color: var(--ink); }
+.cm .body { white-space: normal; margin-top: .2rem; max-width: 68ch; font: 400 15.5px/1.5 var(--read); color: var(--ink); }
+/* the Markdown subset (chatmd.js): quiet, chat-sized; headings are only a bold line */
+.cm .body p { margin: 0 0 .55em; }
+.cm .body > :last-child { margin-bottom: 0; }
+.cm .body ul, .cm .body ol { margin: .1em 0 .55em; padding-left: 1.35em; }
+.cm .body li { margin: .15em 0; }
+.cm .body li::marker { color: var(--faint); }
+.cm .body .md-h { font-weight: 600; margin-top: .2em; }
+.cm .body code { font: 400 .86em var(--mono); padding: .05em .3em; border-radius: 4px; background: color-mix(in srgb, var(--ink) 7%, transparent); overflow-wrap: anywhere; }
+.cm .body pre { white-space: pre-wrap; margin: .2em 0 .6em; padding: .55em .7em; border-radius: 6px; background: color-mix(in srgb, var(--ink) 6%, transparent); overflow-x: auto; }
+.cm .body pre code { padding: 0; background: none; font-size: .84em; line-height: 1.45; }
+.cm .body a { color: var(--action); overflow-wrap: anywhere; }
 .cm.claude { --who: var(--claude); }
 .cm.codex { --who: var(--codex); }
 /* an agent's balloon: its colour on the edge and the name, and a very light tint of it */

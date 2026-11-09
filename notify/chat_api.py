@@ -19,6 +19,7 @@ class JoinIn(BaseModel):
     folder: str = Field(max_length=4096)
     pid: int | None = None
     pid_start: str | None = Field(default=None, max_length=100)
+    shared_process: bool = False  # 0.18.0: pid belongs to a process many sessions share (codex app-server)
 
 
 class LeaveIn(BaseModel):
@@ -44,7 +45,7 @@ class HeartbeatIn(BaseModel):
 async def presence(body: JoinIn, request: Request, client: Client = Depends(require(Scope.chat))) -> dict[str, Any]:
     """A session starts: joined (chats on in this folder, or a group is open here) or present (chats off)."""
     return service(request).chat.presence(client, kind=body.kind, session_id=body.session_id, folder=body.folder,
-                                          pid=body.pid, pid_start=body.pid_start)
+                                          pid=body.pid, pid_start=body.pid_start, shared_process=body.shared_process)
 
 
 @router.post("/join", status_code=201)
@@ -52,7 +53,7 @@ async def presence(body: JoinIn, request: Request, client: Client = Depends(requ
 async def join(body: JoinIn, request: Request, client: Client = Depends(require(Scope.chat))) -> dict[str, Any]:
     """Kept for hook scripts from before 0.14.0: the same as /presence (a member handle either way)."""
     return service(request).chat.presence(client, kind=body.kind, session_id=body.session_id, folder=body.folder,
-                                          pid=body.pid, pid_start=body.pid_start)
+                                          pid=body.pid, pid_start=body.pid_start, shared_process=body.shared_process)
 
 
 @router.post("/leave", status_code=204)

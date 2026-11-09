@@ -108,6 +108,18 @@ def codex_is_exec(pid: int | None) -> bool:
     return False
 
 
+def codex_is_shared_server(pid: int | None) -> bool:
+    """The `codex app-server` process hosts every session of the Codex app and editor extensions (and the TUI since
+    0.16x): its pid outlives each session, so Iris must not treat it as this session's own process."""
+    if not pid:
+        return False
+    try:
+        args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    return b"app-server" in args[1:]
+
+
 def transcript_is_exec(path: Any) -> bool:
     if not isinstance(path, str) or not path:
         return False
@@ -228,6 +240,8 @@ def do_start(args: argparse.Namespace, hook: dict[str, Any]) -> int:
     folder = group_folder(str(hook.get("cwd") or os.getcwd()))
     base, token = settings(args.url, args.token_file)
     body: dict[str, Any] = {"kind": agent, "session_id": sid, "folder": folder, "pid": pid, "pid_start": start}
+    if agent == "codex" and codex_is_shared_server(pid):
+        body["shared_process"] = True
     status, res = post(base, token, "/v1/chat/presence", body, START_TIMEOUT)
     if status in (404, 405):  # a server from before 0.14.0
         status, res = post(base, token, "/v1/chat/join", body, START_TIMEOUT)

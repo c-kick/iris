@@ -348,6 +348,10 @@ class Database:
                       " presence_id TEXT NOT NULL, message_id TEXT NOT NULL, state TEXT NOT NULL, waiter_id TEXT,"
                       " claimed_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_after TEXT, created_at TEXT,"
                       " finished_at TEXT)")
+        # 0.18.0: the session runs inside a process other sessions share (codex app-server): its pid says nothing
+        # about this session, so it is never "the same window" and is kept only while it shows activity
+        self._add_missing_columns({"chat_members": {"shared_process": "INTEGER NOT NULL DEFAULT 0"},
+                                   "chat_presence": {"shared_process": "INTEGER NOT NULL DEFAULT 0"}})
         if not had_adhoc:  # 0.14.0: a group open at the upgrade stays open as an ad-hoc group until it empties
             self.conn.execute("UPDATE chat_groups SET adhoc=1 WHERE state='open'")
         self._name_open_members()

@@ -1,6 +1,7 @@
 // Iris management UI. Vanilla JS, no build step.
 
 import { watchSun, nextChange, sunTimes, validPlace } from "./sun.js";
+import { chatMarkdown } from "./chatmd.js";
 
 const root = document.getElementById("root");
 const dialog = document.getElementById("dialog");
@@ -1897,9 +1898,12 @@ function chatGroupRow(g) {
   return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
       ${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span>
-    <span class="p">${esc(g.host)} · ${g.state === "open" ? (g.adhoc ? "open on demand" : "open") : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
+    <span class="p">${esc(g.host)} · ${g.state === "open" ? `${g.adhoc ? "open on demand" : "open"} · ${chatAgentCount(g)}` : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
     <span class="p">${esc(preview)}</span></button>`;
 }
+
+// "4 agents": the members still in an open chat, for the rail row
+const chatAgentCount = (g) => { const n = (g.members || []).filter((m) => !m.left_at).length; return `${n} agent${n === 1 ? "" : "s"}`; };
 
 const CHAT_EXCERPT = 120;
 const chatExcerpt = (t) => {
@@ -1956,7 +1960,7 @@ function chatMessageHtml(m, canReply = false) {
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
   return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name)}${tag}</div>
-    ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : esc(m.text)}</div>
+    ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text)}</div>
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }
 
