@@ -233,3 +233,10 @@ def test_agent_colours_never_look_like_a_status_colour(theme):
         assert _contrast(a, tokens["--surface"]) >= 4.5, (theme, a)  # names are text
     hues = [_hue(a) for a in agents]
     assert min(_gap(x, y) for i, x in enumerate(hues) for y in hues[i + 1:]) >= 20, hues
+
+
+def test_appearance_form_has_no_place_preset_button():
+    # an open-source project: the form offers no button for one particular town; the place is typed in
+    js = (UI / "app.js").read_text()
+    form = js[js.index('<form class="stack" id="appearance">'):js.index("</form>", js.index('id="appearance"'))]
+    assert form.count("<button") == 1 and 'type="submit"' in form

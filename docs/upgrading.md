@@ -2,6 +2,10 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.16.1
+
+Settings → *Appearance* no longer has a button that fills in one particular place; type the latitude and longitude.
+
 ## Upgrading to 0.16.0
 
 No configuration change. New: Settings → *Appearance*, sun-based dark mode for the admin pages (off until you turn

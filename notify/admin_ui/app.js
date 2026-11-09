@@ -802,7 +802,7 @@ const VIEWS = {
           </div>
           <p class="hint" id="sun-today"></p>
           <div class="form-error" role="alert"></div>
-          <div class="form-actions"><button class="btn" type="button" id="houten">Use Houten</button><button class="btn primary" type="submit">Save appearance</button></div>
+          <div class="form-actions"><button class="btn primary" type="submit">Save appearance</button></div>
         </form></div>
       <div class="block"><h3>Access requests</h3>
         <form class="stack" id="reg">
@@ -855,7 +855,6 @@ const VIEWS = {
     ap.elements.latitude.inputMode = ap.elements.longitude.inputMode = "decimal";
     ap.elements.latitude.oninput = ap.elements.longitude.oninput = showSun;
     showSun();
-    ap.querySelector("#houten").onclick = () => { ap.elements.latitude.value = "52.0281"; ap.elements.longitude.value = "5.1686"; showSun(); };
     ap.onsubmit = async (e) => {
       e.preventDefault();
       const err = ap.querySelector(".form-error");
