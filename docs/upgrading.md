@@ -2,6 +2,11 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.16.3
+
+Chats on narrow screens: the member strip in the thread header shows each agent name in its colour, as the member
+list does on wider screens.
+
 ## Upgrading to 0.16.2
 
 Settings → *Appearance* has no default place any more: latitude and longitude stay empty until you enter them, and

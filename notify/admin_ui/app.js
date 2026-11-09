@@ -1858,18 +1858,25 @@ function chatMembersHtml(g) {
     const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";
     const rename = `<button type="button" class="btn quiet cmem-rename" data-rename="${esc(m.id)}" data-name="${esc(name)}" aria-label="Rename ${esc(name)}" title="Rename">✎</button>`;
     return `<li class="cmem"><button type="button" class="cmem-main" data-mention="${esc(m.name || "")}" title="${m.name ? `Mention ${esc(name)} in your message` : ""}">
-      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chats.colors[m.id] !== undefined ? ` style="color: var(--a${chats.colors[m.id]})"` : ""}>${esc(name)}</span> <small>${esc(kind)}</small>
+      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chatNameStyle(m)}>${esc(name)}</span> <small>${esc(kind)}</small>
       <span class="sub">${sub}</span></button>${claims}${rename}</li>`;
   }).join("");
   const others = (g.presences || []).map((p) => `<li class="cmem away"><span class="sdot unknown" aria-hidden="true"></span><span class="nm">${esc(CHAT_WHO[p.kind] || p.kind)}</span> <small>not in the chat</small></li>`).join("");
   return `<div class="chat-members" aria-label="Members"><ul>${rows || `<li class="cmem empty-row">Nobody here</li>`}</ul>${others ? `<div class="also">Also here</div><ul>${others}</ul>` : ""}</div>`;
 }
 // the same members folded into the thread header on a narrow screen: dots and names
+// a member's name in its agent colour (style attribute, or nothing before the colours are known); used by the member
+// list and by the compact strip that replaces it on narrow screens
+function chatNameStyle(m) {
+  const ci = chats.colors[m.id];
+  return ci !== undefined ? ` style="color: var(--a${ci})"` : "";
+}
+
 function chatMembersMini(g) {
   if (g.state !== "open") return "";
   return g.members.filter((m) => !m.left_at).map((m) => {
     const st = chatStatusOf(m);
-    return `<span class="mini"><span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span>${esc(m.name || CHAT_WHO[m.kind] || m.kind)}</span>`;
+    return `<span class="mini"><span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chatNameStyle(m)}>${esc(m.name || CHAT_WHO[m.kind] || m.kind)}</span></span>`;
   }).join("");
 }
 

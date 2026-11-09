@@ -259,3 +259,16 @@ def test_no_personal_place_in_the_shipped_code_or_docs():
         if path.suffix in (".py", ".js", ".css", ".html", ".md", ".yaml"):
             text = path.read_text(errors="replace").lower()
             assert "houten" not in text and "52.0281" not in text, path
+
+
+def test_every_member_name_rendering_uses_the_agent_colour():
+    # the narrow-screen header strip (chatMembersMini) showed names without their colour; desktop list and messages
+    # had it. Both member renderings go through one helper.
+    js = (UI / "app.js").read_text()
+
+    def body(fn):
+        i = js.index(f"function {fn}(")
+        return js[i:js.index("\n}\n", i)]
+    for fn in ("chatMembersMini", "chatMembersHtml"):
+        assert "chatNameStyle(m)" in body(fn), fn
+    assert "var(--a${" in body("chatNameStyle")
