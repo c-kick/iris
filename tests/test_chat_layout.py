@@ -82,3 +82,24 @@ def test_returning_to_the_tab_catches_up_at_once_and_says_so():
     assert "chats.ticking" in tick, "one refresh at a time; a request during one runs once more after it"
     pill = _rule(".chat-sync")
     assert "position: absolute" in pill, "floats: showing it moves nothing"
+
+
+def test_chat_field_spellchecks_and_is_not_taken_for_a_contact_field():
+    tag = re.search(r'<textarea id="chat-text"[^>]*>', JS).group(0)
+    for attr in ('spellcheck="true"', 'autocorrect="on"', 'autocapitalize="sentences"', 'autocomplete="off"'):
+        assert attr in tag, attr
+    ph = re.search(r'placeholder="([^"]*)"', tag).group(1)
+    assert "name" not in ph.lower(), "Safari offers contact autofill on fields that mention a name"
+
+
+def test_phone_strip_opens_every_member_with_status():
+    head = JS[JS.index('<div class="chat-head">'):JS.index('<div class="chat-paused"')]
+    assert re.search(r'<button type="button" class="chat-mini" id="chat-mini" aria-expanded="false" aria-controls="chat-roster"', head)
+    assert 'id="chat-roster"' in head, "the roster floats under the header"
+    assert "position: absolute" in _rule(".chat-roster"), "opening it moves nothing"
+    toggle = _fn("function chatRosterToggle")
+    fill = _fn("function chatRosterFill")
+    assert "chatRosterFill(" in toggle
+    assert "chatMembersHtml(" in fill and "chatBindMembers(" in fill, "the same list and actions as on desktop"
+    assert "chatBindMembers(list, el)" in _fn("function chatsRenderList")
+    assert "Escape" in toggle

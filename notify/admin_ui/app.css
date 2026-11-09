@@ -544,6 +544,18 @@ details.delivery summary:hover { color: var(--ink); }
 .sdot.waiting { background: var(--waiting); }
 .sdot.free { background: var(--ok); }
 .chat-mini { display: none; }
+/* phone: the header strip is a button; the roster opens under the header, floating over the thread */
+.chat-head { position: relative; }
+.chat-roster {
+  position: absolute; z-index: 7; top: calc(100% + 4px); left: .5rem; right: .5rem;
+  max-height: min(65vh, calc(var(--app-h, 100dvh) - 9rem)); overflow: auto; overscroll-behavior: contain;
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-m); box-shadow: var(--shadow-float);
+}
+.chat-roster[hidden] { display: none; }
+.chat-roster .chat-members { border-bottom: 0; box-shadow: none; padding: .35rem 0; background: transparent; }
+.chat-roster .cmem { font-size: .9rem; padding-block: .1rem; }
+.chat-roster .cmem-main { padding-block: .45rem; }
+.chat-roster .cmem .sub { white-space: normal; }
 .cmem-rename { flex: none; font-size: .8rem; padding: .2rem .4rem; margin-top: .1rem; color: var(--faint); opacity: 0; }
 .cmem:hover .cmem-rename, .cmem-rename:focus-visible { opacity: 1; }
 @media (hover: none) { .cmem-rename { opacity: 1; } }
@@ -670,7 +682,15 @@ details.delivery summary:hover { color: var(--ink); }
   .chat-head .back { display: inline-flex; padding-inline: .5rem; white-space: nowrap; flex: none; }
   .chat-head .grow { flex: 1 1 auto; }
   .chat-head .grow > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .chat-mini { display: block; }
+  .chat-mini {
+    all: unset; box-sizing: border-box; display: flex; align-items: center; gap: .3rem; max-width: 100%;
+    margin: .1rem 0 0 -.3rem; padding: .15rem .3rem; border-radius: var(--radius-s); cursor: pointer;
+  }
+  .chat-mini[hidden] { display: none; }
+  .chat-mini:focus-visible { outline: 3px solid var(--focus); outline-offset: 0; }
+  .chat-mini[aria-expanded="true"] { background: var(--action-wash); }
+  .chat-mini .mini-list { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chat-mini .mini-more { flex: none; color: var(--action); font-size: .8rem; line-height: 1; }
   .chat-head #chat-pausebtn { flex: none; padding-inline: .6rem; }
   .chat-head #chat-limitbtn { display: none; }
   .chat-watch .long { display: none; }

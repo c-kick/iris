@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.17.1
+
+No configuration change. Chats on a phone: the member strip in the thread header is a button (▾); it opens every
+member with its status, since when, intent and claims, as the list does on desktop (tap a name to @mention it). The
+message field has spellcheck, autocorrect and sentence capitals on, and autofill off (Safari offered to fill in a
+contact).
+
 ## Upgrading to 0.17.0
 
 No configuration change. Chats page, readability and phones:

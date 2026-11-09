@@ -107,7 +107,8 @@ beyond its host and folder.
   the thread (status dot: amber busy, amber ring busy?, blue waiting, green free, grey unknown; name, kind, status
   since, intent, claims held; click a member to @mention it; a member who left is only its "left the chat" line in the thread; sessions
   present but not in the chat below them). Each agent has its own colour (four distinct violet-to-pink ones, by join order; never a status colour such as green, amber, red or blue) on its name, the edge of its messages and a light
-  tint of them. On a phone the members fold into the thread header as dots and names, and an open thread takes the whole
+  tint of them. On a phone the members fold into the thread header as dots and names; tap them (▾) for the full list with
+  status, intent and claims. On a phone an open thread takes the whole
   screen (*‹ Folders* leads back to the list and the app bar). Message text is set in Atkinson Hyperlegible Next, a
   face that keeps l, I and 1 (and 0 and O) apart; the time and read dot sit at the foot of each message. The
   composer has an *FYI* toggle above *Send*, beside the field, and an `@` picker of the members' names. The pane shows the current group at the bottom

@@ -1997,15 +1997,48 @@ function chatsRenderList(el) {
   list.innerHTML = top + (chats.folders.map((f) => chatGroupRow(f) + (chatKey(f) === chats.selected ? chatMembersHtml(f) : "")).join("")
     || `<div class="empty">No chats yet.</div>`);
   list.querySelectorAll("[data-key]").forEach((b) => (b.onclick = () => chatOpen(el, b.dataset.key)));
-  list.querySelectorAll("[data-mention]").forEach((b) => (b.onclick = () => chatMention(el, b.dataset.mention)));
-  list.querySelectorAll("[data-claim]").forEach((b) => (b.onclick = () => chatShowMessage(el, b.dataset.claim)));
-  list.querySelectorAll("[data-rename]").forEach((b) => (b.onclick = () => chatRename(el, b.dataset.rename, b.dataset.name)));
+  chatBindMembers(list, el);
   const fb = list.querySelector("#chat-folders-btn");
   if (fb) fb.onclick = () => chatFolders(el);
   const nav = document.querySelector('[data-nav="chats"]');
   if (nav) nav.querySelector(".badge")?.remove();
   const n = chatUnread();
   if (nav && n) nav.insertAdjacentHTML("beforeend", ` <span class="badge" aria-label="${n} unread">${n}</span>`);
+}
+
+// what a member row does: tap the name to @mention it, the claims to see the oldest one, ✎ to rename it
+function chatBindMembers(root, el, after = () => {}) {
+  root.querySelectorAll("[data-mention]").forEach((b) => (b.onclick = () => { after(); chatMention(el, b.dataset.mention); }));
+  root.querySelectorAll("[data-claim]").forEach((b) => (b.onclick = () => { after(); chatShowMessage(el, b.dataset.claim); }));
+  root.querySelectorAll("[data-rename]").forEach((b) => (b.onclick = () => { after(); chatRename(el, b.dataset.rename, b.dataset.name); }));
+}
+
+// On a phone the members fold into one line in the header; tapping it opens all of them, as on desktop, in a
+// panel that floats over the thread (nothing moves). Escape, a tap outside or picking someone closes it.
+function chatRosterFill(el, g) {
+  const roster = el.querySelector("#chat-roster");
+  roster.innerHTML = chatMembersHtml(g);
+  chatBindMembers(roster, el, () => chatRosterToggle(el, false));
+}
+function chatRosterToggle(el, open) {
+  const roster = el.querySelector("#chat-roster");
+  const mini = el.querySelector("#chat-mini");
+  if (!roster || !mini) return;
+  const g = chatFolderOf(chats.selected);
+  open = open ?? roster.hidden;
+  if (open && g) chatRosterFill(el, g);
+  roster.hidden = !open;
+  mini.setAttribute("aria-expanded", String(open));
+  document.removeEventListener("pointerdown", chats.rosterOutside, true);
+  document.removeEventListener("keydown", chats.rosterKey, true);
+  if (!open) return;
+  chats.rosterOutside = (e) => {
+    if (!roster.isConnected) { chatRosterToggle(el, false); return; }
+    if (!roster.contains(e.target) && !mini.contains(e.target)) chatRosterToggle(el, false);
+  };
+  chats.rosterKey = (e) => { if (e.key === "Escape") { chatRosterToggle(el, false); mini.focus(); } };
+  document.addEventListener("pointerdown", chats.rosterOutside, true);
+  document.addEventListener("keydown", chats.rosterKey, true);
 }
 
 // "@" in the composer: a list of the members' names (and all) to pick from, filtered as you type
@@ -2201,16 +2234,17 @@ async function chatOpen(el, key, keep = false) {
   chats.currentId = id;
   pane.innerHTML = `
     <div class="chat-head"><button type="button" class="btn quiet back" id="chat-back" aria-label="All folders">‹ Folders</button>
-      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span><span class="chat-mini" id="chat-mini"></span></div>
+      <div class="grow"><b id="chat-title"></b><span class="hint" id="chat-sub"></span><button type="button" class="chat-mini" id="chat-mini" aria-expanded="false" aria-controls="chat-roster" hidden></button></div>
       <div class="chat-head-note"><button type="button" class="btn quiet" id="chat-limitbtn" hidden title="How many messages each agent may post while this group is paused"></button>
         <span class="hint chat-watch off" id="chat-watch" title="While you're watching, the group does not pause itself"><span class="long">You're watching: no auto-pause</span><span class="short">Watching</span></span></div>
-      <button type="button" class="btn" id="chat-pausebtn" hidden></button></div>
+      <button type="button" class="btn" id="chat-pausebtn" hidden></button>
+      <div class="chat-roster" id="chat-roster" role="region" aria-label="Members" hidden></div></div>
     <div class="chat-paused" id="chat-paused" hidden></div>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
     <form class="chat-compose" id="chat-compose" hidden>
       <div class="chat-replying" id="chat-replying" hidden><span class="rq"></span><button type="button" class="btn quiet" id="chat-reply-cancel" aria-label="Cancel reply">✕</button></div>
       <label class="sr" for="chat-text">Message this group</label>
-      <textarea id="chat-text" rows="2" placeholder="Message the group (@name: one member, @all: everyone)" aria-autocomplete="list" aria-controls="chat-at"></textarea>
+      <textarea id="chat-text" rows="2" placeholder="Message the group (@ to pick who acts)" spellcheck="true" autocorrect="on" autocapitalize="sentences" autocomplete="off" aria-autocomplete="list" aria-controls="chat-at"></textarea>
       <ul class="chat-at" id="chat-at" role="listbox" aria-label="Members to mention" hidden></ul>
       <div class="compose-side"><label class="fyi-toggle" title="A heads-up: everyone reads it, nobody acts on it"><input type="checkbox" id="chat-fyi"> FYI</label>
       <button type="submit" class="btn primary">Send</button></div>
@@ -2224,6 +2258,7 @@ async function chatOpen(el, key, keep = false) {
     catch (ex) { toast(ex.message); }
     finally { btn.disabled = false; }
   };
+  pane.querySelector("#chat-mini").onclick = () => chatRosterToggle(el);
   pane.querySelector("#chat-back").onclick = () => { chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
   pane.querySelector("#chat-limitbtn").onclick = () => {
     const cur = chats.group || {};
@@ -2333,7 +2368,13 @@ function chatHeader(el, g, f) {
   el.querySelector("#chat-title").textContent = `${g.folder}`;
   // open: the members are listed under the thread (or as dots in the header on a phone); closed: when it closed
   el.querySelector("#chat-sub").textContent = g.state === "open" ? ` ${g.host}` : ` ${g.host} · ${chatMembersText(g)}`;
-  el.querySelector("#chat-mini").innerHTML = chatMembersMini(g);
+  const mini = el.querySelector("#chat-mini");
+  const n = chatMembersShown(g).length;
+  mini.hidden = g.state !== "open";
+  mini.innerHTML = `<span class="mini-list">${chatMembersMini(g)}</span><span class="mini-more" aria-hidden="true">▾</span>`;
+  mini.setAttribute("aria-label", `${n} member${n === 1 ? "" : "s"}: show all with their status`);
+  const roster = el.querySelector("#chat-roster");
+  if (roster && !roster.hidden) { if (g.state === "open") chatRosterFill(el, g); else chatRosterToggle(el, false); }
   const p = el.querySelector("#chat-paused");
   p.hidden = !(g.paused && g.state === "open");
   p.textContent = `Paused. Each agent may post ${g.paused_posts_effective ?? "a few"} more message${g.paused_posts_effective === 1 ? "" : "s"}; post here or press Resume to let them continue.`;
