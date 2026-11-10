@@ -1460,7 +1460,9 @@ class Chat:
         gid = member["group_id"]
         with self.db.tx() as c:
             cur = c.execute("SELECT last_read_rowid FROM chat_members WHERE id=?", (member["id"],)).fetchone()
-            sql = "SELECT rowid AS rid, * FROM chat_messages WHERE group_id=?"
+            # a notification notice carries a title its sender chose: it is for the owner's page, never handed to
+            # the other agents as a line from Iris
+            sql = "SELECT rowid AS rid, * FROM chat_messages WHERE group_id=? AND kind<>'alert'"
             params: list[Any] = [gid]
             if all:
                 pass

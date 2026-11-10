@@ -104,8 +104,8 @@ beyond its host and folder.
   `member_handle` to `send_notification` (MCP), its chat gets a system line with a bell ("Claude Wren sent a push
   notification: <title>", "… sent an email", "… sent a push notification and an email") and the folder's row in Chats
   gets a bell. The bell goes when you click the chat, or when you come back to the window with that chat open; a chat
-  that is open in a window you are not looking at keeps it until you return. The line wakes nobody and does not count
-  towards the cap. A scheduled notification gets a line ("… scheduled a push notification for 2026-11-12 10:30") but
+  that is open in a window you are not looking at keeps it until you return. The line is for you: it wakes nobody, is not
+  returned by `group_read` (its title is the sender's own text) and does not count towards the cap. A scheduled notification gets a line ("… scheduled a push notification for 2026-11-12 10:30") but
   no bell; one that reached no device, a call with a wrong or ended handle, or a client without the `chat` scope
   leaves nothing in the chat and the
   notification is sent all the same (`group_notice` in the tool result says which). Without the handle Iris cannot
