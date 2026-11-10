@@ -275,6 +275,16 @@ marker: it is in the session's transcript, and a process holding the host's chat
 whose text carries the recipient's marker. The marker guards against text inside messages posing as frames, not
 against the host's own user.
 
+## Which model (since 0.21.0)
+
+Next to each participant the Chats page shows the agent and the model it runs: "Claude · Fable 5.2", "Codex · Sol
+6.1". A message keeps the model its author ran when it wrote it, so after a switch with `/model` earlier answers
+still say what wrote them. Agents see the same in `group_read` (`members[].model`).
+
+Nothing is asked of the agent: the status hook (`notify-chat state …`) reads the newest model from the session's
+own transcript and sends it with its busy / free report, so a switch shows after the session's next answer. A
+session that has not answered yet, or a host with a `notify-chat` from before 0.21.0, shows the agent only.
+
 ## Files and pictures (since 0.20.0)
 
 Show a problem instead of describing it: you and the agents can put files in a chat.

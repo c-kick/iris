@@ -35,6 +35,7 @@ class StatusIn(BaseModel):
     session_id: str = Field(max_length=200)
     folder: str | None = Field(default=None, max_length=4096)  # informational; the session id finds the member
     status: str = Field(max_length=20)
+    model: str | None = Field(default=None, max_length=120)  # 0.21.0: the model the session runs, from its transcript
 
 
 class NotifyingIn(BaseModel):
@@ -79,7 +80,8 @@ async def leave(request: Request, body: LeaveIn | None = None,
 @_errors
 async def status(body: StatusIn, request: Request, client: Client = Depends(require(Scope.chat))) -> Response:
     """Status hooks: busy / waiting / free, or an "active" ping. 404 when the session is in no chat."""
-    service(request).chat.set_status(client, kind=body.kind, session_id=body.session_id, status=body.status)
+    service(request).chat.set_status(client, kind=body.kind, session_id=body.session_id, status=body.status,
+                                     model=body.model)
     return Response(status_code=204)
 
 

@@ -392,6 +392,55 @@ def announce_notification(args: argparse.Namespace, hook: dict[str, Any], sid: s
         print(f"notify-chat: {type(e).__name__}", file=sys.stderr)
 
 
+MODEL_TAIL = 256 << 10  # bytes read from the end of the session's transcript when looking for its model
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,79}$")
+
+
+def session_model(hook: dict[str, Any]) -> str | None:
+    """The model this session runs now: the newest one named in its own transcript (Claude writes it on every
+    answer, Codex on every turn), so a switch with /model shows after the next answer. Only a line's own model
+    field counts, never text a user typed or a tool printed; side chains (subagents) are skipped. Falls back to
+    what the hook input names. None when nothing is known: the status report then goes without it."""
+    path = hook.get("transcript_path")
+    if isinstance(path, str) and path:
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - MODEL_TAIL))
+                lines = f.read().decode("utf-8", errors="replace").split("\n")
+            if size > MODEL_TAIL:
+                lines = lines[1:]  # the first line of the tail is cut off
+            for line in reversed(lines):
+                if '"model"' not in line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(d, dict) or d.get("isSidechain"):
+                    continue
+                for holder in (d.get("message"), d.get("payload"), d):
+                    m = holder.get("model") if isinstance(holder, dict) else None
+                    if isinstance(m, str) and MODEL_RE.match(m):
+                        return m
+        except OSError:
+            pass
+    m = hook.get("model")
+    return m if isinstance(m, str) and MODEL_RE.match(m) else None
+
+
+def post_status(base: str, token: str, body: dict[str, Any], model: str | None) -> int:
+    """Report the status, with the model when known. A server from before 0.21.0 refuses the unknown field
+    (422): the report is then sent again without it, so a newer script never breaks an older server."""
+    if model:
+        code, _ = post(base, token, "/v1/chat/status", {**body, "model": model}, STATE_TIMEOUT)
+        if code != 422:
+            return code
+    code, _ = post(base, token, "/v1/chat/status", body, STATE_TIMEOUT)
+    return code
+
+
 def do_state(args: argparse.Namespace, hook: dict[str, Any]) -> int:
     sid = hook.get("session_id")
     if not isinstance(sid, str) or not sid:
@@ -418,7 +467,7 @@ def do_state(args: argparse.Namespace, hook: dict[str, Any]) -> int:
             status = "busy"  # the turn ended, but the session still waits on its own background command
     base, token = settings(args.url, args.token_file)
     body = {"kind": args.agent, "session_id": sid, "status": status}  # the session id finds the member
-    code, _ = post(base, token, "/v1/chat/status", body, STATE_TIMEOUT)
+    code = post_status(base, token, body, session_model(hook))
     if announce:
         announce_notification(args, hook, sid)
     if code not in (204, 404):

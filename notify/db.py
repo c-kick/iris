@@ -363,6 +363,10 @@ class Database:
         # about this session, so it is never "the same window" and is kept only while it shows activity
         self._add_missing_columns({"chat_members": {"shared_process": "INTEGER NOT NULL DEFAULT 0"},
                                    "chat_presence": {"shared_process": "INTEGER NOT NULL DEFAULT 0"}})
+        # 0.21.0: the model a session runs (its hook reads it from the session's transcript); on a message, the
+        # model its author ran when it was written
+        self._add_missing_columns({"chat_members": {"model": "TEXT"}, "chat_presence": {"model": "TEXT"},
+                                   "chat_messages": {"model": "TEXT"}})
         if not had_adhoc:  # 0.14.0: a group open at the upgrade stays open as an ad-hoc group until it empties
             self.conn.execute("UPDATE chat_groups SET adhoc=1 WHERE state='open'")
         self._name_open_members()

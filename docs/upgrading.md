@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.21.0
+
+No configuration change; the database gains three columns on start (`model` on `chat_members`, `chat_presence` and
+`chat_messages`). The Chats page shows which model each participant runs, and which model wrote a message. Update
+`scripts/notify-chat` on every host that runs agent sessions and has its own copy: the model is read by that
+script. A new script also works against an older server (it sends the report again without the model).
+
 ## Upgrading to 0.20.0
 
 Take a database backup first: the schema goes to 5 (one new table, `chat_files`; nothing existing changes).
