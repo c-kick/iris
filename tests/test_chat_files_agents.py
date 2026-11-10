@@ -258,9 +258,18 @@ def run_file(e, cwd, *args, **extra):
                           env=e.env(**extra), cwd=str(cwd), timeout=30)
 
 
-def test_notify_chat_file_saves_and_prints_the_path(chatlive, tmp_path):  # noqa: F811
-    work = tmp_path / "work"
-    work.mkdir()
+@pytest.fixture
+def outside():
+    """Two folders outside any git checkout: the script takes a checkout's top folder as the chat's folder, and
+    pytest's basetemp may itself live inside a checkout (then every tmp_path is one and the same folder to it)."""
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory(prefix="nc-work-") as a, tempfile.TemporaryDirectory(prefix="nc-else-") as b:
+        yield Path(a).resolve(), Path(b).resolve()
+
+
+def test_notify_chat_file_saves_and_prints_the_path(chatlive, tmp_path, outside):  # noqa: F811
+    work, other = outside
     e = Env(tmp_path, chatlive)
     assert e.run("start", "claude", hook(work, sid="sess-file"), CLAUDE_PID=str(os.getpid())).returncode == 0
     files = chatlive.service.chat.files = FakeFiles()
@@ -282,8 +291,6 @@ def test_notify_chat_file_saves_and_prints_the_path(chatlive, tmp_path):  # noqa
     for args, words in ((("cf_old",), "expired"), (("cf_nope",), "not found"), (("../etc",), "file id"), ((), "file id")):
         p = run_file(e, work, *args)
         assert p.returncode == 1 and words in p.stderr and p.stdout == "", (args, p.stderr)
-    other = tmp_path / "elsewhere"
-    other.mkdir()
     p = run_file(e, other, "cf_1")  # a folder without a session in a chat
     assert p.returncode == 1 and "no session of this folder" in p.stderr
 
