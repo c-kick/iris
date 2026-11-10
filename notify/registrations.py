@@ -15,6 +15,7 @@ import logging
 import os
 import secrets
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl
 
@@ -287,9 +288,11 @@ async def my_registration(request: Request) -> dict[str, Any]:
 # stored). Opening the page never decides anything: a button press (POST) does.
 # The code is cleared on any decision, from here or from the admin UI.
 
-LOGO = ('<svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" '
-        'fill="var(--action)"/><path d="M7 16h4.500l2.500-6 4 12 2.500-6H25" fill="none" stroke="var(--action-ink)" '
-        'stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+# the same mark and wordmark as the admin page (a test keeps them identical to app.js)
+LOGO = ('<svg class="mark" width="30" height="30" viewBox="0 0 128 128" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round"><path stroke-width="9" d="M102.369 81.083A42 42 0 0 1 81.083 102.369M46.917 102.369A42 42 0 0 1 25.631 81.083M25.631 46.917A42 42 0 0 1 46.917 25.631M81.083 25.631A42 42 0 0 1 102.369 46.917"/><path stroke-width="8" d="M93 64h18M64 93v18M35 64H17M64 35V17"/></g><g fill="currentColor"><circle cx="118" cy="64" r="7"/><circle cx="64" cy="118" r="7"/><circle cx="10" cy="64" r="7"/><circle cx="64" cy="10" r="7"/></g><circle class="hub" cx="64" cy="64" r="13"/></svg>')
+_WORD = (Path(__file__).parent / "admin_ui" / "brand" / "iris-wordmark.svg").read_text()
+WORDMARK = ('<svg class="word" viewBox="5.18 -108.55 219.92 110.03" aria-hidden="true">'
+            '<path fill="currentColor" d="' + _WORD.split(' d="', 1)[1].split('"', 1)[0] + '"/></svg>')
 
 
 def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
@@ -301,7 +304,7 @@ def _page(title: str, body: str, status: int = 200) -> HTMLResponse:
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="/admin/static/app.css"></head>
 <body><main class="gate"><div class="panel decide">
-<div class="brand">{LOGO}<h1>Iris</h1></div>
+<div class="brand">{LOGO}<h1 class="wordmark" aria-label="Iris">{WORDMARK}</h1></div>
 {body}
 </div></main></body></html>"""
     return HTMLResponse(doc, status_code=status,

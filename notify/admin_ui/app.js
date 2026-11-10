@@ -197,7 +197,9 @@ function until(iso) {
 }
 // ---- end zone helpers ----
 
-const logo = `<svg width="28" height="28" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="var(--action)"/><path d="M7 16h4.500l2.500-6 4 12 2.500-6H25" fill="none" stroke="var(--action-ink)" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+// the Compass Hub mark and the wordmark (Merriweather Bold, drawn as outlines: no font is loaded for it)
+const logo = `<svg class="mark" width="30" height="30" viewBox="0 0 128 128" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round"><path stroke-width="9" d="M102.369 81.083A42 42 0 0 1 81.083 102.369M46.917 102.369A42 42 0 0 1 25.631 81.083M25.631 46.917A42 42 0 0 1 46.917 25.631M81.083 25.631A42 42 0 0 1 102.369 46.917"/><path stroke-width="8" d="M93 64h18M64 93v18M35 64H17M64 35V17"/></g><g fill="currentColor"><circle cx="118" cy="64" r="7"/><circle cx="64" cy="118" r="7"/><circle cx="10" cy="64" r="7"/><circle cx="64" cy="10" r="7"/></g><circle class="hub" cx="64" cy="64" r="13"/></svg>`;
+const wordmark = `<svg class="word" viewBox="5.18 -108.55 219.92 110.03" aria-hidden="true"><path fill="currentColor" d="M16.62 -9.22V-90.04L5.18 -91.86V-100H48.25V-91.86L36.54 -90.04V-9.22L48.25 -7.67V0H5.32V-7.81ZM58.08 0V-7.74L66.89 -8.88V-61.78L58.28 -64.27V-73.28L79.21 -76.18H79.74L83.18 -73.55V-70.52L82.77 -58.75H83.18Q83.78 -60.5 85.7 -63.29Q87.62 -66.08 90.75 -68.98Q93.88 -71.87 98.08 -73.82Q102.29 -75.77 107.34 -75.77Q109.22 -75.77 110.5 -75.5Q111.78 -75.24 112.52 -74.97V-55.59Q111.24 -56.53 108.92 -57.13Q106.59 -57.74 102.69 -57.74Q98.52 -57.74 95.29 -56.8Q92.06 -55.85 89.74 -54.61Q87.42 -53.36 85.94 -52.22V-8.95L101.28 -7.67V0ZM120.39 0V-7.81L129.68 -9.08V-61.78L120.26 -64.33V-73.01L144.82 -76.18H145.15L148.86 -73.49V-9.02L157.87 -7.81V0ZM137.69 -86.47Q132.57 -86.47 129.91 -89.64Q127.25 -92.8 127.25 -96.77Q127.25 -101.55 130.18 -105.05Q133.11 -108.55 138.83 -108.55H138.96Q144.08 -108.55 146.77 -105.48Q149.46 -102.42 149.46 -98.45Q149.46 -93.67 146.53 -90.07Q143.61 -86.47 137.82 -86.47ZM194.82 1.48Q188.56 1.48 183.14 0.4Q177.73 -0.67 173.62 -1.95Q169.52 -3.23 167.09 -3.9L167.16 -21.53H178.26L181.29 -11.1Q182.03 -9.96 184.02 -8.88Q186 -7.81 188.66 -7.13Q191.32 -6.46 194.01 -6.46Q198.38 -6.46 201.18 -7.67Q203.97 -8.88 205.28 -11Q206.59 -13.12 206.59 -15.88Q206.59 -19.52 203.94 -21.94Q201.28 -24.36 196.64 -26.48Q191.99 -28.6 185.87 -31.22Q179.95 -33.78 175.81 -37.05Q171.67 -40.31 169.48 -44.75Q167.29 -49.19 167.29 -55.18Q167.29 -61.31 170.9 -66.02Q174.5 -70.73 181.02 -73.45Q187.55 -76.18 196.37 -76.18Q202.89 -76.18 207.54 -75.27Q212.18 -74.36 215.38 -73.42Q218.57 -72.48 220.59 -72.14V-54.44H210.09L207 -64.54Q206.46 -65.55 204.98 -66.39Q203.5 -67.23 201.41 -67.8Q199.33 -68.37 196.84 -68.37Q193.2 -68.37 190.48 -67.26Q187.75 -66.15 186.31 -64.17Q184.86 -62.18 184.86 -59.49Q184.86 -55.52 187.28 -52.96Q189.7 -50.4 193.64 -48.62Q197.58 -46.84 202.02 -44.95Q206.26 -43.14 210.4 -41.02Q214.54 -38.9 217.83 -36.17Q221.13 -33.45 223.12 -29.71Q225.1 -25.98 225.1 -20.86Q225.1 -14.6 221.77 -9.52Q218.44 -4.44 211.71 -1.48Q204.98 1.48 194.82 1.48Z"/></svg>`;
 
 function fmtSize(bytes) {
   if (bytes < 1024) return `${bytes} bytes`;
@@ -327,7 +329,7 @@ function renderGate(mode, message = "") {
   const setup = mode === "setup";
   root.innerHTML = `
     <main class="gate"><div class="panel">
-      <div class="brand">${logo}<h1>Iris</h1></div>
+      <div class="brand">${logo}<h1 class="wordmark" aria-label="Iris">${wordmark}</h1></div>
       <h2>${setup ? "Set up the admin password" : "Sign in"}</h2>
       ${setup ? `<p class="hint">Find the setup code in the container log:<br><code>docker logs iris 2>&1 | grep "setup code"</code></p>` : ""}
       <form class="stack" novalidate>
@@ -424,7 +426,7 @@ function render() {
   root.innerHTML = `
     <div class="shell">
       <aside class="side">
-        <div class="top"><div class="brand">${logo}<div><h1>Iris</h1><span class="sub">notification desk</span></div></div><button class="btn quiet signout" data-signout>Sign out</button></div>
+        <div class="top"><div class="brand">${logo}<div><h1 class="wordmark" aria-label="Iris">${wordmark}</h1><span class="sub">notification desk</span></div></div><button class="btn quiet signout" data-signout>Sign out</button></div>
         <nav class="nav" aria-label="Sections">${nav}</nav>
         <div class="foot"><span>v${esc(state.version)}</span><button class="btn quiet" data-signout>Sign out</button></div>
       </aside>
