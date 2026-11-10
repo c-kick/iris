@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Iris compass hub">
+<rect width="128" height="128" rx="27" fill="#092323"/>
+<path d="M91.00 64.00L107.00 64.00" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"/>
+<circle cx="113.00" cy="64.00" r="7" fill="#FFFFFF"/>
+<path d="M64.00 91.00L64.00 107.00" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"/>
+<circle cx="64.00" cy="113.00" r="7" fill="#FFFFFF"/>
+<path d="M37.00 64.00L21.00 64.00" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"/>
+<circle cx="15.00" cy="64.00" r="7" fill="#FFFFFF"/>
+<path d="M64.00 37.00L64.00 21.00" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round"/>
+<circle cx="64.00" cy="15.00" r="7" fill="#FFFFFF"/>
+<circle cx="64" cy="64" r="13" fill="#087F79"/>
+</svg>

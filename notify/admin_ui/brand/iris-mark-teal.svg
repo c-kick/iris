@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Iris compass hub">
+<path d="M102.369 81.083 A42 42 0 0 1 81.083 102.369" fill="none" stroke="#087F79" stroke-width="9" stroke-linecap="round"/>
+<path d="M46.917 102.369 A42 42 0 0 1 25.631 81.083" fill="none" stroke="#087F79" stroke-width="9" stroke-linecap="round"/>
+<path d="M25.631 46.917 A42 42 0 0 1 46.917 25.631" fill="none" stroke="#087F79" stroke-width="9" stroke-linecap="round"/>
+<path d="M81.083 25.631 A42 42 0 0 1 102.369 46.917" fill="none" stroke="#087F79" stroke-width="9" stroke-linecap="round"/>
+<path d="M93.00 64.00L111.00 64.00" stroke="#087F79" stroke-width="8" stroke-linecap="round"/>
+<circle cx="118.00" cy="64.00" r="7" fill="#087F79"/>
+<path d="M64.00 93.00L64.00 111.00" stroke="#087F79" stroke-width="8" stroke-linecap="round"/>
+<circle cx="64.00" cy="118.00" r="7" fill="#087F79"/>
+<path d="M35.00 64.00L17.00 64.00" stroke="#087F79" stroke-width="8" stroke-linecap="round"/>
+<circle cx="10.00" cy="64.00" r="7" fill="#087F79"/>
+<path d="M64.00 35.00L64.00 17.00" stroke="#087F79" stroke-width="8" stroke-linecap="round"/>
+<circle cx="64.00" cy="10.00" r="7" fill="#087F79"/>
+<circle cx="64" cy="64" r="13" fill="#087F79"/>
+</svg>
