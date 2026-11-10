@@ -115,7 +115,7 @@ def test_send_notification_with_member_handle(chatlive, fake):  # noqa: F811
     assert db.scalar("SELECT COUNT(*) FROM chat_messages WHERE kind='alert'") == 0
     first, replay, plain, bad = run_session(chatlive, "admin", flow)  # admin: may send and chat
     # a failure in the chat part never fails a notification that is already on its way
-    chatlive.service.chat.note_notification = lambda *a, **k: 1 / 0
+    chatlive.service.chat.notification_sent = lambda *a, **k: 1 / 0
     broken = run_session(chatlive, "admin", lambda s: flow_one(s, {
         "targets": ["user:alex"], "message": "chat part broken", "member_handle": j["member_handle"]}))
     assert broken["created"] and broken["group_notice"] is False
@@ -160,3 +160,130 @@ def test_admin_shows_bell_until_looked_at(fresh):  # noqa: F811
     assert view()[0]["/srv/one"] is True
     assert b.post(f"/admin/api/chats/{new['group_id']}/seen", params={"alert_upto": at}, headers=H).status_code == 200
     assert view() == ({"/srv/one": False, "/srv/two": False}, {g: False for g in groups})
+
+
+# ---------------------------------------------------------------- 0.19.2: the session's hook announces the notification
+def test_announced_notification_is_noted_without_a_handle(svc):
+    from notify.chat import notification_digest
+    a = join(svc, "s1")
+    gid = a["group_id"]
+    svc.chat.expect_notification(AGENT, kind="claude", session_id="s1", digest=notification_digest("Done", "Build ok"))
+    assert notices(svc, gid) == [] and alert_at(svc, gid) is None  # nothing shows before the notification exists
+    sender = Client("claude-code", frozenset({Scope.send}))  # another token, no chat scope: the usual MCP client
+    assert svc.chat.notification_sent(sender, title="Done", message="Other text", kinds=None, deliveries=1) is None
+    assert svc.chat.notification_sent(sender, title="Done", message="Build ok", kinds=None, deliveries=1) == "announced"
+    assert notices(svc, gid) == [f"Claude {a['name']} sent a push notification: Done"] and alert_at(svc, gid)
+    # used up: the same text again is somebody else's notification
+    assert svc.chat.notification_sent(sender, title="Done", message="Build ok", kinds=None, deliveries=1) is None
+    assert len(notices(svc, gid)) == 1
+
+
+def test_announcement_and_handle_give_one_notice(svc):
+    from notify.chat import notification_digest
+    a = join(svc, "s1")
+    svc.chat.expect_notification(AGENT, kind="claude", session_id="s1", digest=notification_digest(None, "m"))
+    assert svc.chat.notification_sent(AGENT, title=None, message="m", kinds=None, deliveries=1,
+                                      member_handle=a["member_handle"]) == "handle"
+    assert svc.chat.notification_sent(AGENT, title=None, message="m", kinds=None, deliveries=1) is None
+    assert len(notices(svc, a["group_id"])) == 1
+
+
+def test_announcement_rules(svc):
+    from notify.chat import EXPECT_SECONDS, notification_digest
+    from notify.core import Forbidden, Invalid, NotFound
+    from datetime import timedelta
+    from tests.test_chat_core import NOHOST
+    a = join(svc, "s1")
+    d = notification_digest("t", "m")
+    with pytest.raises(NotFound):  # no such session on this host
+        svc.chat.expect_notification(AGENT, kind="claude", session_id="nobody", digest=d)
+    with pytest.raises(NotFound):  # another host's token cannot announce for this host's session
+        svc.chat.expect_notification(OTHER_HOST, kind="claude", session_id="s1", digest=d)
+    with pytest.raises(Forbidden):
+        svc.chat.expect_notification(NOHOST, kind="claude", session_id="s1", digest=d)
+    for bad in ("", "abc", "g" * 64, d.upper(), 7):
+        with pytest.raises(Invalid):
+            svc.chat.expect_notification(AGENT, kind="claude", session_id="s1", digest=bad)
+    assert svc.chat._expected == []
+    # it lapses
+    svc.chat.expect_notification(AGENT, kind="claude", session_id="s1", digest=d)
+    t0 = svc.chat.now()
+    svc.chat.now = lambda: t0 + timedelta(seconds=EXPECT_SECONDS + 1)
+    assert svc.chat.notification_sent(AGENT, title="t", message="m", kinds=None, deliveries=1) is None
+    # a member that left in between gets no notice; nothing delivered gets none either
+    svc.chat.now = lambda: t0
+    join(svc, "s2")
+    svc.chat.expect_notification(AGENT, kind="claude", session_id="s1", digest=d)
+    svc.chat.leave(a["member_handle"])
+    assert svc.chat.notification_sent(AGENT, title="t", message="m", kinds=None, deliveries=1) is None
+    assert notices(svc, a["group_id"]) == []
+
+
+def test_announcements_are_bounded_per_member(svc):
+    from notify.chat import EXPECT_MAX, EXPECT_PER_MEMBER, notification_digest
+    from notify.core import TooMany
+    a, b = join(svc, "s1"), join(svc, "s2")
+    svc.chat.expect_notification(AGENT, kind="claude", session_id="s2", digest=notification_digest(None, "b's own"))
+    for i in range(EXPECT_PER_MEMBER + 30):  # a flood from s1 drops only s1's oldest
+        svc.chat.expect_notification(AGENT, kind="claude", session_id="s1", digest=notification_digest(None, str(i)))
+    by = [e[1] for e in svc.chat._expected]
+    assert by.count(a["member_id"]) == EXPECT_PER_MEMBER and by.count(b["member_id"]) == 1
+    assert svc.chat.notification_sent(AGENT, title=None, message="0", kinds=None, deliveries=1) is None  # dropped
+    assert svc.chat.notification_sent(AGENT, title=None, message="b's own", kinds=None, deliveries=1) == "announced"
+    # the total is bounded too: beyond it a new announcement is refused, nobody's is evicted
+    t = svc.chat.now() + __import__("datetime").timedelta(seconds=300)
+    svc.chat._expected = [("f" * 64, f"mem_{i}", t, "host-a") for i in range(EXPECT_MAX)]
+    with pytest.raises(TooMany):
+        svc.chat.expect_notification(AGENT, kind="claude", session_id="s2", digest=notification_digest(None, "x"))
+    assert len(svc.chat._expected) == EXPECT_MAX
+
+
+def test_sender_bound_to_another_chat_host_does_not_match(svc):
+    from notify.chat import notification_digest
+    a = join(svc, "s1")
+    svc.chat.expect_notification(AGENT, kind="claude", session_id="s1", digest=notification_digest("t", "m"))
+    # a client of host-b sends the same text: not this session's notification, and the announcement stays
+    assert svc.chat.notification_sent(OTHER_HOST, title="t", message="m", kinds=None, deliveries=1) is None
+    assert notices(svc, a["group_id"]) == [] and len(svc.chat._expected) == 1
+    assert svc.chat.notification_sent(Client("claude-code", frozenset({Scope.send})), title="t", message="m",
+                                      kinds=None, deliveries=1) == "announced"
+
+
+def test_hook_announces_and_mcp_send_is_noted(chatlive, fake, tmp_path):  # noqa: F811
+    """End to end with the real hook script: PreToolUse for send_notification, then the MCP call on another token
+    without a member handle."""
+    from tests.test_notify_chat import Env, hook
+    e = Env(tmp_path, chatlive)
+    h = hook(tmp_path, sid="sess-bell")
+    assert e.run("start", "claude", h, CLAUDE_PID=str(__import__("os").getpid())).returncode == 0
+    db = chatlive.service.db
+    tool = {"tool_name": "mcp__hnl-notify__send_notification",
+            "tool_input": {"targets": ["user:alex"], "title": "Tests ✓", "message": "All green\nline 2"}}
+    import subprocess, sys, json as _json
+    from tests.test_notify_chat import SCRIPT
+
+    def state_active(extra):
+        return subprocess.run([sys.executable, str(SCRIPT), "state", "active", "--agent", "claude"],
+                              input=_json.dumps({**h, **extra}), capture_output=True, text=True, env=e.env(), timeout=20)
+
+    p = state_active({"tool_name": "Bash", "tool_input": {"command": "ls"}})  # any other tool announces nothing
+    assert p.returncode == 0 and chatlive.service.chat._expected == []
+    p = state_active(tool)  # within the 30 s throttle of the active ping: still announced
+    assert p.returncode == 0 and p.stderr == "" and len(chatlive.service.chat._expected) == 1
+    assert "All green" not in repr(chatlive.service.chat._expected)  # a digest, never the text
+
+    sent = run_session(chatlive, "agent", lambda s: flow_one(s, tool["tool_input"]))
+    assert sent["created"] and "group_notice" not in sent  # the sender named no handle: it is told nothing
+    wait_for(lambda: len(fake.messages) == 1)
+    lines = [r["text"] for r in db.query("SELECT text FROM chat_messages WHERE kind='alert'")]
+    assert len(lines) == 1 and lines[0].endswith("sent a push notification: Tests ✓")
+    assert db.scalar("SELECT COUNT(*) FROM chat_groups WHERE alert_at IS NOT NULL") == 1
+    # a made-up handle on an announced send: the notice is written, but the caller is not told a match existed
+    assert state_active(tool).returncode == 0
+    probe = run_session(chatlive, "admin", lambda s: flow_one(s, {**tool["tool_input"], "member_handle": "mem_x:nope"}))
+    assert probe["created"] and probe["group_notice"] is False
+    assert db.scalar("SELECT COUNT(*) FROM chat_messages WHERE kind='alert'") == 2
+    # a second identical send was not announced: no second notice, and no group_notice key without a handle
+    again = run_session(chatlive, "agent", lambda s: flow_one(s, tool["tool_input"]))
+    assert again["created"] and "group_notice" not in again
+    assert db.scalar("SELECT COUNT(*) FROM chat_messages WHERE kind='alert'") == 2

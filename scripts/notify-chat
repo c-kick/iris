@@ -15,6 +15,8 @@ busy (UserPromptSubmit), waiting (a prompt that needs the owner), free (Stop, In
 while one of its background commands still runs), active (PreToolUse: also marks the session busy; sent at most
 every 30 s per session, at once after a change of state) and notification (Claude's Notification hook: a permission prompt or
 question is waiting, an idle prompt is free, anything else is ignored).
+When the tool about to run is send_notification, `state active` also announces it (POST /v1/chat/notifying with a
+sha256 over its title and message, never the text), so the session's chat can show that it notified the owner.
 URL: --url, else NOTIFY_URL, else the file ~/.config/hnl-notify/url. Token: --token-file, else
 ~/.config/hnl-notify/chat-token. The token is never printed.
 A hook must never break the agent's session: every error is one line on stderr and the exit code is 0.
@@ -23,6 +25,7 @@ A hook must never break the agent's session: every error is one line on stderr a
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -350,14 +353,50 @@ def active_due(agent: str, sid: str, now: float | None = None) -> bool:
     return True
 
 
+SEND_TOOL_RE = re.compile(r"(?:^|__|[./:])send_notification$")
+
+
+def notification_digest(hook: dict[str, Any]) -> str | None:
+    """The digest of the notification a send_notification tool call is about to send (None for any other tool).
+    The same value the server computes from the notification it receives (notify.chat.notification_digest)."""
+    tool, inp = hook.get("tool_name"), hook.get("tool_input")
+    if not isinstance(tool, str) or not SEND_TOOL_RE.search(tool) or not isinstance(inp, dict):
+        return None
+    title, message = inp.get("title"), inp.get("message")
+    if not isinstance(message, str) or not (title is None or isinstance(title, str)):
+        return None
+    raw = json.dumps([title or "", message], ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def announce_notification(args: argparse.Namespace, hook: dict[str, Any], sid: str) -> None:
+    """Never throttled like the active ping, and never in the way of it: any failure is one line on stderr."""
+    try:
+        digest = notification_digest(hook)
+        if digest is None:
+            return
+        base, token = settings(args.url, args.token_file)
+        code, _ = post(base, token, "/v1/chat/notifying", {"kind": args.agent, "session_id": sid, "digest": digest},
+                       STATE_TIMEOUT)
+        if code not in (204, 404, 405):  # 404: in no chat, or a server from before 0.19.2
+            print(f"notify-chat: announcing the notification failed: HTTP {code}", file=sys.stderr)
+    except Fatal as e:
+        print(f"notify-chat: {e}", file=sys.stderr)
+    except Exception as e:  # noqa: BLE001
+        print(f"notify-chat: {type(e).__name__}", file=sys.stderr)
+
+
 def do_state(args: argparse.Namespace, hook: dict[str, Any]) -> int:
     sid = hook.get("session_id")
     if not isinstance(sid, str) or not sid:
         raise Fatal("hook input has no session_id")
     if not state_path(args.agent, sid).exists():
         return 0  # not in a group chat: nothing to report, no request
+    # a send_notification call is announced after the active ping (which brings an idle member back first), and
+    # that ping is then sent even inside its 30 s interval
+    announce = args.state == "active" and notification_digest(hook) is not None
     status = notification_state(hook) if args.state == "notification" else args.state
-    if status is None or (status == "active" and not active_due(args.agent, sid)):
+    if status is None or (status == "active" and not active_due(args.agent, sid) and not announce):
         return 0
     if status != "active":
         try:  # a change of state: the next tool use is reported at once, not up to 30 s later
@@ -374,6 +413,8 @@ def do_state(args: argparse.Namespace, hook: dict[str, Any]) -> int:
     base, token = settings(args.url, args.token_file)
     body = {"kind": args.agent, "session_id": sid, "status": status}  # the session id finds the member
     code, _ = post(base, token, "/v1/chat/status", body, STATE_TIMEOUT)
+    if announce:
+        announce_notification(args, hook, sid)
     if code not in (204, 404):
         raise Fatal(f"status failed: HTTP {code}")
     return 0

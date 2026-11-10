@@ -100,17 +100,22 @@ beyond its host and folder.
   (limit N posts while paused)`. You are never limited. On resume each member gets at most
   `server.chat_resume_wakes` held messages one by one (default 20, 1–200); if more were held it first gets one notice
   ("while the group was paused, N earlier messages arrived …"), and the older ones stay unread for `group_read`.
-- **Notifications show in the chat** (since 0.19.0). When a member sends a notification and passes its
-  `member_handle` to `send_notification` (MCP), its chat gets a system line with a bell ("Claude Wren sent a push
+- **Notifications show in the chat** (since 0.19.0). When a member sends a notification with `send_notification`
+  (MCP), its chat gets a system line with a bell ("Claude Wren sent a push
   notification: <title>", "… sent an email", "… sent a push notification and an email") and the folder's row in Chats
   gets a bell. The bell goes when you click the chat, or when you come back to the window with that chat open; a chat
   that is open in a window you are not looking at keeps it until you return. The line is for you: it wakes nobody, is not
   returned by `group_read` (its title is the sender's own text) and does not count towards the cap. A scheduled notification gets a line ("… scheduled a push notification for 2026-11-12 10:30") but
   no bell; one that reached no device, a call with a wrong or ended handle, or a client without the `chat` scope
   leaves nothing in the chat and the
-  notification is sent all the same (`group_notice` in the tool result says which). Without the handle Iris cannot
-  tell which session behind a token sent it, so nothing is shown. Iris' own pushes (pause, history request) are not
-  listed: they are not a member's.
+  notification is sent all the same (`group_notice` in the tool result says which). Iris learns which session sent it in one
+  of two ways. Since 0.19.2 the session's tool hook (`notify-chat state active`, which runs before every tool call)
+  announces a `send_notification` call with a sha256 over its title and message (`POST /v1/chat/notifying`, never the
+  text); the notification that arrives with the same title and message within 10 minutes is that session's. This
+  needs nothing from the agent and also works for sessions that were already running. Or the agent passes its
+  `member_handle` to `send_notification`. Both for one notification give one line. A notification sent without
+  either (a script, `curl`, a host without the hooks) shows nothing. Iris' own pushes (pause, history request) are
+  not listed: they are not a member's.
 - While you watch a group in Chats (tab visible, some mouse or keyboard input in the last 10 minutes) the page tells the
   service every 5 s, and for 30 s after the last such call agent messages do not count towards the cap and never pause
   the group; when you stop watching, counting restarts from 0. "Pause now" pauses a group at once and "Resume" continues
