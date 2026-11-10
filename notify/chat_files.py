@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import sqlite3
+import threading
 import warnings
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -34,7 +35,13 @@ PENDING_SECONDS = 3600  # an upload that was never posted goes after this
 TEXT_PAGE = 100_000  # bytes of a text file handed to an agent per call
 IMAGE_MAX_SIDE = 1568  # px on the long side handed to an agent; larger is scaled down
 IMAGE_MAX_BYTES = 3_750_000
-IMAGE_MAX_PIXELS = 40_000_000  # above this an image is never decoded (memory): the agent saves it to disk instead
+# Above these an image is never decoded: the agent saves it to disk instead. Decoding costs about 4 bytes per
+# pixel and the container has little memory. A JPEG is decoded at reduced size, so it may be larger; PNG, GIF and
+# WebP are decoded whole.
+IMAGE_MAX_PIXELS = 40_000_000
+IMAGE_MAX_PIXELS_WHOLE = 12_000_000
+_SCALING = threading.Lock()  # one picture at a time: worker threads would otherwise add their peaks together
+_FORMATS = {"image/png": "PNG", "image/jpeg": "JPEG", "image/gif": "GIF", "image/webp": "WEBP"}
 
 GONE = "a file is no longer available: attach it again"
 _MAGIC = ((b"\x89PNG\r\n\x1a\n", "PNG", "image/png"), (b"\xff\xd8\xff", "JPEG", "image/jpeg"),
@@ -374,29 +381,30 @@ class ChatFiles:
     def _image(f: StoredFile) -> AgentView:
         w, h = f.width or 0, f.height or 0
         data = f.data or b""
-        if w * h > IMAGE_MAX_PIXELS:
+        limit = IMAGE_MAX_PIXELS if f.type == "image/jpeg" else min(IMAGE_MAX_PIXELS, IMAGE_MAX_PIXELS_WHOLE)
+        if w * h > limit:
             return AgentView("other", f"image {w}x{h} is too large to show; save it with: notify-chat file {f.id}")
         if max(w, h) <= IMAGE_MAX_SIDE and len(data) <= IMAGE_MAX_BYTES:
             return AgentView("image", f"image {w}x{h}", image=data, image_type=f.type)
         try:
-            with warnings.catch_warnings():
+            with _SCALING, warnings.catch_warnings():
                 warnings.simplefilter("ignore", Image.DecompressionBombWarning)
-                im = Image.open(io.BytesIO(data))
-                im.seek(0)  # an animation: its first frame
-                if im.format == "JPEG":
-                    im.draft("RGB", (IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))  # decode at reduced size: less memory
-                im.load()
-            keep_png = f.type == "image/png"
-            side = IMAGE_MAX_SIDE
-            while True:
-                small = im.copy()
-                small.thumbnail((side, side), Image.Resampling.LANCZOS)
-                out, ctype = _encode(small, keep_png)
-                if len(out) > IMAGE_MAX_BYTES and keep_png:
-                    out, ctype = _encode(small, False)
-                if len(out) <= IMAGE_MAX_BYTES or side <= 256:
-                    break
-                side //= 2
+                small = Image.open(io.BytesIO(data), formats=[_FORMATS[f.type]])
+                small.seek(0)  # an animation: its first frame
+                if small.format == "JPEG":
+                    small.draft("RGB", (IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))  # decode at reduced size: less memory
+                if small.mode not in ("RGB", "RGBA", "L", "LA"):
+                    small = small.convert("RGBA" if "transparency" in small.info or small.mode == "PA" else "RGB")
+                keep_png = f.type == "image/png"
+                side = IMAGE_MAX_SIDE
+                while True:  # never a second full-size copy: each round shrinks the one image further
+                    small.thumbnail((side, side), Image.Resampling.LANCZOS)
+                    out, ctype = _encode(small, keep_png)
+                    if len(out) > IMAGE_MAX_BYTES and keep_png:
+                        out, ctype = _encode(small, False)
+                    if len(out) <= IMAGE_MAX_BYTES or side <= 256:
+                        break
+                    side //= 2
         except Exception:  # noqa: BLE001  (a picture Pillow cannot decode after all)
             return AgentView("other", f"image {w}x{h} could not be scaled; save it with: notify-chat file {f.id}")
         nw, nh = small.size

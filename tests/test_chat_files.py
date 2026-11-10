@@ -451,8 +451,52 @@ def test_for_agent_refuses_to_decode_too_many_pixels(svc, monkeypatch):
     assert v.note == f"image 2000x2000 is too large to show; save it with: notify-chat file {f.id}"
 
 
+def test_only_a_jpeg_may_exceed_the_whole_decode_limit(svc, monkeypatch):
+    monkeypatch.setattr(chat_files, "IMAGE_MAX_PIXELS_WHOLE", 1000 * 1000)
+    a = join(svc, "s1")
+    post = svc.chat.post(a["member_handle"], "x", files=[nf("big.png", png(2000, 2000)), nf("big.jpg", jpeg(2000, 2000))])
+    p, j = (svc.chat.files.owner_get(f["id"]) for f in post["files"])
+    assert svc.chat.files.for_agent(p).kind == "other"  # a PNG is decoded whole: 4 bytes per pixel
+    v = svc.chat.files.for_agent(j)  # a JPEG is decoded at reduced size
+    assert v.kind == "image" and Image.open(io.BytesIO(v.image)).size == (1568, 1568)
+
+
+def test_scaling_never_holds_two_full_size_pictures(svc, monkeypatch):
+    """The decoded picture is shrunk in place; a copy of it at full size doubled the memory peak."""
+    copies = []
+    real = Image.Image.copy
+    monkeypatch.setattr(Image.Image, "copy", lambda im: (copies.append(im.size), real(im))[1])
+    a = join(svc, "s1")
+    f = svc.chat.files.owner_get(svc.chat.post(a["member_handle"], "x", files=[nf("big.png", png(3000, 2000))])["files"][0]["id"])
+    assert svc.chat.files.for_agent(f).kind == "image"
+    assert [c for c in copies if c[0] > chat_files.IMAGE_MAX_SIDE] == []
+
+
+def test_scaling_runs_one_at_a_time(svc, monkeypatch):
+    import threading
+    a = join(svc, "s1")
+    f = svc.chat.files.owner_get(svc.chat.post(a["member_handle"], "x", files=[nf("big.png", png(2400, 1800))])["files"][0]["id"])
+    inside, peak = [0], [0]
+    real = chat_files._encode
+
+    def slow(im, as_png):
+        inside[0] += 1
+        peak[0] = max(peak[0], inside[0])
+        threading.Event().wait(0.05)
+        try:
+            return real(im, as_png)
+        finally:
+            inside[0] -= 1
+    monkeypatch.setattr(chat_files, "_encode", slow)
+    ts = [threading.Thread(target=svc.chat.files.for_agent, args=(f,)) for _ in range(4)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    assert peak[0] == 1
+
+
 def test_real_image_limits():
     assert chat_files.IMAGE_MAX_SIDE == 1568 and chat_files.IMAGE_MAX_PIXELS == 40_000_000
+    assert chat_files.IMAGE_MAX_PIXELS_WHOLE == 12_000_000
     assert chat_files.IMAGE_MAX_BYTES == 3_750_000 and chat_files.TEXT_PAGE == 100_000
 
 
