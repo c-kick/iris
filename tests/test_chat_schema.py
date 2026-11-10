@@ -9,7 +9,7 @@ import pytest
 from notify.db import SCHEMA_VERSION, Database
 from tests.test_admin import H, fresh, setup_admin  # noqa: F401  (fixture re-export)
 
-CHAT_TABLES = {"chat_groups", "chat_members", "chat_messages", "chat_wakes"}
+CHAT_TABLES = {"chat_groups", "chat_members", "chat_messages", "chat_wakes", "chat_files"}
 
 
 def _tables(db: Database) -> set[str]:
@@ -36,13 +36,13 @@ def test_migration_from_v2(tmp_path):
     path = tmp_path / "n.sqlite3"
     db = Database(path)
     with db.tx() as c:  # turn it back into a schema-2 database
-        for t in ("chat_wakes", "chat_messages", "chat_members", "chat_groups"):
+        for t in ("chat_files", "chat_wakes", "chat_messages", "chat_members", "chat_groups"):
             c.execute(f"DROP TABLE {t}")
         c.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
     db.conn.close()
     db = Database(path)
     assert CHAT_TABLES <= _tables(db)
-    assert db.scalar("SELECT value FROM meta WHERE key='schema_version'") == str(SCHEMA_VERSION) == "4"
+    assert db.scalar("SELECT value FROM meta WHERE key='schema_version'") == str(SCHEMA_VERSION) == "5"
 
 
 def test_chat_settings(fresh):

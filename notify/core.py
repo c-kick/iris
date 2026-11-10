@@ -1517,6 +1517,8 @@ class NotifyService:
                       (now_iso(), att_cutoff, QUEUED, SENDING))
             c.execute("UPDATE reply_attachments SET data=NULL, purged_at=? WHERE data IS NOT NULL AND reply_id IN"
                       " (SELECT id FROM replies WHERE received_at < ?)", (now_iso(), att_cutoff))
+            c.execute("UPDATE chat_files SET data=NULL, purged_at=? WHERE data IS NOT NULL AND message_id IS NOT NULL"
+                      " AND created_at < ?", (now_iso(), att_cutoff))
             c.execute("DELETE FROM reply_quarantine WHERE received_at < ?", (cutoff,))
             c.execute("DELETE FROM events WHERE notification_id IS NULL AND type LIKE 'mailbox.%' AND created_at < ?",
                       (cutoff,))
@@ -1529,6 +1531,7 @@ class NotifyService:
             c.execute(f"DELETE FROM chat_invites WHERE group_id IN {old}", (cutoff,))
             c.execute(f"DELETE FROM chat_mentions WHERE message_id IN (SELECT id FROM chat_messages WHERE group_id IN {old})"
                       f" OR member_id IN (SELECT id FROM chat_members WHERE group_id IN {old})", (cutoff, cutoff))
+            c.execute(f"DELETE FROM chat_files WHERE group_id IN {old}", (cutoff,))
             c.execute(f"DELETE FROM chat_messages WHERE group_id IN {old}", (cutoff,))
             c.execute(f"DELETE FROM chat_members WHERE group_id IN {old}", (cutoff,))
             c.execute("DELETE FROM chat_groups WHERE state='closed' AND closed_at < ?", (cutoff,))
@@ -1538,7 +1541,7 @@ class NotifyService:
                     " JOIN (SELECT group_id, MIN(rowid) AS lo, MAX(rowid) AS hi FROM chat_messages GROUP BY group_id)"
                     " b ON b.group_id=x.group_id WHERE g.state='open' AND x.created_at < ?"
                     " AND x.claimed_by_member_id IS NULL AND x.rowid > b.lo AND x.rowid < b.hi)")
-            for t in ("chat_wakes", "chat_mentions"):
+            for t in ("chat_wakes", "chat_mentions", "chat_files"):
                 c.execute(f"DELETE FROM {t} WHERE message_id IN {aged}", (cutoff,))
             c.execute(f"DELETE FROM chat_invites WHERE message_id IN {aged}", (cutoff,))
             c.execute(f"DELETE FROM chat_messages WHERE id IN {aged}", (cutoff,))

@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterator
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -350,6 +350,15 @@ class Database:
                       " presence_id TEXT NOT NULL, message_id TEXT NOT NULL, state TEXT NOT NULL, waiter_id TEXT,"
                       " claimed_at TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_after TEXT, created_at TEXT,"
                       " finished_at TEXT)")
+        with self.tx() as c:  # 0.20.0 (schema 5): files in a chat; message_id NULL = uploaded, not posted yet
+            c.execute("CREATE TABLE IF NOT EXISTS chat_files (id TEXT PRIMARY KEY,"
+                      " message_id TEXT REFERENCES chat_messages(id) ON DELETE CASCADE,"
+                      " group_id TEXT NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE, idx INTEGER NOT NULL,"
+                      " filename TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL,"
+                      " sha256 TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('image','text','other')),"
+                      " width INTEGER, height INTEGER, data BLOB, purged_at TEXT, created_at TEXT NOT NULL)")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_chat_files_message ON chat_files(message_id, idx)")
+            c.execute("CREATE INDEX IF NOT EXISTS ix_chat_files_group ON chat_files(group_id)")
         # 0.18.0: the session runs inside a process other sessions share (codex app-server): its pid says nothing
         # about this session, so it is never "the same window" and is kept only while it shows activity
         self._add_missing_columns({"chat_members": {"shared_process": "INTEGER NOT NULL DEFAULT 0"},

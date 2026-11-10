@@ -2,13 +2,13 @@
 
 Status: final draft by Linden, 2026-11-10, for review by Quail (lead) and Oriole, then the owner's approval.
 Roadmap items #1 (files in a chat) and #2 (pasted images): one design, one storage. Reviewed against the code by
-Oriole and Quail; builder check run. "Owner" = Klaas' decision; "call" = the designer's decision, open to review.
+Oriole and Quail; builder check run. "Owner" = the owner's decision; "call" = the designer's decision, open to review.
 
 ## Intent
 
 Let the owner and agents share files (screenshots, logs, patches, PDFs) inside an Iris group chat, so a problem can be
-shown instead of described. Success: Klaas pastes an iPhone or desktop screenshot into the composer, an agent looks at
-it and answers; an agent posts a log or a screenshot of its result and Klaas sees it in the thread.
+shown instead of described. Success: the owner pastes an iPhone or desktop screenshot into the composer, an agent looks at
+it and answers; an agent posts a log or a screenshot of its result and the owner sees it in the thread.
 
 Anti-goals: an agent's context flooded with megabytes it cannot use; a file that becomes a way to run script on the
 admin page; a database that grows without bound; any content shift in the thread or composer.
@@ -101,7 +101,7 @@ once, so 5 MiB holds. Re-measure once with a real MCP `group_post` before releas
   - All returned text is marked untrusted, like message text (filenames and file contents are the sender's data).
 - `notify-chat file <id> [--dir DIR]`: fetches over REST with the session's stored member handle
   (`GET /v1/chat/files/{id}`, same access rule; the member handle goes in a header, never in the URL), saves to `DIR` (default `~/.cache/hnl-notify-chat/files/`, 0700) with
-  a cleaned name, prints the path. Hosts need the updated script (flax-dev keeps its own copy).
+  a cleaned name, prints the path. Hosts need the updated script (a host with its own copy needs it copied again).
 
 ## In messages and frames
 
@@ -150,4 +150,4 @@ A (Quail) storage core on branch `chat-files`: schema 5, `notify/chat_files.py`,
 B (Oriole) what agents see: frames, `group_read`, readers of `text`, MCP `group_post(files)` / `group_file`, `/mcp`
 body limit, REST fetch, `notify-chat file`. C (Linden) what the owner sees: upload/download routes, session-aware
 `BodyLimit` and Origin check, composer and thread UI. B and C branch from A; Quail merges, full suite, fresh review;
-deploy only on Klaas' OK, DB backup first.
+deploy only on the owner's OK, DB backup first.

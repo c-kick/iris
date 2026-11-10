@@ -17,7 +17,7 @@ import unicodedata
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from . import chat_names
+from . import chat_files, chat_names
 from .auth import hash_token
 from .core import SYSTEM_CLIENT, Client, Conflict, Forbidden, Invalid, NotFound, TooMany, external_base
 from .db import dumps, iso, new_id, now_iso, parse_iso, utcnow
@@ -320,6 +320,7 @@ class Chat:
         # Members are swept as stale only on a host whose relay has been reporting for STALE_SECONDS and still is.
         self.relay_seen: dict[str, tuple[datetime, datetime]] = {}
         self.auto_enable = False  # seam: tests that predate the folder opt-in treat every folder as enabled
+        self.files = chat_files.ChatFiles(self)
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -846,6 +847,7 @@ class Chat:
         c.execute(f"DELETE FROM chat_mentions WHERE message_id IN {msgs} OR member_id IN {mems}", (*gids, *gids))
         c.execute(f"DELETE FROM chat_invites WHERE group_id IN ({q})", gids)
         c.execute(f"DELETE FROM chat_history_requests WHERE group_id IN ({q}) OR member_id IN {mems}", (*gids, *gids))
+        c.execute(f"DELETE FROM chat_files WHERE group_id IN ({q})", gids)
         c.execute(f"DELETE FROM chat_messages WHERE group_id IN ({q})", gids)
         c.execute(f"DELETE FROM chat_members WHERE group_id IN ({q})", gids)
         c.execute(f"DELETE FROM chat_groups WHERE id IN ({q})", gids)
@@ -1054,13 +1056,18 @@ class Chat:
 
     # ------------------------------------------------------------------ post / read
     def post(self, member_handle: str, text: str, in_reply_to: str | None = None, fyi: bool = False,
-             intent: bool = False) -> dict[str, Any]:
+             intent: bool = False, files: list[chat_files.NewFile] | None = None) -> dict[str, Any]:
+        """files: what the agent sends along (at most 10, 5 MiB together); the text may then be empty."""
         member = self.member_from_handle(member_handle)
-        return self._post(member["group_id"], member["id"], member["kind"], text, in_reply_to, fyi, intent)
+        prepared = self.files.prepare(files) if files else None
+        return self._post(member["group_id"], member["id"], member["kind"], text, in_reply_to, fyi, intent,
+                          prepared=prepared)
 
-    def post_owner(self, group_id: str, text: str, in_reply_to: str | None = None, fyi: bool = False) -> dict[str, Any]:
-        """The owner's message from the admin page (the only API that names a group id)."""
-        return self._post(group_id, None, "owner", text, in_reply_to, fyi)
+    def post_owner(self, group_id: str, text: str, in_reply_to: str | None = None, fyi: bool = False,
+                   files: list[str] | None = None) -> dict[str, Any]:
+        """The owner's message from the admin page (the only API that names a group id). files: ids of the
+        owner's pending uploads in this group; the text may then be empty."""
+        return self._post(group_id, None, "owner", text, in_reply_to, fyi, pending=files or None)
 
     @staticmethod
     def _resolve_mentions(c: sqlite3.Connection, group_id: str, member_id: str | None,
@@ -1081,9 +1088,14 @@ class Chat:
         return everyone, hits, unknown
 
     def _post(self, group_id: str, member_id: str | None, author: str, text: str,
-              in_reply_to: str | None = None, fyi: bool = False, intent: bool = False) -> dict[str, Any]:
-        if not isinstance(text, str) or not _clean(text, keep_newlines=True).strip():
+              in_reply_to: str | None = None, fyi: bool = False, intent: bool = False, *,
+              prepared: list[Any] | None = None, pending: list[str] | None = None) -> dict[str, Any]:
+        if not isinstance(text, str):
             raise Invalid("message text is required")
+        if not _clean(text, keep_newlines=True).strip():
+            if not (prepared or pending):
+                raise Invalid("message text is required")
+            text = ""  # a message of only files
         if len(text.encode()) > MESSAGE_MAX_BYTES:
             raise Invalid(f"message is larger than {MESSAGE_MAX_BYTES} bytes")
         owner = member_id is None
@@ -1135,9 +1147,14 @@ class Chat:
             elif not paused and not watching:
                 streak += 1
             msg_id = self._add_message(c, group_id, author, member_id, text, in_reply_to, kind)
+            files, files_expired = ([], 0) if not (prepared or pending) else self.files.attach(
+                c, g, msg_id, now, prepared=prepared, pending=pending)
+            if files_expired:
+                self._add_message(c, group_id, "system", None, "Older files expired to make room"
+                                  f" ({files_expired} file{'' if files_expired == 1 else 's'})")
             if not owner:  # the first line a member posts is what it said it would do (report-in); intent=true updates it
                 c.execute("UPDATE chat_members SET intent=? WHERE id=? AND (intent IS NULL OR ?)",
-                          (intent_text(text), member_id, 1 if intent else 0))
+                          (intent_text(text or chat_files.summary(files)), member_id, 1 if intent else 0))
             for mid_, _ in named:
                 c.execute("INSERT INTO chat_mentions(message_id, member_id) VALUES (?, ?)", (msg_id, mid_))
             if len(named) == 1:  # for one member: it is theirs from the start
@@ -1175,7 +1192,8 @@ class Chat:
         if pause_note:
             self._push_pause(group_id, *pause_note)
         return {"message_id": msg_id, "woken": woken, "paused": paused, "kind": kind,
-                "mentions": [n for _, n in named], "unknown_mentions": unknown}
+                "mentions": [n for _, n in named], "unknown_mentions": unknown,
+                **({"files": files, "files_expired": files_expired} if files else {})}
 
     def _open_group(self, c: sqlite3.Connection, group_id: str) -> sqlite3.Row:
         g = c.execute("SELECT * FROM chat_groups WHERE id=?", (group_id,)).fetchone()
@@ -1808,4 +1826,5 @@ class Chat:
             c.execute("UPDATE chat_wakes SET state='skipped', reason='member gone', finished_at=?"
                       " WHERE state IN ('pending', 'claimed') AND member_id IN"
                       " (SELECT id FROM chat_members WHERE left_at IS NOT NULL)", (iso(now),))
+            self.files.sweep(c, now)
         self.svc._after_commit()
