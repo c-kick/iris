@@ -143,7 +143,7 @@ also takes `attachments` (URLs recommended, inline data up to 256 KiB),
 `send_notification`, `preview_routing`, `get_notification`,
 `list_notifications`, `list_attention`, `list_targets`, `retry_notification`,
 `cancel_notification`, `update_scheduled_notification`, `get_replies` (takes `reply_handle`), and for group chats
-(scope `chat`) `group_post` (with `fyi` and `intent`), `group_read`, `group_history`, `group_claim`,
+(scope `chat`) `group_post` (with `fyi`, `intent` and `files`), `group_read`, `group_file`, `group_history`, `group_claim`,
 `group_unclaim`, `group_open`, `group_join` and `group_leave`. Resources: `notify://targets`,
 `notify://notifications/{id}`. The server instructions tell agents not to
 report `dispatched` as `delivered` and to reserve `critical` for emergencies.

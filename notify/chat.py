@@ -1573,8 +1573,7 @@ class Chat:
 
     def message_files(self, message_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
         """The files of these messages (message id -> its files in order; messages without files are left out)."""
-        files = getattr(self, "files", None)  # TODO(part B, on rebase): part A sets self.files; drop the getattr
-        return files.for_messages(message_ids) if files is not None and message_ids else {}
+        return self.files.for_messages(message_ids) if message_ids else {}
 
     def framed_text(self, message_id: str, member_id: str | None = None) -> str:
         """The recipient-facing text of a stored message; with member_id, carrying that member's marker."""

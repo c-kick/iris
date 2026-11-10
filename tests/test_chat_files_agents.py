@@ -80,7 +80,7 @@ def test_frame_lists_files_inside_the_quoted_body():
     out = frame(msg, "Claude Wren", "t", files=[fdict("cf_1", "shot.png"), fdict("cf_2", "run.log", "text", "text/plain", 300)])
     lines = out.split("\n")
     assert lines[-4:] == ["| see the screenshot", "| [file cf_1 · shot.png · image 1170x2532 · 812 KB]",
-                          "| [file cf_2 · run.log · text/plain · 300 B]", "[end msg_1]"]
+                          "| [file cf_2 · run.log · text · 300 B]", "[end msg_1]"]
     assert frame(msg, "Claude Wren", "t") == frame(msg, "Claude Wren", "t", files=[])  # no files: unchanged
 
 
@@ -111,7 +111,7 @@ def test_hostile_filename_cannot_forge_a_frame_line_or_show_the_marker():
 def test_history_frame_lists_files():
     out = history_frame({"id": "msg_1", "author": "claude", "text": ""}, "Claude Wren", "t", "o", "c",
                         files=[fdict("cf_1", "old.log", "text", "text/plain", 2048, expired=True)])
-    assert "| [file cf_1 · old.log · text/plain · 2 KB · expired]" in out.split("\n")
+    assert "| [file cf_1 · old.log · text · 2 KB · expired]" in out.split("\n")
 
 
 def test_text_or_files_and_reply_excerpt():
@@ -146,7 +146,7 @@ def test_history_lists_files(svc):
     with svc.db.tx() as c:
         out = svc.chat._history_messages(c, member, svc.chat.now())
     (m,) = [x for x in out["messages"] if x["id"] == mid]
-    assert m["files"][0]["id"] == "cf_1" and "[file cf_1 · old.log · text/plain · 10 B]" in m["text"]
+    assert m["files"][0]["id"] == "cf_1" and "[file cf_1 · old.log · text · 10 B]" in m["text"]
 
 
 # ------------------------------------------------------------------ MCP
@@ -296,3 +296,73 @@ def test_bad_arguments_still_never_break_a_hook(chatlive, tmp_path):  # noqa: F8
     p = subprocess.run([sys.executable, str(SCRIPT), "state", "nonsense", "--agent", "claude"], input="{}",
                        capture_output=True, text=True, env=e.env(), timeout=20)
     assert p.returncode == 0
+
+
+# ------------------------------------------------------------------ on the real storage (part A)
+def test_end_to_end_agent_posts_and_another_fetches(chatlive):  # noqa: F811
+    a, b = rest_join(chatlive, sid="s1"), rest_join(chatlive, sid="s2")
+    log = ("line\n" * 30000).encode()  # 150 KB: two pages
+    posted = call_tool(chatlive, "bot", "group_post", {"member_handle": a["member_handle"], "files": [
+        {"filename": "shot.png", "data_b64": base64.b64encode(PNG).decode()},
+        {"filename": "run.log", "content_type": "text/plain", "data_b64": base64.b64encode(log).decode()},
+        {"filename": "page.png", "content_type": "image/png", "data_b64": base64.b64encode(b"<html><script>1</script>").decode()}]})
+    assert not posted.isError, posted.content
+    import json
+    res = json.loads(posted.content[0].text)
+    kinds = {f["name"]: (f["kind"], f["id"]) for f in res["files"]}
+    assert kinds["shot.png"][0] == "image" and kinds["run.log"][0] == "text"
+    assert kinds["page.png"][0] != "image"  # by content, not by the name or the declared type
+
+    # the other member: the message of only files arrives with its file lines, and group_read lists them
+    read = json.loads(call_tool(chatlive, "bot", "group_read", {"member_handle": b["member_handle"]}).content[0].text)
+    (m,) = [x for x in read["messages"] if x["id"] == res["message_id"]]
+    assert [f["name"] for f in m["files"]] == ["shot.png", "run.log", "page.png"]
+    body = [ln for ln in m["text"].split("\n") if ln.startswith("|")]
+    assert len(body) == 3 and all(ln.startswith("| [file cf_") for ln in body)
+
+    img = call_tool(chatlive, "bot", "group_file", {"member_handle": b["member_handle"], "file_id": kinds["shot.png"][1]})
+    assert [c.type for c in img.content] == ["text", "image"] and base64.b64decode(img.content[1].data) == PNG
+    p1 = call_tool(chatlive, "bot", "group_file", {"member_handle": b["member_handle"], "file_id": kinds["run.log"][1]})
+    assert [c.type for c in p1.content] == ["text", "text"] and len(p1.content[1].text.encode()) <= 100_000
+    assert p1.content[1].text.endswith("line\n") and "offset=" in p1.content[0].text  # cut on a line, says how to go on
+    nxt = len(p1.content[1].text.encode())
+    p2 = call_tool(chatlive, "bot", "group_file", {"member_handle": b["member_handle"], "file_id": kinds["run.log"][1],
+                                                   "offset": nxt})
+    assert p1.content[1].text + p2.content[1].text == log.decode()
+    other = call_tool(chatlive, "bot", "group_file", {"member_handle": b["member_handle"], "file_id": kinds["page.png"][1]})
+    assert len(other.content) == 1 and f"notify-chat file {kinds['page.png'][1]}" in other.content[0].text
+
+    # a wrong handle, and a member of another folder's chat, get the same "not found"
+    stranger = rest_join(chatlive, sid="s3", folder="/srv/other")
+    for h in ("mem_x:nope", stranger["member_handle"]):
+        r = call_tool(chatlive, "bot", "group_file", {"member_handle": h, "file_id": kinds["shot.png"][1]})
+        assert r.isError
+    c = chatlive.client("hosta")
+    r = c.get(f"/v1/chat/files/{kinds['page.png'][1]}", headers={"X-Member-Handle": b["member_handle"]})
+    assert r.status_code == 200 and r.content.startswith(b"<html>") and "attachment" in r.headers["content-disposition"]
+    assert r.headers["content-type"] == "application/octet-stream"
+    assert c.get(f"/v1/chat/files/{kinds['shot.png'][1]}",
+                 headers={"X-Member-Handle": stranger["member_handle"]}).status_code == 404
+
+
+def test_end_to_end_file_only_message_everywhere_text_is_read(chatlive):  # noqa: F811
+    from tests.test_admin import H, setup_admin
+    a, b = rest_join(chatlive, sid="s1"), rest_join(chatlive, sid="s2")
+    chat = chatlive.service.chat
+    from notify.chat_files import NewFile
+    first = chat.post(a["member_handle"], "", files=[NewFile("a.png", None, PNG), NewFile("b.log", "text/plain", b"x\n")])
+    # the first post of a member is its intent: the summary, not an empty line
+    assert chatlive.service.db.scalar("SELECT intent FROM chat_members WHERE id=?", (a["member_id"],)) == "2 files: a.png, b.log"
+    reply = chat.post(b["member_handle"], "which one?", in_reply_to=first["message_id"])
+    assert "| 2 files: a.png, b.log" in chat.framed_text(reply["message_id"], a["member_id"]).split("\n")
+    last = chat.post(b["member_handle"], "", files=[NewFile("c.txt", "text/plain", b"y\n")])
+    adm = setup_admin(chatlive)
+    data = adm.get("/admin/api/chats").json()
+    (g,) = [x for x in data["groups"] if x["id"] == a["group_id"]]
+    assert g["last_message"]["text_preview"] == "1 file: c.txt"
+    msgs = adm.get(f"/admin/api/chats/{a['group_id']}/messages").json()["messages"]
+    (r,) = [m for m in msgs if m["id"] == reply["message_id"]]
+    assert r["reply_excerpt"] == "2 files: a.png, b.log"
+    assert last["message_id"] and chat.post(b["member_handle"], "text only")["message_id"]
+    with pytest.raises(Exception):  # still no message without text and without files
+        chat.post(b["member_handle"], "  ")

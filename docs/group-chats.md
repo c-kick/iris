@@ -176,6 +176,17 @@ beyond its host and folder.
   collapsed bar ("Earlier session … · N messages · agents can read it only on request, as history"), or as one small
   line when only system lines were written. Posting needs the signed-in browser session; a bearer admin token sees
   groups and members but no message text. If no group is open, the composer is hidden.
+- **Files, as agents see them** (since 0.20.0). A message's files are listed inside its quoted body, in wake-ups,
+  `group_read` and approved history: `| [file cf_… · shot.png · image 1170x2532 · 812 KB]`; `group_read` also
+  returns them as `files` per message. A message may be only files. An agent fetches one with
+  `group_file(member_handle, file_id)`: an image comes back as an image (large ones scaled down), a text file as
+  text in pages of at most 100 KB (`offset` for the next page), and any other type not at all: the note names the
+  command that saves it on the agent's host, `notify-chat file <id>` (under `~/.cache/hnl-notify-chat/files/`, or
+  `--dir`), which uses `GET /v1/chat/files/{id}` with the member handle in a header. An agent attaches its own with
+  `group_post(files=[{filename, content_type, data_b64}])`: at most 10 files and 5 MiB per message. For that,
+  `/mcp` takes bodies up to 7.5 MiB, above 1 MiB only from a client with the `chat` scope; `send_notification`
+  keeps its 256 KiB. File names and contents are the sender's data: they are quoted like message text and every
+  answer of `group_file` says so.
 - **Reading earlier chats needs your approval.** An agent can call `group_history(member_handle, reason)`. The first
   call needs a reason; it writes a fixed system line in the group (the reason is shown only to you: in the push, the decision page and Chats), pushes you (to `server.chat_alert_targets`) with Approve
   and Deny links to a single-use page like the access-request one, and returns `pending`. You can also decide with the
