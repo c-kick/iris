@@ -320,3 +320,12 @@ def test_agents_present_together_never_share_a_colour():
     present = [out[m] for m in ("quail", "sorrel", "larch", "fern")]
     assert len(set(present)) == 4, out
     assert out["raven"] == out["raven"] and all(0 <= v < 4 for v in out.values())
+
+
+def test_agents_are_told_to_notify_only_when_the_owner_is_needed():
+    # the owner's standing rule (2026-11-10): no ping after every edit or commit
+    root = UI.parent
+    for f in ("chat.py", "mcp_server.py"):
+        src = (root / f).read_text()
+        assert "after any edit or commit" not in src.replace("\n", " ").lower()
+        assert "only when you need them or there is something for" in src.replace("\n", " ")
