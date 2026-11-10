@@ -4,6 +4,7 @@
   notify-chat start --agent claude|codex [--url URL] [--token-file FILE]
   notify-chat end   --agent claude|codex [--url URL] [--token-file FILE]
   notify-chat state busy|waiting|free|active|notification --agent claude|codex [--url URL] [--token-file FILE]
+  notify-chat file FILE_ID [--dir DIR] [--url URL] [--token-file FILE]
 
 Reads the hook JSON (session_id, cwd, transcript_path) on stdin. `start` reports the session to the server
 (POST /v1/chat/presence): in a folder with chats on it joins the folder's chat, elsewhere it is only recorded
@@ -17,6 +18,10 @@ every 30 s per session, at once after a change of state) and notification (Claud
 question is waiting, an idle prompt is free, anything else is ignored).
 When the tool about to run is send_notification, `state active` also announces it (POST /v1/chat/notifying with a
 sha256 over its title and message, never the text), so the session's chat can show that it notified the owner.
+`file` is run by an agent, not by a hook: it saves a file of the folder's group chat (an id like cf_… from a
+message) on this host and prints its path. It uses the member handle a session of this folder stored at start
+(or NOTIFY_MEMBER_HANDLE), saves under ~/.cache/hnl-notify-chat/files/ (0700; --dir for another place) and exits 1
+when it could not.
 URL: --url, else NOTIFY_URL, else the file ~/.config/hnl-notify/url. Token: --token-file, else
 ~/.config/hnl-notify/chat-token. The token is never printed.
 A hook must never break the agent's session: every error is one line on stderr and the exit code is 0.
@@ -33,6 +38,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -420,11 +426,81 @@ def do_state(args: argparse.Namespace, hook: dict[str, Any]) -> int:
     return 0
 
 
+FILE_TIMEOUT = 60.0
+FILE_ID_RE = re.compile(r"^cf_[A-Za-z0-9]{1,60}$")
+FILE_MAX = 16 << 20  # more than any chat file (10 MiB): a response beyond it is not ours
+
+
+def folder_handles(folder: str) -> list[str]:
+    """Member handles stored by sessions of this folder on this host, newest first (NOTIFY_MEMBER_HANDLE first)."""
+    out = [os.environ["NOTIFY_MEMBER_HANDLE"]] if os.environ.get("NOTIFY_MEMBER_HANDLE") else []
+    found = []
+    try:
+        paths = list(state_dir().glob("*.json"))
+    except OSError:
+        paths = []
+    for p in paths:
+        try:
+            d = json.loads(p.read_text())
+            if d.get("folder") == folder and isinstance(d.get("member_handle"), str):
+                found.append((p.stat().st_mtime, d["member_handle"]))
+        except (OSError, ValueError, AttributeError):
+            continue
+    return out + [h for _, h in sorted(found, reverse=True)]
+
+
+def safe_name(name: str, file_id: str) -> str:
+    """A file name from the server made safe to write: no path, no control characters, never hidden or empty."""
+    base = re.sub(r"[\x00-\x1f\x7f/\\]", "_", name).strip().lstrip(".")[:120]
+    return f"{file_id}-{base}" if base else file_id
+
+
+def do_file(args: argparse.Namespace) -> int:
+    file_id = args.state or ""
+    if not FILE_ID_RE.match(file_id):
+        raise Fatal("file needs a file id like cf_… (from the message that lists the file)")
+    base, token = settings(args.url, args.token_file)
+    handles = folder_handles(group_folder(os.getcwd()))
+    if not handles:
+        raise Fatal("no session of this folder is in a group chat on this host")
+    last = 0
+    for handle in handles[:5]:  # every member of the folder's chat has the same access; a stale handle gives 404
+        req = urllib.request.Request(f"{base}/v1/chat/files/{file_id}", method="GET", headers={
+            "Authorization": f"Bearer {token}", "X-Member-Handle": handle, "User-Agent": "notify-chat"})
+        try:
+            with _OPENER.open(req, timeout=FILE_TIMEOUT) as r:
+                data = r.read(FILE_MAX + 1)
+                disp = r.headers.get("Content-Disposition") or ""
+        except urllib.error.HTTPError as e:
+            last = e.code
+            if e.code == 410:
+                raise Fatal("the file has expired") from None
+            continue
+        if len(data) > FILE_MAX:
+            raise Fatal("the file is larger than a chat file can be")
+        m = re.search(r"filename\*=UTF-8''([^;]+)", disp)
+        name = safe_name(urllib.parse.unquote(m.group(1)) if m else "", file_id)
+        d = Path(args.dir).expanduser() if args.dir else state_dir() / "files"
+        d.mkdir(parents=True, exist_ok=True)
+        if not args.dir:
+            os.chmod(state_dir(), 0o700)
+            os.chmod(d, 0o700)
+        p = d / name
+        fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        print(str(p))
+        return 0
+    raise Fatal("file not found, or not one this folder's chat can read" if last in (0, 404)
+                else f"fetching the file failed: HTTP {last}")
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="notify-chat", description="Join and leave the folder's agent group chat.")
-    ap.add_argument("command", choices=["start", "end", "state"])
-    ap.add_argument("state", nargs="?", choices=STATES, help="for state: what the session is doing")
-    ap.add_argument("--agent", required=True, choices=["claude", "codex"])
+    ap.add_argument("command", choices=["start", "end", "state", "file"])
+    ap.add_argument("state", nargs="?", help="for state: what the session is doing; for file: the file id")
+    ap.add_argument("--agent", choices=["claude", "codex"])
+    ap.add_argument("--dir", help="for file: where to save it (default ~/.cache/hnl-notify-chat/files)")
     ap.add_argument("--url", help="service base URL (default: NOTIFY_URL or ~/.config/hnl-notify/url)")
     ap.add_argument("--token-file", help="chat token file (default: ~/.config/hnl-notify/chat-token)")
     try:
@@ -432,10 +508,21 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit:
         print("notify-chat: bad arguments", file=sys.stderr)
         return 0
+    if args.command == "file":  # run by an agent: failures are told (exit 1), no hook input on stdin
+        try:
+            return do_file(args)
+        except Fatal as e:
+            print(f"notify-chat: {e}", file=sys.stderr)
+        except Exception as e:  # noqa: BLE001
+            print(f"notify-chat: {type(e).__name__}", file=sys.stderr)
+        return 1
+    if not args.agent:
+        print("notify-chat: bad arguments", file=sys.stderr)
+        return 0
     try:
         hook = read_stdin()
         if args.command == "state":
-            if not args.state:
+            if args.state not in STATES:
                 raise Fatal("state needs busy, waiting, free, active or notification")
             return do_state(args, hook)
         return (do_start if args.command == "start" else do_end)(args, hook)

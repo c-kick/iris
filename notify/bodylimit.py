@@ -9,9 +9,13 @@ from typing import Any, Callable
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-DEFAULT_ROUTES: dict[tuple[str, str], int] = {("POST", "/v1/notifications"): 15 << 20}
+# /mcp: a group_post may carry 5 MiB of files as base64 (~6.7 MB) plus its envelope; each tool still enforces its own
+# limit (send_notification: 256 KiB inline)
+DEFAULT_ROUTES: dict[tuple[str, str], int] = {("POST", "/v1/notifications"): 15 << 20, ("POST", "/mcp"): 15 << 19}
 # a body above `large` on these routes also needs one of these scopes (any valid token is not enough)
-DEFAULT_LARGE_SCOPES: dict[tuple[str, str], frozenset[str]] = {("POST", "/v1/notifications"): frozenset({"send", "admin"})}
+DEFAULT_LARGE_SCOPES: dict[tuple[str, str], frozenset[str]] = {
+    ("POST", "/v1/notifications"): frozenset({"send", "admin"}),
+    ("POST", "/mcp"): frozenset({"chat", "admin"})}  # only a chat post has a reason to be that large
 # without a valid bearer/basic credential a body is at most this big: JSON is parsed before the route's auth
 # dependency runs (~25x memory), and nothing public (registration, login, callbacks, decide pages, browser
 # push, admin session forms) needs more

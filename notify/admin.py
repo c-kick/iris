@@ -34,7 +34,7 @@ from .cleanup_service import record_event
 from .device_check import clear_flag
 from .providers.email_inbound import run_locked
 from .schedule import local_zone
-from .chat import _clean_desc, reply_excerpt, status_view, who
+from .chat import _clean_desc, reply_excerpt, status_view, text_or_files, who
 from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
@@ -903,8 +903,10 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
     presences = ([{"kind": p["kind"], "since": p["started_at"]} for p in svc.db.query(
         "SELECT kind, started_at FROM chat_presence WHERE host=? AND folder=? ORDER BY rowid", (g["host"], g["folder"]))]
         if g["state"] == "open" else [])
-    last = svc.db.one("SELECT author, text, created_at FROM chat_messages WHERE group_id=? ORDER BY rowid DESC LIMIT 1",
+    last = svc.db.one("SELECT id, author, text, created_at FROM chat_messages WHERE group_id=? ORDER BY rowid DESC LIMIT 1",
                       (gid,))
+    if last is not None and show_text and not last["text"].strip():  # only files: "2 files: a.png, b.log"
+        last = {**dict(last), "text": text_or_files(last["text"], svc.chat.message_files([last["id"]]).get(last["id"]))}
     unread = svc.db.scalar("SELECT COUNT(*) FROM chat_messages WHERE group_id=? AND author IN ('claude', 'codex')"
                            " AND (? IS NULL OR created_at > ?)", (gid, g["owner_seen_at"], g["owner_seen_at"])) or 0
     return {"id": gid, "host": g["host"], "folder": g["folder"], "state": g["state"], "opened_at": g["opened_at"],
@@ -1021,7 +1023,8 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
                     m["reply_author"] = "owner" if q["author"] == "owner" else q["author"]
                     m["reply_member_id"] = q["author_member_id"]
                     m["reply_member_name"] = names.get(q["author_member_id"])
-                    m["reply_excerpt"] = reply_excerpt(q["text"])
+                    m["reply_excerpt"] = reply_excerpt(
+                        q["text"], None if q["text"].strip() else svc.chat.message_files([q["id"]]).get(q["id"]))
         out.append(m)
     pending = [h["id"] for h in svc.db.query(
         "SELECT id FROM chat_history_requests WHERE group_id=? AND state='pending'", (group_id,))]

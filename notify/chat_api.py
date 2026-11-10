@@ -1,6 +1,8 @@
 """REST endpoints of the agent group chats: for the host hooks and the host relay (scope chat)."""
 
+import asyncio
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -119,3 +121,25 @@ async def confirm(wake_id: str, request: Request, waiter: str = Query(min_length
                   client: Client = Depends(require(Scope.chat))) -> Response:
     service(request).chat.confirm(client, wake_id, waiter)
     return Response(status_code=204)
+
+
+@router.get("/files/{file_id}")
+@_errors
+async def chat_file(file_id: str, request: Request, handle: str = Header(alias="X-Member-Handle", max_length=200),
+                    client: Client = Depends(require(Scope.chat))) -> Response:
+    """The bytes of a chat file, for `notify-chat file <id>` on the member's host. The member handle travels in a
+    header, never in the URL. Same access rule as the MCP tool group_file; always a download, never rendered."""
+    if len(file_id) > 64:
+        return Response(status_code=404)
+    chat = service(request).chat
+    chat.check_handle_host(client, handle)  # same host binding as the MCP tools
+    f = await asyncio.to_thread(chat.files.member_get, handle, file_id)
+    if f.expired or f.data is None:
+        return Response(status_code=410)
+    return Response(content=f.data, media_type="application/octet-stream", headers={
+        "Content-Disposition": f"attachment; filename*=UTF-8''{quote(f.name or 'file', safe='')}",
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "X-Chat-File-Type": _header_safe(f.type)})
+
+
+def _header_safe(value: str | None) -> str:
+    return "".join(ch for ch in (value or "application/octet-stream") if 32 < ord(ch) < 127)[:100]

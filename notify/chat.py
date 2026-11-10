@@ -155,15 +155,39 @@ def _clean_desc(text: str) -> str:
 REPLY_EXCERPT_MAX = 120
 
 
-def reply_excerpt(quoted_text: str) -> str:
-    """A quoted message cut down for display: neutralised, one line, at most 120 characters."""
-    excerpt = " ".join(_clean_desc(" ".join(quoted_text.split())).split())
+def text_or_files(text: str | None, files: list[dict[str, Any]] | None) -> str:
+    """What stands for a message wherever one line of it is shown (previews, reply excerpts): its text, or for a
+    message of only files "2 files: a.png, b.log"."""
+    if text and text.strip():
+        return text
+    return chat_files.summary(files) if files else (text or "")
+
+
+def reply_excerpt(quoted_text: str, files: list[dict[str, Any]] | None = None) -> str:
+    """A quoted message cut down for display: neutralised, one line, at most 120 characters. A message of only
+    files is quoted as its file summary."""
+    excerpt = " ".join(_clean_desc(" ".join(text_or_files(quoted_text, files).split())).split())
     return excerpt[:REPLY_EXCERPT_MAX] + "\u2026" if len(excerpt) > REPLY_EXCERPT_MAX else excerpt
 
 
-def reply_line(quoted_id: str, quoted_desc: str, quoted_text: str) -> str:
+def reply_line(quoted_id: str, quoted_desc: str, quoted_text: str, files: list[dict[str, Any]] | None = None) -> str:
     """The two lines a reply carries under its header: an arrow line without brackets, and the excerpt quoted like body text."""
-    return f"\u21aa reply to {quoted_id} (from {_clean_desc(quoted_desc)}):\n{QUOTE}{reply_excerpt(quoted_text)}"
+    return (f"\u21aa reply to {quoted_id} (from {_clean_desc(quoted_desc)}):\n"
+            f"{QUOTE}{reply_excerpt(quoted_text, files)}")
+
+
+def _body_lines(msg: sqlite3.Row | dict[str, Any], files: list[dict[str, Any]] | None, marker: str | None) -> list[str]:
+    """The quoted body of a frame: the author's text, then one line per file. A file's name and type are the
+    sender's words, so they are neutralised like an author description (no brackets, no separator dot, one line)
+    and quoted and marker-stripped like body text: a filename can never look like a header. A message of only
+    files has no text lines."""
+    text = msg["text"] or ""
+    lines = _quote_body(text, marker) if text.strip() or not files else []
+    for f in files or []:
+        safe = {**f, "name": _clean_desc(" ".join(str(f.get("name") or "file").split())),
+                "type": _clean_desc(" ".join(str(f.get("type") or "").split()))}
+        lines += _quote_body(chat_files.frame_line(safe).replace("\n", " "), marker)
+    return lines
 
 
 MARKER_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"  # no 0/o, 1/l/i
@@ -195,8 +219,10 @@ def _marked(text: str, marker: str | None) -> str:
 
 
 def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, reply: str | None = None,
-          rules: bool = True, for_line: str | None = None, marker: str | None = None) -> str:
-    """The text a recipient sees. Every line of the author's text is quoted, so it can never contain a header."""
+          rules: bool = True, for_line: str | None = None, marker: str | None = None,
+          files: list[dict[str, Any]] | None = None) -> str:
+    """The text a recipient sees. Every line of the author's text is quoted, so it can never contain a header;
+    the message's files are listed inside that quoted body (fetch one with group_file)."""
     mid = msg["id"]
     author = msg["author"]
     rules_text = OWNER_RULES if author == "owner" else SYSTEM_RULES if author == "system" else AGENT_RULES
@@ -208,13 +234,14 @@ def frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, rep
         lines.append(_strip_code(reply, marker))
     if rules:
         lines.append(rules_text)
-    lines += _quote_body(msg["text"], marker)
+    lines += _body_lines(msg, files, marker)
     lines.append(f"[end {mid}]")
     return _marked("\n".join(lines), marker)
 
 
 def history_frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: str, opened: str, closed: str,
-                  reply: str | None = None, marker: str | None = None) -> str:
+                  reply: str | None = None, marker: str | None = None,
+                  files: list[dict[str, Any]] | None = None) -> str:
     """One message of an earlier session. Like frame(): the author's text is quoted line by line, so it can never
     contain a header, and nothing here reads as a current instruction."""
     mid = msg["id"]
@@ -223,7 +250,7 @@ def history_frame(msg: sqlite3.Row | dict[str, Any], author_desc: str, sent_at: 
     if reply:
         lines.append(_strip_code(reply, marker))
     lines.append(HISTORY_RULE)
-    lines += _quote_body(msg["text"], marker)
+    lines += _body_lines(msg, files, marker)
     lines.append(f"[end {mid}]")
     return _marked("\n".join(lines), marker)
 
@@ -1410,10 +1437,13 @@ class Chat:
                 rows, truncated = rows[len(rows) - left:], True
             left -= len(rows)
             opened, closed = grp["opened_at"] or "?", grp["closed_at"] or "?"
+            files = self.message_files([r["id"] for r in rows])
             for r in rows:
+                fs = files.get(r["id"])
                 out.append({"id": r["id"], "session_opened": opened, "session_closed": closed,
                             "text": history_frame(r, self.author_desc(r), r["created_at"], opened, closed,
-                                                      self.reply_line_for(r), member["marker"])})
+                                                      self.reply_line_for(r), member["marker"], files=fs),
+                            **({"files": fs} if fs else {})})
         return {"status": "approved", "messages": out, "truncated": truncated,
                 "note": "this approval is used up; ask again with a reason to read it once more"}
 
@@ -1539,7 +1569,12 @@ class Chat:
         if q is None:
             return None
         desc = "the owner" if q["author"] == "owner" else self.author_desc(q)
-        return reply_line(q["id"], desc, q["text"])
+        return reply_line(q["id"], desc, q["text"], None if q["text"].strip() else self.message_files([q["id"]]).get(q["id"]))
+
+    def message_files(self, message_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+        """The files of these messages (message id -> its files in order; messages without files are left out)."""
+        files = getattr(self, "files", None)  # TODO(part B, on rebase): part A sets self.files; drop the getattr
+        return files.for_messages(message_ids) if files is not None and message_ids else {}
 
     def framed_text(self, message_id: str, member_id: str | None = None) -> str:
         """The recipient-facing text of a stored message; with member_id, carrying that member's marker."""
@@ -1547,7 +1582,8 @@ class Chat:
         if msg is None:
             raise NotFound("message not found")
         return frame(msg, self.author_desc(msg), msg["created_at"], self.reply_line_for(msg),
-                     for_line=self.for_line(msg), marker=self._marker(member_id))
+                     for_line=self.for_line(msg), marker=self._marker(member_id),
+                     files=self.message_files([message_id]).get(message_id))
 
     def _marker(self, member_id: str | None) -> str | None:
         return self.db.scalar("SELECT marker FROM chat_members WHERE id=?", (member_id,)) if member_id else None
@@ -1600,10 +1636,12 @@ class Chat:
                       (gid, member["id"]))
             _mark_acted(c, member["id"])
             members = self._members(c, gid)
+            files = self.message_files(ids)
             msgs = [{"id": r["id"], "author": r["author"], "author_desc": self.author_desc(r),
                      "created_at": r["created_at"], "in_reply_to": r["in_reply_to"],
                      "text": frame(r, self.author_desc(r), r["created_at"], self.reply_line_for(r), rules=False,
-                                   for_line=self.for_line(r), marker=member["marker"]),
+                                   for_line=self.for_line(r), marker=member["marker"], files=files.get(r["id"])),
+                     **({"files": files[r["id"]]} if r["id"] in files else {}),
                      **({"rules": OWNER_RULES} if r["author"] == "owner" else {})}
                     for r in rows]
         out = {"rules": READ_RULES, "messages": msgs, "members": members, "unread_only": not all}
