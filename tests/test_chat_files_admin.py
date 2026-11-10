@@ -8,8 +8,16 @@ import httpx
 from tests.test_admin import H  # noqa: F401
 from tests.test_chat_admin import _join, ctx, fresh  # noqa: F401  (fixtures)
 
-PNG = (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x02\x00\x00\x00\x03\x08\x02\x00\x00\x00\x12\x16\xf1M"
-       b"\x00\x00\x00\x0cIDATx\x9cc```\x00\x00\x00\x04\x00\x01\xf6\x178U\x00\x00\x00\x00IEND\xaeB`\x82")
+def _png() -> bytes:
+    import io
+
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 3), (200, 30, 90)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+PNG = _png()
 
 
 def _up(b, gid, data, name="a.png", ctype="image/png"):
@@ -54,8 +62,10 @@ def test_large_upload_passes_body_limit_with_session_only(ctx):
     gid = _join(srv, "host-a", "/srv/one", "s1")["group_id"]
     big = b"x" * (3 << 20)  # above the 64 KiB unauthenticated and 1 MiB default caps
     assert _up(b, gid, big, name="big.log", ctype="text/plain").status_code == 201
-    anon = httpx.put(f"{srv.url}/admin/api/chats/{gid}/files?name=a", content=big, headers=H)
+    # without a session: refused before the body is read (401 above 64 KiB; 413 once above the 1 MiB default)
+    anon = httpx.put(f"{srv.url}/admin/api/chats/{gid}/files?name=a", content=b"x" * (100 << 10), headers=H)
     assert anon.status_code == 401
+    assert httpx.put(f"{srv.url}/admin/api/chats/{gid}/files?name=a", content=big, headers=H).status_code in (401, 413)
     assert _up(b, gid, b"x" * ((10 << 20) + 1), name="huge.bin", ctype="application/octet-stream").status_code == 413
 
 
