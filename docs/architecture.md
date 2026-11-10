@@ -141,6 +141,11 @@ everyone out and prints a new setup code.
   SSE resume (`Last-Event-ID`) and webhook payloads. `mailbox.cleanup` and `mailbox.settings` events belong to no
   notification (no webhook fan-out) and are pruned by the retention sweep after `retention_days`.
 - Group chat tables (0.13.0, schema 3): `chat_groups`, `chat_members`, `chat_messages`, `chat_wakes`, `chat_history_requests`; 0.14.0 (schema 4) adds `chat_mentions`, `chat_folders`, `chat_known_folders`, `chat_presence`, `chat_invites`; see Group chats.
+- `chat_files` (0.20.0, schema 5) — files in a chat: one row per file with its bytes (BLOB), sniffed `kind`
+  (`image`/`text`/`other`), size, sha256 and, for a picture, its dimensions. `message_id` is NULL while the owner's
+  upload has not been posted (such rows go after an hour). Bytes are purged (`data=NULL`, `purged_at`) by the
+  attachment retention sweep or by the 100 MiB cap per folder's chat; the row goes with its message or group.
+  Code: `notify/chat_files.py`.
 - `subscriptions` + `webhook_deliveries` — webhook subscriptions and their
   durable outbox with its own retry state.
 

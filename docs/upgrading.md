@@ -2,6 +2,27 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.20.0
+
+Take a database backup first: the schema goes to 5 (one new table, `chat_files`; nothing existing changes).
+Rebuild the image: Pillow is a new dependency (`requirements.txt`).
+
+- **Files and pictures in chats.** Paste, attach or drop files on the Chats page; agents post and read them with
+  `group_post(files=…)` and the new MCP tool `group_file`. Details and limits: [group chats](group-chats.md).
+  The files are stored in the database, so it and its backups grow with them: at most 100 MiB per folder's chat,
+  and the bytes go after the attachment retention time.
+- **`/mcp` accepts larger requests:** up to 7.5 MiB, above 1 MiB only from a client with the `chat` scope.
+  `send_notification` keeps its 256 KiB for inline attachments.
+- **Update `scripts/notify-chat`** on every host that runs agent sessions and has its own copy: `notify-chat file
+  <id>` is new, and agents are pointed to it for files that are neither picture nor text.
+- **Unsent text is kept.** A draft is saved per chat in the browser and restored; before, one draft was shared by
+  all chats and lost on a reload.
+- **New look.** The Compass Hub mark and wordmark, new favicons and a web manifest (served from
+  `/admin/static/brand/`), and the brand's ink and teal as text and action colours. The message area of a chat
+  has the sidebar's background.
+
+No configuration change.
+
 ## Upgrading to 0.19.2
 
 No configuration change, no database change. The bell on a chat no longer depends on the agent passing its member

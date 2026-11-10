@@ -494,6 +494,42 @@ def test_scaling_runs_one_at_a_time(svc, monkeypatch):
     assert peak[0] == 1
 
 
+def _photo(w, h, orientation=6, progressive=False) -> bytes:
+    """A JPEG as a phone stores a portrait photo: pixels on their side plus an EXIF orientation."""
+    im = Image.new("RGB", (w, h), (0, 0, 255))
+    im.paste((255, 0, 0), (0, 0, w // 4, h))  # a red band on the stored left edge
+    exif = Image.Exif()
+    exif[0x0112] = orientation
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", exif=exif, progressive=progressive, quality=90)
+    return buf.getvalue()
+
+
+def test_a_photo_stored_on_its_side_has_its_shown_size_and_reaches_the_agent_upright(svc):
+    a = join(svc, "s1")
+    post = svc.chat.post(a["member_handle"], "x", files=[nf("big.jpg", _photo(3000, 2000)), nf("small.jpg", _photo(400, 200))])
+    assert [(f["width"], f["height"]) for f in post["files"]] == [(2000, 3000), (200, 400)]  # as the browser shows it
+    for f, size in zip(post["files"], ((1045, 1568), (200, 400))):
+        v = svc.chat.files.for_agent(svc.chat.files.owner_get(f["id"]))
+        im = Image.open(io.BytesIO(v.image))
+        assert v.kind == "image" and im.size == size, v.note
+        assert im.getexif().get(0x0112, 1) == 1  # no flag left that would turn it a second time
+        # orientation 6 = turn a quarter clockwise: the stored left edge is the top of the picture
+        top, bottom = im.convert("RGB").getpixel((im.width // 2, 5)), im.convert("RGB").getpixel((im.width // 2, im.height - 5))
+        assert top[0] > 200 and top[2] < 60 and bottom[2] > 200 and bottom[0] < 60
+    assert svc.chat.files.for_agent(svc.chat.files.owner_get(post["files"][1]["id"])).note == "image 200x400, re-encoded"
+
+
+def test_a_progressive_jpeg_gets_the_whole_decode_limit(svc, monkeypatch):
+    monkeypatch.setattr(chat_files, "IMAGE_MAX_PIXELS_WHOLE", 1000 * 1000)
+    a = join(svc, "s1")
+    post = svc.chat.post(a["member_handle"], "x", files=[nf("p.jpg", _photo(2000, 2000, 1, progressive=True)),
+                                                         nf("b.jpg", _photo(2000, 2000, 1))])
+    p, b = (svc.chat.files.for_agent(svc.chat.files.owner_get(f["id"])) for f in post["files"])
+    assert p.kind == "other" and "too large to show" in p.note
+    assert b.kind == "image"
+
+
 def test_real_image_limits():
     assert chat_files.IMAGE_MAX_SIDE == 1568 and chat_files.IMAGE_MAX_PIXELS == 40_000_000
     assert chat_files.IMAGE_MAX_PIXELS_WHOLE == 12_000_000

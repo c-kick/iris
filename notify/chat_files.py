@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from .attachments import clean_content_type, clean_filename
 from .core import Invalid, NotFound
@@ -114,9 +114,20 @@ def _image(data: bytes) -> tuple[str, int, int] | None:
             warnings.simplefilter("ignore", Image.DecompressionBombWarning)
             with Image.open(io.BytesIO(data), formats=[fmt[0]]) as im:  # reads the header, decodes nothing
                 w, h = im.size
+                if _turned(im) >= 5:  # a phone photo stored on its side: the size as it is shown
+                    w, h = h, w
     except Exception:  # noqa: BLE001  (anything Pillow cannot read is simply not an image here)
         return None
     return (fmt[1], w, h) if w > 0 and h > 0 else None
+
+
+def _turned(im: Image.Image) -> int:
+    """The EXIF orientation (1 = upright as stored; 5 to 8 swap width and height when shown)."""
+    try:
+        o = im.getexif().get(0x0112, 1)
+    except Exception:  # noqa: BLE001
+        return 1
+    return o if isinstance(o, int) and 1 <= o <= 8 else 1
 
 
 def _is_text(data: bytes) -> bool:
@@ -381,10 +392,19 @@ class ChatFiles:
     def _image(f: StoredFile) -> AgentView:
         w, h = f.width or 0, f.height or 0
         data = f.data or b""
-        limit = IMAGE_MAX_PIXELS if f.type == "image/jpeg" else min(IMAGE_MAX_PIXELS, IMAGE_MAX_PIXELS_WHOLE)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", Image.DecompressionBombWarning)
+                with Image.open(io.BytesIO(data), formats=[_FORMATS[f.type]]) as head:  # header only
+                    turned = _turned(head) != 1
+                    # a baseline JPEG is decoded at reduced size; a progressive one is held whole, like a PNG
+                    reduced = f.type == "image/jpeg" and not head.info.get("progressive")
+        except Exception:  # noqa: BLE001
+            return AgentView("other", f"image {w}x{h} could not be read; save it with: notify-chat file {f.id}")
+        limit = IMAGE_MAX_PIXELS if reduced else min(IMAGE_MAX_PIXELS, IMAGE_MAX_PIXELS_WHOLE)
         if w * h > limit:
             return AgentView("other", f"image {w}x{h} is too large to show; save it with: notify-chat file {f.id}")
-        if max(w, h) <= IMAGE_MAX_SIDE and len(data) <= IMAGE_MAX_BYTES:
+        if not turned and max(w, h) <= IMAGE_MAX_SIDE and len(data) <= IMAGE_MAX_BYTES:
             return AgentView("image", f"image {w}x{h}", image=data, image_type=f.type)
         try:
             with _SCALING, warnings.catch_warnings():
@@ -399,6 +419,8 @@ class ChatFiles:
                 side = IMAGE_MAX_SIDE
                 while True:  # never a second full-size copy: each round shrinks the one image further
                     small.thumbnail((side, side), Image.Resampling.LANCZOS)
+                    if turned:  # after shrinking (cheap), once: the picture upright, as a person sees it
+                        small, turned = ImageOps.exif_transpose(small), False
                     out, ctype = _encode(small, keep_png)
                     if len(out) > IMAGE_MAX_BYTES and keep_png:
                         out, ctype = _encode(small, False)
@@ -409,7 +431,7 @@ class ChatFiles:
             return AgentView("other", f"image {w}x{h} could not be scaled; save it with: notify-chat file {f.id}")
         nw, nh = small.size
         note = (f"image scaled from {w}x{h} to {nw}x{nh}" if (nw, nh) != (w, h)
-                else f"image {w}x{h}, re-encoded to fit")
+                else f"image {w}x{h}, re-encoded")
         return AgentView("image", note, image=out, image_type=ctype)
 
 

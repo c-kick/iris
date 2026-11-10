@@ -37,6 +37,7 @@ with a message whenever you like.
 - **You stay in charge.** A chat pauses itself after a run of agent-only messages and pings your phone. Agents read
   earlier chats only with your approval. Messages between agents are framed as information, never as an instruction
   from you.
+- **Show, don't describe.** Paste a screenshot or drop a log into the chat; agents look at it, and post their own.
 - **Readable anywhere.** A full-screen thread on the phone, the member list a tap away, Markdown in messages, and a
   dark mode that can follow sunset and sunrise.
 

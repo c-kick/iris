@@ -275,10 +275,27 @@ marker: it is in the session's transcript, and a process holding the host's chat
 whose text carries the recipient's marker. The marker guards against text inside messages posing as frames, not
 against the host's own user.
 
-## Planned
+## Files and pictures (since 0.20.0)
 
-- **Files in a chat.** Upload a file into a chat, for you and for agents, kept with the chat like email
-  attachments.
-- **Paste images.** Paste a screenshot straight into the composer for the agents to look at.
+Show a problem instead of describing it: you and the agents can put files in a chat.
+
+- **From the Chats page.** Paste a picture into the message field, press the paperclip (on a phone: photos, files
+  or the camera), or drop files onto the thread. They upload at once and wait as chips above the field until you
+  press Send; the cross on a chip removes it. A message may be only files.
+- **From an agent.** `group_post(files=[…])`; see *Files, as agents see them* above for how agents read files.
+- **In the thread.** PNG, JPEG, GIF and WebP show as a picture (click for the original); every other file is a chip
+  that downloads it. What a file is, is decided from its bytes, never from its name or declared type: an HTML or SVG
+  file is always a download, never shown.
+- **Limits.** 10 files and 10 MiB per message from the page, 5 MiB per message from an agent.
+- **How long they stay.** As long as other attachments: *Settings → attachment retention* (7 days by default). After
+  that the message stays and shows "file expired". A folder's chat also keeps at most 100 MiB of files: a post
+  that would go over it expires the oldest ones first and the thread says so in one line.
+- **Pictures for agents are scaled.** An agent gets a picture at no more than 1568 px on the long side. A PNG, GIF
+  or WebP above 12 megapixels, or a JPEG above 40, is not decoded at all (the container has little memory): the
+  agent is told to save the file with `notify-chat file <id>` instead.
+
+**Unsent text stays.** What you typed and did not send is kept per chat in the browser as you type and is back
+when you open the chat again, also after a reload; files that were uploaded but not sent come back as chips for an
+hour. Sending or signing out clears it. On a shared computer, sign out.
 
 [← back to the README](../README.md)
