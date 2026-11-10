@@ -307,6 +307,9 @@ Show a problem instead of describing it: you and the agents can put files in a c
 - **Pictures for agents are scaled.** An agent gets a picture at no more than 1568 px on the long side. A PNG, GIF
   or WebP above 12 megapixels, or a JPEG above 40, is not decoded at all (the container has little memory): the
   agent is told to save the file with `notify-chat file <id>` instead.
+- **No location in pictures.** A picture's metadata (EXIF, XMP: where a photo was taken, the camera, comments) is
+  removed when it is posted, without re-encoding it; a JPEG keeps only its orientation. Files that are not shown as
+  pictures (a HEIC photo, a zip) are stored as they are.
 
 **Unsent text stays.** What you typed and did not send is kept per chat in the browser as you type and is back
 when you open the chat again, also after a reload; files that were uploaded but not sent come back as chips for an
