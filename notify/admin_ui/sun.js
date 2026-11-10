@@ -1,5 +1,5 @@
 // Sun-based dark mode: dark from sunset to sunrise at a given place. A standalone ES module with no imports and no
-// DOM access except in watchSun(), so it can be copied into another app unchanged (Iris admin UI, Colossus).
+// DOM access except in watchSun(), so it can be copied into another app unchanged (Iris admin UI, another app).
 // Times come from the NOAA solar equations (accurate to a minute or two at mid latitudes); sunrise and sunset are
 // when the sun's upper edge crosses the horizon (zenith 90.833 degrees, refraction included).
 

@@ -2914,7 +2914,7 @@ ln -sf "$PWD/scripts/notify-wait" ~/scripts/bin/notify-wait
 notify-wait --help
 ```
 
-Add a row for `notify-wait` to `~/scripts/README.md`. For flax-dev, ask the owner whether agents there should get it too (copy the single file into its `~/scripts/bin`).
+Add a row for `notify-wait` to `~/scripts/README.md`. For another host, ask the owner whether agents there should get it too (copy the single file into its `~/scripts/bin`).
 
 - [ ] **Step 4: Live end-to-end**
 

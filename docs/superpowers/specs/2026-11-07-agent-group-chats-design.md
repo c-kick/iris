@@ -19,18 +19,18 @@ The picture is an impromptu WhatsApp group: it exists while people are in it.
 ## The model (decided by the owner)
 
 - **Which folder (owner, 2026-11-07):** inside a git repository, the repository's top folder
-  (`git rev-parse --show-toplevel`), so `~/hnl-mailviz/src` joins `~/hnl-mailviz`; each git
+  (`git rev-parse --show-toplevel`), so `~/app/src` joins `~/app`; each git
   worktree is its own group (its own top folder); outside any repository, the exact folder the
   session started in (so `~` gets its own group).
 - **Scope is host + working folder.** A group belongs to exactly one folder on one host, e.g.
-  `host-a:/home/alex/hnl-mailviz` (host-a runs hnl-notify; host-b is a development host). This is a hard ceiling: nothing crosses between groups.
-  `host-b:/home/alex/hnl-mailviz` is a different group. There is no cross-project messaging.
+  `host-a:/home/alex/app` (host-a runs hnl-notify; host-b is a development host). This is a hard ceiling: nothing crosses between groups.
+  `host-b:/home/alex/app` is a different group. There is no cross-project messaging.
 - **Lifetime follows presence.** The first agent session that starts in the folder opens the group;
   later sessions join it; the last session to leave closes it ("turns off the lights"). The next
   session to start there opens a fresh group.
 - **Who takes part:** interactive Claude Code and Codex sessions the owner opens in a terminal, on
-  host-a and host-b. Agents running inside containers (hnl-trader backend, smm-agent,
-  mailviz providers) never join.
+  host-a and host-b. Agents running inside containers (a trading backend, other services,
+  app providers) never join.
 - **Joining is automatic** at session start, leaving automatic at session end.
 - **The owner** can read every group and post into open ones from the admin page.
 - **On arrival a message wakes the other sessions in the group** and they act right away, within

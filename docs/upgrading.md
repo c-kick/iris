@@ -97,7 +97,7 @@ scroll, positions) in a small box on the page, for a screenshot when the phone l
 ## Upgrading to 0.18.0
 
 Database: one additive column, `shared_process`, on `chat_members` and `chat_presence` (added at start-up). Update
-the hook script on every agent host (`scripts/notify-chat`, and the copy on flax-dev): the new script tells Iris when
+the hook script on every agent host (`scripts/notify-chat`, and any copy on another host): the new script tells Iris when
 a Codex session runs inside the shared `codex app-server` process. An old script keeps working as before.
 
 Chats: Codex sessions in that shared process no longer stay listed for ever after `/exit` (Codex does not always run
