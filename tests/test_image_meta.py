@@ -145,3 +145,14 @@ def test_jpeg_keeps_only_what_decodes_and_colours_the_picture():
     out = strip_metadata(raw[:2] + app5 + icc + raw[2:], "image/jpeg")
     assert b"VENDOR-GPS" not in out and b"ICC_PROFILE\x00" in out
     Image.open(io.BytesIO(out)).load()
+
+
+def test_a_webp_photo_on_its_side_is_stored_with_the_size_it_shows():
+    im = Image.new("RGB", (60, 40), (5, 5, 5))
+    ex = Image.Exif()
+    ex[0x0112] = 6
+    buf = io.BytesIO()
+    im.save(buf, "WEBP", exif=ex, lossless=True)
+    p = ChatFiles._prepare(NewFile("w.webp", "image/webp", buf.getvalue()), 0)
+    shown = Image.open(io.BytesIO(p.data))
+    assert (p.width, p.height) == shown.size == (60, 40), "orientation gone with the EXIF: stored as it is"

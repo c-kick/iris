@@ -11,8 +11,8 @@ bytes without decoding the picture, so the pixels stay exactly as they were:
 - PNG: eXIf and the text chunks (tEXt, zTXt, iTXt, where XMP lives) go.
 - WebP: the EXIF and XMP chunks go, and the extended header no longer announces them.
 
-Anything that does not parse as expected is returned unchanged only when it holds no metadata marker at all;
-otherwise the caller gets ValueError (the upload is refused rather than stored with its metadata)."""
+Anything that does not parse as expected raises ValueError: the upload is refused rather than stored with its
+metadata."""
 
 from __future__ import annotations
 
@@ -94,6 +94,7 @@ def _jpeg(data: bytes) -> bytes:
         raise ValueError("not a JPEG")
     out = [b"\xff\xd8"]
     orientation = 1
+    seen_exif = False
     scanned = False
     n = len(data)
     i = 2
@@ -136,16 +137,16 @@ def _jpeg(data: bytes) -> bytes:
             i = j
             scanned = True
             continue
-        if marker == 0xE1 and orientation == 1:
-            orientation = _exif_orientation(seg[4:])
+        if marker == 0xE1 and not seen_exif and seg[4:10] == b"Exif\x00\x00":  # only the first EXIF, like Pillow
+            orientation, seen_exif = _exif_orientation(seg[4:]), True
         if _jpeg_keeps(marker, seg[4:]):
             out.append(seg)
     if not scanned:
         raise ValueError("JPEG without picture data")
     if out[-1] != b"\xff\xd9":
         out.append(b"\xff\xd9")
-    if orientation != 1:
-        out.insert(1, _orientation_app1(orientation))
+    if orientation != 1:  # after a JFIF header when there is one (JFIF wants to be first), else right after SOI
+        out.insert(2 if len(out) > 1 and out[1][:2] == b"\xff\xe0" else 1, _orientation_app1(orientation))
     return b"".join(out)
 
 

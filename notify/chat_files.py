@@ -209,6 +209,8 @@ class ChatFiles:
                 data = strip_metadata(data, ctype)
             except ValueError:
                 raise Invalid(f"file {index + 1}: this picture cannot be stored without its metadata") from None
+            # the size as the stored picture shows: a WebP loses its orientation with its EXIF, a JPEG keeps it
+            kind, ctype, w, h = sniff(name, new.content_type, data)
         return _Prepared(name, ctype, kind, w, h, data)
 
     def prepare(self, files: list[NewFile]) -> list[_Prepared]:
