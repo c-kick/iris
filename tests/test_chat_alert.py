@@ -287,3 +287,31 @@ def test_hook_announces_and_mcp_send_is_noted(chatlive, fake, tmp_path):  # noqa
     again = run_session(chatlive, "agent", lambda s: flow_one(s, tool["tool_input"]))
     assert again["created"] and "group_notice" not in again
     assert db.scalar("SELECT COUNT(*) FROM chat_messages WHERE kind='alert'") == 2
+
+
+def alert_kind(svc, gid):
+    return svc.db.scalar("SELECT alert_kind FROM chat_groups WHERE id=?", (gid,))
+
+
+def test_the_alert_remembers_whether_it_was_an_email(svc):
+    a = join(svc, "s1")
+    gid = a["group_id"]
+    assert svc.chat.note_notification(AGENT, a["member_handle"], kinds=["email"], title="Report", deliveries=1)
+    assert alert_kind(svc, gid) == "email", "an email only: the page shows an envelope"
+    assert svc.chat.note_notification(AGENT, a["member_handle"], kinds=["email"], title="Again", deliveries=1)
+    assert alert_kind(svc, gid) == "email"
+    assert svc.chat.note_notification(AGENT, a["member_handle"], kinds=None, title="Push", deliveries=1)
+    assert alert_kind(svc, gid) == "both", "a push too: the bell"
+    svc.chat.alert_seen(gid, alert_at(svc, gid))
+    assert alert_at(svc, gid) is None and alert_kind(svc, gid) is None
+    assert svc.chat.note_notification(AGENT, a["member_handle"], kinds=["push", "email"], title="Both", deliveries=1)
+    assert alert_kind(svc, gid) == "both"
+
+
+def test_page_draws_an_envelope_for_an_email():
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "notify/admin_ui/app.js").read_text()
+    assert "const CHAT_ENVELOPE = " in js
+    row = js[js.index("function chatGroupRow"):js.index("function chatGroupRow") + 1200]
+    assert 'g.alert_kind === "email"' in row and "CHAT_ENVELOPE" in row
+    assert "mail:" in js[js.index("const CHAT_NOTICE_ICONS"):js.index("function chatNoticeKind")]

@@ -652,7 +652,7 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .cm.sys .notice-ico { width: 14px; height: 14px; vertical-align: -2px; margin-right: .35rem; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .cm.sys .notice-ico.join { color: var(--ok); }
 .cm.sys .notice-ico.leave { color: var(--idle); }
-.cm.sys .notice-ico.alert { color: var(--warn); }
+.cm.sys .notice-ico.alert, .cm.sys .notice-ico.mail { color: var(--warn); }
 .cm.sys.ask { padding: .55rem .8rem; border-radius: var(--radius-m); background: var(--surface); border-style: solid; border-left: 3px solid var(--warn); }
 .chat-earlier { align-self: stretch; }
 .chat-earlier-bar {

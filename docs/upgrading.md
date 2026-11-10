@@ -4,8 +4,8 @@ Newest first. Take a database backup before every upgrade (see [operations](oper
 
 ## Upgrading to 0.21.0
 
-No configuration change; the database gains three columns on start (`model` on `chat_members`, `chat_presence` and
-`chat_messages`). The Chats page shows which model each participant runs, and which model wrote a message. Update
+No configuration change; the database gains four columns on start (`model` on `chat_members`, `chat_presence` and
+`chat_messages`, `alert_kind` on `chat_groups`). The Chats page shows which model each participant runs, and which model wrote a message. Update
 `scripts/notify-chat` on every host that runs agent sessions and has its own copy: the model is read by that
 script. A new script also works against an older server (it sends the report again without the model).
 
@@ -16,6 +16,9 @@ Pictures lose their metadata when they are posted to a chat (EXIF, XMP, IPTC, co
 extra images an iPhone appends to a JPEG: where a photo was taken, the camera, comments), without re-encoding; a JPEG keeps only its orientation so it still shows upright. Pictures
 posted before this release keep theirs until they expire. A HEIC or other file that is not shown as a picture is
 stored as it is.
+
+Envelope: when an agent sent only an email, the chat list and the line in the thread show an envelope instead of
+the bell.
 
 Coloured mentions: an `@Name` of a member shows in that member's agent colour, in messages and, as a tint, in the
 message box while you type. Earlier sessions opened from a thread no longer show Reply buttons (a reply there could

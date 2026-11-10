@@ -2040,7 +2040,10 @@ const chatBellShown = (g) => !!g.alert && !(chatKey(g) === chats.selected && doc
 
 function chatGroupRow(g) {
   const lm = g.last_message;
-  const bell = chatBellShown(g) ? `<svg class="chat-bell" viewBox="0 0 16 16" role="img" aria-label="An agent sent a notification" focusable="false"><title>An agent sent a notification</title>${CHAT_BELL}</svg>` : "";
+  // an envelope when every unseen notification of the folder was an email, else the bell
+  const mail = g.alert_kind === "email";
+  const what = mail ? "An agent sent an email" : "An agent sent a notification";
+  const bell = chatBellShown(g) ? `<svg class="chat-bell" viewBox="0 0 16 16" role="img" aria-label="${what}" focusable="false"><title>${what}</title>${mail ? CHAT_ENVELOPE : CHAT_BELL}</svg>` : "";
   const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${chatPlain(lm.text_preview)}` : "No messages yet";
   return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
@@ -2077,8 +2080,10 @@ function chatTicksHtml(id, r, author) {
 
 // join and leave lines get an icon (the words stay: the icon is for scanning, screen readers read the text)
 const CHAT_BELL = '<path d="M4 11.500V7.500a4 4 0 0 1 8 0v4l1.200 1.500H2.800z"/><path d="M6.700 14.200a1.400 1.400 0 0 0 2.600 0"/>';
+const CHAT_ENVELOPE = '<rect x="2" y="3.5" width="12" height="9" rx="1.2"/><path d="M2.5 4.5 8 9l5.5-4.5"/>';
 const CHAT_NOTICE_ICONS = {
   alert: CHAT_BELL,
+  mail: CHAT_ENVELOPE,
   join: '<path d="M9.5 2.5h3v11h-3"/><path d="M2 8h7.5"/><path d="M6.5 5l3 3-3 3"/>',
   leave: '<path d="M6.5 2.5h-3v11h3"/><path d="M6.5 8H14"/><path d="M11 5l3 3-3 3"/>',
 };
@@ -2115,7 +2120,9 @@ function chatMessageHtml(m, canReply = false, names = chats.names) {
     const ask = hr && hr.state === "pending"
       ? `<span class="req-reason">Reason: ${esc(hr.reason ?? "hidden")}</span><span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
       : "";
-    const kind = m.kind === "alert" ? "alert" : chatNoticeKind(m.text);
+    // a notice of an email only (no push in it): the envelope; any other notification notice: the bell
+    const kind = m.kind === "alert" ? (/ (sent|scheduled) an email\b/.test(m.text ?? "") && !/push/.test(m.text ?? "") ? "mail" : "alert")
+      : chatNoticeKind(m.text);
     const icon = kind ? `<svg class="notice-ico ${kind}" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${CHAT_NOTICE_ICONS[kind]}</svg>` : "";
     return `<div class="cm sys${ask ? " ask" : ""}${kind ? ` notice-${kind}` : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${icon}${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
   }

@@ -917,7 +917,8 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
             "paused_posts": g["paused_posts"], "paused_posts_effective": svc.chat.paused_limit(g),
             "last_message": ({"author": last["author"], "text_preview": _preview(last["text"]) if show_text else None,
                               "created_at": last["created_at"]} if last else None),
-            "unread": unread, "alert": bool(g["alert_at"]), "alert_at": g["alert_at"]}
+            "unread": unread, "alert": bool(g["alert_at"]), "alert_at": g["alert_at"],
+            "alert_kind": g["alert_kind"] if g["alert_at"] else None}
 
 
 def _folder_out(svc: NotifyService, groups: list[Any], show_text: bool) -> dict[str, Any]:
@@ -928,6 +929,8 @@ def _folder_out(svc: NotifyService, groups: list[Any], show_text: bool) -> dict[
     out["activity_at"] = (lm["created_at"] if lm else None) or newest["closed_at"] or newest["opened_at"] or ""
     out["alert_at"] = max((g["alert_at"] for g in groups if g["alert_at"]), default=None)
     out["alert"] = out["alert_at"] is not None  # the bell is the folder's: an earlier session's counts too
+    kinds = {g["alert_kind"] or "push" for g in groups if g["alert_at"]}
+    out["alert_kind"] = None if not kinds else "email" if kinds == {"email"} else "push"  # any push: the bell
     out["group_count"] = len(groups)
     out["earlier_count"] = len(groups) - 1
     out["pending_history_requests"] = svc.db.scalar(

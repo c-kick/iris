@@ -558,7 +558,10 @@ class Chat:
                 return False
             mid = self._add_message(c, member["group_id"], "system", None, text, kind="alert")
             if not send_at:
-                c.execute("UPDATE chat_groups SET alert_at=? WHERE id=?", (iso(self.now()), member["group_id"]))
+                kind = "email" if set(use) == {"email"} else "push" if set(use) == {"push"} else "both"
+                c.execute("UPDATE chat_groups SET alert_kind=CASE WHEN alert_at IS NULL OR alert_kind IS NULL"
+                          " OR alert_kind=? THEN ? ELSE 'both' END, alert_at=? WHERE id=?",
+                          (kind, kind, iso(self.now()), member["group_id"]))
             self._event(c, "group.notification", "hnl-notify",
                         {"group_id": member["group_id"], "message_id": mid, "member_id": member["id"],
                          "scheduled": bool(send_at)})
@@ -569,7 +572,7 @@ class Chat:
         """The owner looked at the chat: the bell goes, for every session of that folder. upto is the alert time the
         page was showing: a notification sent after that keeps its bell."""
         with self.db.tx() as c:
-            c.execute("UPDATE chat_groups SET alert_at=NULL WHERE alert_at IS NOT NULL AND alert_at<=? AND"
+            c.execute("UPDATE chat_groups SET alert_at=NULL, alert_kind=NULL WHERE alert_at IS NOT NULL AND alert_at<=? AND"
                       " (host, folder) IN (SELECT host, folder FROM chat_groups WHERE id=?)", (upto, group_id))
 
     def mentioned(self, message_id: str) -> list[sqlite3.Row]:

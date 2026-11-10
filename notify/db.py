@@ -317,7 +317,9 @@ class Database:
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT",
                                                   "adhoc": "INTEGER NOT NULL DEFAULT 0", "paused_posts": "INTEGER",
                                                   # 0.19.0: a member sent a notification the owner has not looked at
-                                                  "alert_at": "TEXT"},
+                                                  "alert_at": "TEXT",
+                                                  # 0.21.0: email, push or both (the page shows an envelope for email)
+                                                  "alert_kind": "TEXT"},
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT",
                                                     "kind": "TEXT NOT NULL DEFAULT 'request'"},  # request, fyi, all; alert = a notification notice
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
