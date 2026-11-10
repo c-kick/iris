@@ -264,3 +264,11 @@ def test_lines_under_the_pending_strip_stay_reachable():
     assert "height: var(--pending-h, 0px)" in _rule(".chats.has-pending .chat-msgs::after")
     fn = JS[JS.index("function chatAttach"):JS.index("function chatDiscard")]
     assert '"--pending-h"' in fn and '"has-pending"' in fn
+
+
+def test_pending_files_review_fixes():
+    fn = JS[JS.index("function chatAttach"):JS.index("function chatDropRoom")]
+    assert "chats.pendingRender[gid] = render" in fn and "chats.pendingRender[gid]?.()" in fn, "an upload updates the strip on screen"
+    assert '"over 10 MB in total"' in fn, "the server keeps 10 MiB pending: refuse before it drops one"
+    assert "chatDropRoom" in JS[JS.index("async function chatTickOnce"):], "the room goes with new content, not on its own"
+    assert 'getData("text/plain")' in fn, "pasted text wins over a picture of it"

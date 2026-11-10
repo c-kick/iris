@@ -2016,7 +2016,7 @@ function chatFilesHtml(files) {
     if (f.expired) return `<span class="cm-file expired" title="Files are kept for a limited time">${esc(f.name)} · file expired</span>`;
     if (f.kind === "image" && f.width && f.height) {
       // max 280 px high and the bubble's width; the width follows from the height, so the box is known before loading
-      return `<a class="cm-img" href="${esc(chatFileUrl(f.id))}" target="_blank" rel="noopener" title="${esc(f.name)} · ${esc(chatSize(f.size))}" style="aspect-ratio: ${f.width} / ${f.height}; width: min(100%, ${Math.round(Math.min(f.height, 280) * f.width / f.height)}px)"><img src="${esc(chatFileUrl(f.id))}" alt="${esc(f.name)}" width="${f.width}" height="${f.height}" loading="lazy" decoding="async"></a>`;
+      return `<a class="cm-img" href="${esc(chatFileUrl(f.id))}" target="_blank" rel="noopener" title="${esc(f.name)} · ${esc(chatSize(f.size))}" style="aspect-ratio: ${f.width} / ${f.height}; width: min(100%, ${Math.max(24, Math.round(Math.min(f.height, 280) * f.width / f.height))}px)"><img src="${esc(chatFileUrl(f.id))}" alt="${esc(f.name)}" width="${f.width}" height="${f.height}" loading="lazy" decoding="async"></a>`;
     }
     return `<a class="cm-file" href="${esc(chatFileUrl(f.id))}" download="${esc(f.name)}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 1.5h5l3 3v10H4z M9 1.5v3h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span class="nm">${esc(f.name)}</span><span class="sz">${esc(chatSize(f.size))}</span></a>`;
   }).join("")}</div>`;
@@ -2473,7 +2473,10 @@ async function chatOpenThread(el, key, keep = false) {
     e.preventDefault();
     const text = ta.value.trim();
     if (files.busy()) return; // Send waits for uploads
-    const ids = files.ids();
+    const err0 = form.querySelector(".form-error");
+    if (files.failed()) { err0.textContent = "Remove the files that could not be attached first."; return; }
+    const going = files.sending();
+    const ids = going.map((p) => p.file.id);
     if (!text && !ids.length) return;
     const err = form.querySelector(".form-error");
     const btn = form.querySelector("button[type=submit]");
@@ -2489,10 +2492,13 @@ async function chatOpenThread(el, key, keep = false) {
       fyi.checked = false;
       ta.value = "";
       chats.composeDraft = "";
-      files.clear();
+      files.sent(going);
       grow();
       await chatTick(el);
-    } catch (ex) { err.textContent = ex.message; }
+    } catch (ex) {
+      err.textContent = ex.message;
+      if (ex.status === 422 && /attach it again/i.test(ex.message)) files.gone();
+    }
     finally { btn.disabled = false; ta.focus({ preventScroll: true }); }
   };
   // picking the chat clears its bell; a thread that only reloaded (keep) clears it when the window has focus
@@ -2507,17 +2513,25 @@ const CHAT_FILE_MAX = 10 * 1024 * 1024;
 function chatAttach(el, pane, form, ta) {
   const gid = chats.currentId;
   chats.pendingFiles = chats.pendingFiles || {};
+  chats.pendingRender = chats.pendingRender || {};
   const list = (chats.pendingFiles[gid] = chats.pendingFiles[gid] || []); // survives a re-render of the thread
   const strip = form.querySelector("#chat-pending");
   const input = form.querySelector("#chat-file");
   const err = form.querySelector(".form-error");
   const send = form.querySelector("button[type=submit]");
+  const box = pane.querySelector("#chat-msgs");
+  // the server keeps a pending file for an hour; a chip older than that is shown as gone before Send can fail on it
+  const stale = (p) => p.state === "ok" && Date.now() - p.at > 55 * 60 * 1000;
   const render = () => {
+    for (const p of list) if (stale(p)) { p.state = "err"; p.error = "expired, attach it again"; }
     strip.hidden = !list.length;
     // as much room at the thread's end as the strip covers, so the lines under it can still be scrolled into view;
-    // only the scrollable length grows, nothing on screen moves
-    el.classList.toggle("has-pending", !!list.length);
-    requestAnimationFrame(() => el.style.setProperty("--pending-h", `${strip.hidden ? 0 : strip.offsetHeight + 8}px`));
+    // only the scrollable length grows, nothing on screen moves. When the strip goes, the room stays until it is
+    // out of view or a new message comes in (chatDropRoom), so closing the strip never moves the thread either.
+    if (list.length) {
+      el.classList.add("has-pending");
+      requestAnimationFrame(() => { if (!strip.hidden) el.style.setProperty("--pending-h", `${strip.offsetHeight + 8}px`); });
+    }
     send.disabled = list.some((p) => p.state === "up");
     strip.innerHTML = list.map((p, i) => {
       const thumb = p.state === "ok" && p.file.kind === "image" ? `<img src="${esc(chatFileUrl(p.file.id))}" alt="">` : `<span class="ph" aria-hidden="true"></span>`;
@@ -2525,22 +2539,30 @@ function chatAttach(el, pane, form, ta) {
       return `<span class="pend ${p.state}">${thumb}<span class="nm">${esc(p.name)}</span><span class="sz">${esc(label)}</span><button type="button" class="btn quiet" data-unpend="${i}" aria-label="Remove ${esc(p.name)}">✕</button></span>`;
     }).join("");
   };
+  chats.pendingRender[gid] = render; // an upload that ends after the thread re-rendered updates the strip on screen
+  box.onscroll = ((prev) => (e) => {
+    prev?.(e);
+    const room = parseFloat(el.style.getPropertyValue("--pending-h")) || 0;
+    if (!list.length && room && box.scrollHeight - box.scrollTop - box.clientHeight > room) chatDropRoom(el);
+  })(box.onscroll);
   const add = (fileList) => {
     err.textContent = "";
     for (const f of fileList) {
       if (list.length >= 10) { err.textContent = "At most 10 files per message."; break; }
-      const p = { name: f.name || "pasted.png", size: f.size, state: "up" };
+      const total = list.filter((q) => q.state !== "err").reduce((n, q) => n + q.size, 0);
+      const p = { name: f.name || "pasted.png", size: f.size, state: "up", at: Date.now() };
       list.push(p);
       if (f.size > CHAT_FILE_MAX) { p.state = "err"; p.error = "over 10 MB"; continue; }
+      if (total + f.size > CHAT_FILE_MAX) { p.state = "err"; p.error = "over 10 MB in total"; continue; }
       fetch(`/admin/api/chats/${encodeURIComponent(gid)}/files?name=${encodeURIComponent(p.name)}`, {
         method: "PUT", credentials: "same-origin", body: f,
         headers: { "X-Notify-Admin": "1", "Content-Type": f.type || "application/octet-stream" },
       }).then(async (res) => {
         const data = await res.json().catch(() => null);
         if (!res.ok) throw new Error(typeof data?.detail === "string" ? data.detail : `upload failed (HTTP ${res.status})`);
-        p.file = data; p.state = "ok";
+        p.file = data; p.state = "ok"; p.at = Date.now();
       }).catch((ex) => { p.state = "err"; p.error = ex.message; })
-        .finally(() => { if (list.includes(p)) render(); else if (p.file) chatDiscard(gid, p.file.id); });
+        .finally(() => { if (list.includes(p)) chats.pendingRender[gid]?.(); else if (p.file) chatDiscard(gid, p.file.id); });
     }
     render();
   };
@@ -2548,9 +2570,11 @@ function chatAttach(el, pane, form, ta) {
   input.onchange = () => { add([...input.files]); input.value = ""; };
   ta.addEventListener("paste", (e) => {
     const fs = [...(e.clipboardData?.files || [])];
-    if (!fs.length) return; // plain text pastes as usual
+    // text wins: Word and Excel put a picture of the copied text on the clipboard too
+    if (!fs.length || e.clipboardData.getData("text/plain")) return;
     e.preventDefault();
-    add(fs.map((f, i) => (f.name && f.name !== "image.png" ? f : new File([f], `pasted-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}${fs.length > 1 ? `-${i + 1}` : ""}.${(f.type.split("/")[1] || "png").replace("jpeg", "jpg")}`, { type: f.type }))));
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T-]/g, "");
+    add(fs.map((f, i) => (f.name && f.name !== "image.png" ? f : new File([f], `pasted-${stamp}${fs.length > 1 ? `-${i + 1}` : ""}.${(f.type.split("/")[1] || "png").split("+")[0].replace("jpeg", "jpg")}`, { type: f.type }))));
   });
   strip.onclick = (e) => {
     const b = e.target.closest("[data-unpend]");
@@ -2571,12 +2595,21 @@ function chatAttach(el, pane, form, ta) {
     e.preventDefault(); depth = 0; drop.hidden = true;
     add([...e.dataTransfer.files]);
   };
+  if (!list.length) chatDropRoom(el); // a freshly drawn thread starts without room
   render();
   return {
     busy: () => list.some((p) => p.state === "up"),
-    ids: () => list.filter((p) => p.state === "ok").map((p) => p.file.id),
-    clear: () => { list.length = 0; render(); },
+    failed: () => list.some((p) => p.state === "err"),
+    sending: () => list.filter((p) => p.state === "ok"),
+    // after Send: only the files that went out; one added while the post was on its way stays
+    sent: (done) => { for (const p of done) { const k = list.indexOf(p); if (k >= 0) list.splice(k, 1); } render(); },
+    gone: () => { for (const p of list) if (p.state === "ok") { p.state = "err"; p.error = "gone, attach it again"; } render(); },
   };
+}
+// the room under the pending strip goes once nothing is pending and it is out of view, or with a new message
+function chatDropRoom(el) {
+  el.classList.remove("has-pending");
+  el.style.removeProperty("--pending-h");
 }
 function chatDiscard(gid, fid) {
   api("DELETE", `/chats/${encodeURIComponent(gid)}/files/${encodeURIComponent(fid)}`).catch(() => { /* goes after an hour anyway */ });
@@ -2726,11 +2759,13 @@ async function chatTickOnce(el) {
     if (data.messages.length) {
       const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
       box.querySelector(":scope > .empty")?.remove();
+      let added = false;
       for (const m of data.messages) {
         const old = box.querySelector(`:scope > [data-id="${CSS.escape(m.id)}"]`);
-        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open"));
+        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else { box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open")); added = true; }
       }
       chats.lastId = data.messages[data.messages.length - 1].id;
+      if (added && !(chats.pendingFiles?.[chats.currentId] || []).length) chatDropRoom(el); // the room goes with new content
       if (stick) box.scrollTop = box.scrollHeight;
     }
     // the bell goes once the owner is looking: the chat open and the window focused (coming back runs this too)
