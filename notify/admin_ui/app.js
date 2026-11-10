@@ -1959,12 +1959,15 @@ function chatMembersHtml(g) {
     const st = chatStatusOf(m);
     const kind = CHAT_WHO[m.kind] || m.kind;
     const name = m.name || kind;
-    const sub = [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
-      m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
+    // the model leads the one-line status of the side list (the ellipsis there cuts the plan text first, so the row
+    // keeps one height); the phone roster wraps its status, so there the model sits on the name line instead (.km)
+    const sub = (m.model ? `<span class="model"${m.model_id ? ` title="${esc(m.model_id)}"` : ""}>${esc(m.model)} · </span>` : "")
+      + [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
+        m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
     const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";
     const rename = `<button type="button" class="btn quiet cmem-rename" data-rename="${esc(m.id)}" data-name="${esc(name)}" aria-label="Rename ${esc(name)}" title="Rename">✎</button>`;
     return `<li class="cmem"><button type="button" class="cmem-main" data-mention="${esc(m.name || "")}" title="${m.name ? `Mention ${esc(name)} in your message` : ""}">
-      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chatNameStyle(m)}>${esc(name)}</span> <small${m.model_id ? ` title="${esc(chatKindModel(m.kind, m.model))} (${esc(m.model_id)})"` : ""}>${esc(chatKindModel(m.kind, m.model))}</small>
+      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chatNameStyle(m)}>${esc(name)}</span> <small>${esc(kind)}${m.model ? `<span class="km"> \u00b7 ${esc(m.model)}</span>` : ""}</small>
       <span class="sub">${sub}</span></button>${claims}${rename}</li>`;
   }).join("");
   const others = (g.presences || []).map((p) => `<li class="cmem away"><span class="sdot unknown" aria-hidden="true"></span><span class="nm">${esc(CHAT_WHO[p.kind] || p.kind)}</span> <small>not in the chat</small></li>`).join("");

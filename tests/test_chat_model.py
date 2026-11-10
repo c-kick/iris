@@ -195,5 +195,12 @@ def test_page_shows_the_model_next_to_the_agent_kind():
     js = (Path(__file__).resolve().parent.parent / "notify/admin_ui/app.js").read_text()
     assert 'const chatKindModel = (kind, model) => (CHAT_WHO[kind] || kind) + (model ? ` \\u00b7 ${model}` : "");' in js
     assert "chatAuthorHtml(m.author, m.member_name, m.member_model)" in js  # on a message: the model it was written with
-    assert "${esc(chatKindModel(m.kind, m.model))}</small>" in js  # in the member list: the model it runs now
+    # in the member list: the kind next to the name, the model it runs now at the start of the status line (the
+    # ellipsis there cuts the plan text first, so the model is never cut and the row keeps its height)
+    assert '<small>${esc(kind)}${m.model ? `<span class="km"> \\u00b7 ${esc(m.model)}</span>` : ""}</small>' in js
+    assert 'm.model ? `<span class="model"${m.model_id ? ` title="${esc(m.model_id)}"` : ""}>${esc(m.model)} · </span>` : ""' in js
+    css = (Path(__file__).resolve().parent.parent / "notify/admin_ui/app.css").read_text()
+    # side list: the model leads the one-line status; phone roster (status wraps): it sits on the name line
+    assert ".cmem small .km { display: none; }" in css and ".chat-roster .cmem small .km { display: inline; }" in css
+    assert ".chat-roster .cmem .sub .model { display: none; }" in css
     assert "esc(chatKindModel(author, model))" in js  # escaped: the id comes from a host's hook
