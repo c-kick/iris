@@ -1,7 +1,7 @@
 // Iris management UI. Vanilla JS, no build step.
 
 import { watchSun, nextChange, sunTimes, validPlace } from "./sun.js";
-import { chatMarkdown, chatPlain } from "./chatmd.js";
+import { chatMarkdown, chatMentionMarks, chatPlain } from "./chatmd.js";
 
 const root = document.getElementById("root");
 const dialog = document.getElementById("dialog");
@@ -1784,7 +1784,7 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 
 // ---------------------------------------------------------------- chats
 
-const chats = { colors: {}, folders: [], selected: null, currentId: null, lastId: null, timer: null, replyTo: null, msgs: {} };
+const chats = { colors: {}, names: {}, folders: [], selected: null, currentId: null, lastId: null, timer: null, replyTo: null, msgs: {} };
 // The Chats page covers exactly what the viewer can see. visualViewport shrinks when a phone keyboard
 // opens (100dvh does not on iOS), and iOS also slides the visible area down (offsetTop) to show the
 // field; the page is pinned to that area (top + height), so the composer sits right above the keyboard.
@@ -1968,6 +1968,20 @@ function chatColorIndex(members) {
 function chatLearnColors(g) {
   Object.assign(chats.colors, chatColorIndex(g?.members));
 }
+// a group's members by name (lower case), for coloured @mentions: a member here now wins over one that left
+function chatNamesOf(g) {
+  const names = {};
+  const ordered = [...(g?.members || [])].sort((a, b) => String(a.joined_at).localeCompare(String(b.joined_at)));
+  for (const m of [...ordered.filter((o) => o.left_at), ...ordered.filter((o) => !o.left_at)]) {
+    if (m.name) names[String(m.name).toLowerCase()] = m.id;
+  }
+  return names;
+}
+function chatLearnNames(g) {
+  chats.names = chatNamesOf(g);
+}
+// @Name -> the agent colour index of that member (names: chatNamesOf), or undefined (then it stays plain text)
+const chatMentionColour = (names) => (name) => chats.colors[names[String(name).toLowerCase()]];
 
 // ---- members of the open thread: status dot, name, kind, what it said it would do, claims held
 const CHAT_STATUS = {
@@ -2095,7 +2109,7 @@ function chatFilesHtml(files) {
   }).join("")}</div>`;
 }
 
-function chatMessageHtml(m, canReply = false) {
+function chatMessageHtml(m, canReply = false, names = chats.names) {
   if (m.author === "system") {
     const hr = m.history_request;
     const ask = hr && hr.state === "pending"
@@ -2117,7 +2131,7 @@ function chatMessageHtml(m, canReply = false) {
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
   return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name, m.member_model)}${tag}</div>
-    ${quote}${m.text === "" && m.files?.length ? "" : `<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text)}</div>`}${chatFilesHtml(m.files)}
+    ${quote}${m.text === "" && m.files?.length ? "" : `<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text, chatMentionColour(names))}</div>`}${chatFilesHtml(m.files)}
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }
 
@@ -2375,6 +2389,19 @@ async function chatFolders(el) {
   });
 }
 
+// The mentions in the composer, each on a tint of its agent colour: a layer behind the textarea holds the same text
+// (transparent) with the mentions marked, laid out exactly as the textarea lays out its own (same box, font and
+// wrapping; the width of the textarea's text area, so a scrollbar does not change the wrapping).
+function chatMarksSync(ta, marks) {
+  if (!marks) return;
+  const text = ta.value;
+  marks.innerHTML = chatMentionMarks(text, chatMentionColour(chats.names)) + (text.endsWith("\n") ? " " : "");
+  const cs = getComputedStyle(ta);
+  marks.style.width = `${ta.clientWidth + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)}px`;
+  marks.style.height = `${ta.offsetHeight}px`;
+  marks.scrollTop = ta.scrollTop;
+}
+
 // a click on a member: "@Name " at the cursor in the composer
 function chatMention(el, name) {
   const ta = el.querySelector("#chat-text");
@@ -2428,6 +2455,7 @@ async function chatOpenThread(el, key, keep = false) {
   if (chats.selected !== key) return;
   const g = data.group;
   chatLearnColors(g);
+  chatLearnNames(g);
   const id = g.id;
   chats.currentId = id;
   pane.innerHTML = `
@@ -2445,7 +2473,7 @@ async function chatOpenThread(el, key, keep = false) {
       <button type="button" class="btn quiet chat-attach" id="chat-attach" aria-label="Attach files" title="Attach files (or paste, or drop them here)"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M10.5 4.5 5.3 9.7a1.5 1.5 0 0 0 2.1 2.1l5.4-5.4a3 3 0 0 0-4.2-4.2L3.2 7.6a4.5 4.5 0 0 0 6.4 6.4l4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
       <input type="file" id="chat-file" multiple hidden>
       <div class="chat-pending" id="chat-pending" aria-live="polite" hidden></div>
-      <textarea id="chat-text" rows="2" placeholder="Message the group (@ to pick who acts)" spellcheck="true" autocorrect="on" autocapitalize="sentences" autocomplete="off" aria-autocomplete="list" aria-controls="chat-at"></textarea>
+      <div class="chat-field"><div class="chat-marks" id="chat-marks" aria-hidden="true"></div><textarea id="chat-text" rows="2" placeholder="Message the group (@ to pick who acts)" spellcheck="true" autocorrect="on" autocapitalize="sentences" autocomplete="off" aria-autocomplete="list" aria-controls="chat-at"></textarea></div>
       <ul class="chat-at" id="chat-at" role="listbox" aria-label="Members to mention" hidden></ul>
       <div class="compose-side"><label class="fyi-toggle" title="A heads-up: everyone reads it, nobody acts on it"><input type="checkbox" id="chat-fyi"> FYI</label>
       <button type="submit" class="btn primary">Send</button></div>
@@ -2533,8 +2561,11 @@ async function chatOpenThread(el, key, keep = false) {
   const ta = form.querySelector("textarea");
   const draftFor = chats.currentId;
   ta.value = chatDraftGet(draftFor);
-  const grow = () => { ta.style.height = "auto"; if (ta.value) ta.style.height = `${ta.scrollHeight + 2}px`; };
+  const marks = form.querySelector("#chat-marks");
+  const grow = () => { ta.style.height = "auto"; if (ta.value) ta.style.height = `${ta.scrollHeight + 2}px`; chatMarksSync(ta, marks); };
   ta.oninput = () => { chatDraftSet(draftFor, ta.value); grow(); };
+  ta.addEventListener("scroll", () => { marks.scrollTop = ta.scrollTop; }, { passive: true });
+  if (window.ResizeObserver) new ResizeObserver(() => chatMarksSync(ta, marks)).observe(ta);
   grow();
   const at = chatAtPicker(el, ta, form.querySelector("#chat-at"));
   const fyi = form.querySelector("#chat-fyi");
@@ -2717,7 +2748,8 @@ async function chatToggleEarlier(bar) {
   try {
     const d = await api("GET", `/chats/${encodeURIComponent(wrap.dataset.earlier)}/messages`);
     chatLearnColors(d.group);
-    body.innerHTML = d.messages.map(chatMessageHtml).join("") || `<div class="empty">No messages.</div>`;
+    const names = chatNamesOf(d.group); // its own members: a name may have belonged to another agent then
+    body.innerHTML = d.messages.map((m) => chatMessageHtml(m, false, names)).join("") || `<div class="empty">No messages.</div>`;
     body.querySelectorAll("[data-hreq]").forEach((x) => x.remove()); // an old session cannot be decided any more
     body.dataset.loaded = "1";
   } catch (ex) { body.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; }
@@ -2837,6 +2869,9 @@ async function chatTickOnce(el) {
     const data = await api("GET", path);
     if (chats.selected !== key || chats.currentId !== id) return;
     chatLearnColors(data.group);
+    chatLearnNames(data.group);
+    const draft = el.querySelector("#chat-text");
+    if (draft?.value.includes("@")) chatMarksSync(draft, el.querySelector("#chat-marks")); // a name may be new
     chatHeader(el, data.group, f);
     const box = el.querySelector("#chat-msgs");
     // a request decided elsewhere (phone link, expiry) loses its buttons

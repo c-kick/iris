@@ -729,11 +729,30 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-sync.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
 .chat-sync.bad::before { display: none; }
 /* as tall as the FYI/Send column, so typing the first character does not make it jump */
-.chat-compose textarea {
-  font: 400 15.5px/1.45 var(--read); color: var(--ink); background: var(--sunken); resize: vertical; min-height: 78px; max-height: 40vh;
+/* the field's background sits on .chat-field, so the mention marks (.chat-marks, behind the transparent textarea) show;
+   the marks layer copies the textarea's font, padding, border width and wrapping, so each mark lies under its text */
+.chat-field { position: relative; min-width: 0; border-radius: var(--radius-s); background: var(--sunken); }
+.chat-field:focus-within { background: var(--surface); }
+.chat-compose textarea, .chat-compose .chat-marks {
+  font: 400 15.5px/1.45 var(--read); letter-spacing: normal; word-spacing: normal; text-indent: 0; tab-size: 8;
   border: 1px solid var(--line); border-radius: var(--radius-s); padding: .5rem .7rem;
+  white-space: pre-wrap; overflow-wrap: break-word; word-break: normal;
 }
-.chat-compose textarea:focus-visible { outline: 2px solid var(--action); outline-offset: 0; border-color: var(--action); background: var(--surface); }
+.chat-compose textarea {
+  position: relative; display: block; width: 100%; margin: 0;
+  color: var(--ink); background: transparent; resize: vertical; min-height: 78px; max-height: 40vh;
+}
+.chat-compose textarea:focus-visible { outline: 2px solid var(--action); outline-offset: 0; border-color: var(--action); background: transparent; }
+.chat-compose .chat-marks {
+  position: absolute; top: 0; left: 0; margin: 0; overflow: hidden; pointer-events: none; user-select: none;
+  color: transparent; border-color: transparent;
+}
+.chat-marks mark.mention {
+  color: transparent; border-radius: 3px;
+  background: color-mix(in srgb, var(--who) 22%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--who) 45%, transparent);
+}
+/* a mention of a member in a message: its name in its agent colour */
+.cm .body .mention { color: var(--who); font-weight: 600; }
 .chat-replying { grid-column: 1 / -1; display: flex; align-items: center; gap: .5rem; padding: .25rem .6rem; border-left: 3px solid var(--action); background: var(--action-wash); font-size: .82rem; color: var(--muted); border-radius: 0 6px 6px 0; }
 .chat-replying[hidden] { display: none; }
 .chat-replying .rq { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -804,7 +823,8 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
   .cm .body { font-size: 16px; }
   .chat-compose { padding: .45rem .5rem calc(.45rem + env(safe-area-inset-bottom)); gap: .4rem; }
   /* 16px stops iOS from zooming the page when the field gets focus */
-  .chat-compose textarea { font-size: 16px; resize: none; max-height: 30vh; }
+  .chat-compose textarea, .chat-compose .chat-marks { font-size: 16px; }
+  .chat-compose textarea { resize: none; max-height: 30vh; }
   .chat-readonly { padding-bottom: calc(.65rem + env(safe-area-inset-bottom)); }
 }
 

@@ -13,10 +13,13 @@ Also: six agent colours instead of four (a new set, so every agent gets a new co
 chat at once all differ. Agents are told to notify the owner only when they need them or there is something to see
 or test, not after every edit or commit.
 Pictures lose their metadata when they are posted to a chat (EXIF, XMP, IPTC, comments and text chunks, and the
-extra images an iPhone appends to a JPEG: where a photo was taken,
-the camera, comments), without re-encoding; a JPEG keeps only its orientation so it still shows upright. Pictures
+extra images an iPhone appends to a JPEG: where a photo was taken, the camera, comments), without re-encoding; a JPEG keeps only its orientation so it still shows upright. Pictures
 posted before this release keep theirs until they expire. A HEIC or other file that is not shown as a picture is
 stored as it is.
+
+Coloured mentions: an `@Name` of a member shows in that member's agent colour, in messages and, as a tint, in the
+message box while you type. Earlier sessions opened from a thread no longer show Reply buttons (a reply there could
+not be sent).
 
 ## Upgrading to 0.20.1
 

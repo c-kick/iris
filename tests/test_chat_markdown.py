@@ -29,7 +29,7 @@ def test_module_is_self_contained_and_used_for_message_bodies():
     js = (UI / "app.js").read_text()
     assert re.search(r'import \{[^}]*\bchatMarkdown\b[^}]*\} from "\./chatmd\.js"', js)
     fn = js[js.index("function chatMessageHtml"):js.index("function chatEarlierHtml")]
-    assert "chatMarkdown(m.text)" in fn
+    assert "chatMarkdown(m.text, chatMentionColour(names))" in fn
 
 
 @needs_node
@@ -186,3 +186,90 @@ def test_urls_inside_emphasis_and_parentheses():
     assert em == f"<p><em>{link}</em></p>"
     assert under == f"<p><em>{link}</em></p>"
     assert 'href="https://en.wikipedia.org/wiki/Foo_(bar)"' in wiki and wiki.endswith("</a>).</p>")
+
+
+# --------------------------------------------------------------------------- coloured mentions (owner, 2026-11-10)
+COLOURS = {"robin": 0, "linden": 1, "quail": 3}
+
+
+def run(expr: str):
+    script = ('import { chatMarkdown, chatMentionMarks } from "./chatmd.js";'
+              f"const C = {json.dumps(COLOURS)}; const colour = (n) => C[n.toLowerCase()];"
+              f"console.log(JSON.stringify({expr}));")
+    out = subprocess.run([NODE, "--input-type=module", "-e", script], capture_output=True, text=True, timeout=30, cwd=UI)
+    assert out.returncode == 0, out.stderr
+    return json.loads(out.stdout)
+
+
+def mdc(*texts: str) -> list[str]:
+    return run(f"{json.dumps(list(texts))}.map((t) => chatMarkdown(t, colour))")
+
+
+def marks(*texts: str) -> list[str]:
+    return run(f"{json.dumps(list(texts))}.map((t) => chatMentionMarks(t, colour))")
+
+
+@needs_node
+def test_a_mention_of_a_member_takes_its_agent_colour():
+    out = mdc("hi @Robin and @linden, not @Nobody")[0]
+    assert '<span class="mention" style="--who: var(--a0)">@Robin</span>' in out
+    assert '<span class="mention" style="--who: var(--a1)">@linden</span>' in out
+    assert "@Nobody" in out and out.count('class="mention"') == 2
+
+
+@needs_node
+def test_mentions_follow_the_server_rule_and_stay_out_of_code_links_and_addresses():
+    out = mdc("mail robin@Robin.nl", "`@Robin`", "[@Robin](https://x.test/@Robin)", "(@Robin) **@Quail** _@Linden_",
+              "@Robin2 @Robinson", "> @Robin quoted")
+    assert 'class="mention"' not in out[0]  # after a letter: an address, not a mention
+    assert 'class="mention"' not in out[1] and 'class="mention"' not in out[2]
+    # as on the server: after "(" it is a mention, after "*" or "_" (emphasis) it is not, so it is not coloured
+    assert out[3].count('class="mention"') == 1 and "<strong>" in out[3] and "<em>" in out[3]
+    assert 'class="mention"' not in out[4]  # another name
+    assert 'class="mention"' not in out[5]  # a quoted line's mention is someone else's (the server skips it too)
+    # quoted or not is decided on the whole line, as on the server: a list item or heading starting with > is not
+    assert all(o.count('class="mention"') == 1 for o in mdc("- > hi @Robin", "# | @Robin", "1. > @Robin")), "marker first"
+
+
+@needs_node
+def test_without_colours_nothing_changes():
+    assert md("hi @Robin")[0] == "<p>hi @Robin</p>"
+
+
+@needs_node
+def test_a_bad_colour_index_is_ignored_and_names_are_escaped():
+    out = run('["hi @Robin"].map((t) => chatMarkdown(t, () => "0);x:url(y"))')
+    assert out == ["<p>hi @Robin</p>"]
+    assert run('["@Robin"].map((t) => chatMarkdown(t, () => 99))') == ["<p>@Robin</p>"]
+
+
+@needs_node
+def test_composer_marks_keep_every_character_in_place():
+    import html
+    texts = ["Hi @Robin, <b>&amp;</b> @Nobody\n\n  @Quail\t@Linden\n", "", "@Robin", "a@Robin", "**@Robin**"]
+    for t, out in zip(texts, marks(*texts)):
+        assert html.unescape(re.sub(r"<[^>]+>", "", out)) == t, out  # the same text, nothing added or dropped
+        assert "<b>" not in out
+    assert marks("Hi @Robin")[0] == 'Hi <mark class="mention" style="--who: var(--a0)">@Robin</mark>'
+    assert marks("**@Robin**")[0] == "**@Robin**" and marks("a@Robin")[0] == "a@Robin"  # as on the server
+    assert marks("> @Robin\n| @Robin\n@Robin")[0].count("<mark") == 1
+
+
+def test_composer_draws_the_marks_behind_the_textarea():
+    js = (UI / "app.js").read_text()
+    css = (UI / "app.css").read_text()
+    assert '<div class="chat-field"><div class="chat-marks" id="chat-marks" aria-hidden="true"></div><textarea id="chat-text"' in js
+    i = js.index("const grow = () =>")
+    assert "chatMarksSync(ta, marks)" in js[i:js.index("\n", i)], "every change of the text goes through grow()"
+    # the layer copies the textarea's text box: one rule for both, also in the narrow-screen override
+    assert ".chat-compose textarea, .chat-compose .chat-marks {" in css
+    assert ".chat-compose textarea, .chat-compose .chat-marks { font-size: 16px; }" in css
+    rule = css[css.index(".chat-compose textarea {"):]
+    rule = rule[:rule.index("}")]
+    assert "background: transparent" in rule and "font" not in rule.split("{", 1)[1].replace("font-size", "")
+
+
+def test_earlier_sessions_use_their_own_members_and_offer_no_reply():
+    js = (UI / "app.js").read_text()
+    assert "d.messages.map((m) => chatMessageHtml(m, false, names))" in js
+    assert "d.messages.map(chatMessageHtml)" not in js
