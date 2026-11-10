@@ -4,7 +4,7 @@
 //   blocks: paragraphs (a blank line), line breaks inside them, "- " / "* " / "+ " and "1. " lists,
 //           ``` fenced code, "# " headings (shown as a bold line, not a big title: it is a chat)
 //   inline: **bold**, *italic* / _italic_ (not inside words: reply_handle stays as typed), `code`,
-//           [text](https://…) links (http and https only; they open in a new tab)
+//           [text](https://…) links and bare http(s) addresses (http and https only; they open in a new tab)
 // Anything else (tables, images, HTML, nested lists) stays as the text that was typed.
 
 const ESC = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -29,6 +29,8 @@ function headingText(line) {
   return t;
 }
 
+const linkHtml = (url, label) => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
+
 // inline marks on one line of raw text
 function inline(raw) {
   const kept = []; // links and code spans, set aside so no other mark reaches into them
@@ -36,9 +38,23 @@ function inline(raw) {
   // links first, their label shown as typed (no marks inside a link)
   let s = raw.replace(/\[([^\]\n]{1,300})\]\(([^)\s]{1,2000})\)/g, (all, label, url) =>
     /^https?:\/\/\S+$/i.test(url)
-      ? keep(`<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`)
+      ? keep(linkHtml(url, label))
       : all);
-  s = s.replace(/`([^`\n]{1,2000})`/g, (_, code) => keep(`<code>${esc(code)}</code>`));
+  // a code span that holds only a URL is a link too, still shown as code
+  s = s.replace(/`([^`\n]{1,2000})`/g, (_, code) => keep(/^https?:\/\/[^\s<>"'`]+$/i.test(code)
+    ? `<code>${linkHtml(code, code)}</code>` : `<code>${esc(code)}</code>`));
+  // a bare http(s) address is a link; punctuation that ends the sentence is not part of it
+  // (after a letter or digit it is part of a word, not an address; after "_" or "*" it is inside emphasis)
+  s = s.replace(/(?<![A-Za-z0-9])https?:\/\/[^\s<>"'`\u0000]{1,2000}/gi, (url) => {
+    let tail = "";
+    const count = (c) => url.split(c).length - 1;
+    // closing emphasis marks and sentence punctuation are not part of it; a ")" that closes a "(" in it is
+    for (let k = 0; k < 16 && /[.,;:!?)\]*_]$/.test(url); k += 1) {
+      if (url.endsWith(")") && count("(") >= count(")")) break;
+      tail = url.slice(-1) + tail; url = url.slice(0, -1);
+    }
+    return /^https?:\/\/./i.test(url) ? keep(linkHtml(url, url)) + tail : url + tail;
+  });
   s = esc(s);
   s = s.replace(/\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])/g, "$1<em>$2</em>");

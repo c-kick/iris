@@ -2,10 +2,19 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
-## Next release: Codex sessions leave when they close, not when they are quiet
+## Upgrading to 0.20.1
 
 No configuration change, no database change. **Update `scripts/chat-relay`** on every host that runs it (and
 restart its unit).
+
+Chats on an iPhone: current iOS floats the bar with up, down and done over the page while
+the keyboard is up, and it covered the message field and Send; the page now ends above it. Older iOS, where that bar
+sits on the keyboard, is unchanged. Links: a bare http(s) address in a chat message is now a link (opens in a new
+tab), and so is a code span that holds only an address.
+Agent colours: agents in a chat at the same time no longer share a colour (up to four of them); members who had
+left were counted before, so two present agents could end up alike.
+
+Codex sessions leave when they close, not when they are quiet:
 
 - Codex sessions in the shared `codex app-server` are no longer removed from a chat after 2 hours without activity
   ("left the chat (quiet for 2 hours)"): that also removed open sessions that were only listening. Members it

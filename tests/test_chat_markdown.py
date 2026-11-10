@@ -107,6 +107,8 @@ HOSTILE = {  # one line each, built to make a backtracking regex blow up
     "backticks": '"`".repeat(N)',
     "list-spaces": '"-" + " ".repeat(N) + "x"',
     "numbers": '"1".repeat(N) + ". x"',
+    "urls": '"https://a.b/" + "x.".repeat(N / 2)',
+    "url-dots": '"http://" + ".".repeat(N)',
 }
 
 
@@ -151,3 +153,36 @@ def test_previews_drop_the_marks():
                                       "snake_case stays", "2 * 3"]
     js = (UI / "app.js").read_text()
     assert "chatPlain(" in js[js.index("function chatGroupRow"):js.index("const chatMemberLabel")]
+
+
+A = 'target="_blank" rel="noopener noreferrer"'
+
+
+@needs_node
+def test_bare_urls_are_links_without_trailing_punctuation():
+    out = md("open http://192.0.2.7:8930/admin?vvdebug=1#chats now",
+             "see https://x.com/a_b_c.",
+             "(https://example.org/path)",
+             "`https://x.com/in?code=1`",
+             "javascript:alert(1) and ftp://x.com stay text",
+             'x https://a.com/"onmouseover="alert(1) y',
+             "[label](https://a.com) and https://b.com")
+    assert out[0] == f'<p>open <a href="http://192.0.2.7:8930/admin?vvdebug=1#chats" {A}>http://192.0.2.7:8930/admin?vvdebug=1#chats</a> now</p>'
+    assert out[1] == f'<p>see <a href="https://x.com/a_b_c" {A}>https://x.com/a_b_c</a>.</p>', "the full stop is not part of it"
+    assert out[2] == f'<p>(<a href="https://example.org/path" {A}>https://example.org/path</a>)</p>'
+    assert out[3] == f'<p><code><a href="https://x.com/in?code=1" {A}>https://x.com/in?code=1</a></code></p>'
+    assert "<a" not in out[4]
+    assert 'onmouseover="' not in out[5] and "&quot;" not in out[5].split('href="')[1].split('"')[0]
+    assert out[6].count("<a ") == 2 and "\u0000" not in out[6]
+
+
+@needs_node
+def test_urls_inside_emphasis_and_parentheses():
+    bold, bold_dot, em, under, wiki = md("**https://a.com**", "**see https://a.com.**", "*https://a.com*",
+                                         "_https://a.com_", "(https://en.wikipedia.org/wiki/Foo_(bar)).")
+    link = f'<a href="https://a.com" {A}>https://a.com</a>'
+    assert bold == f"<p><strong>{link}</strong></p>"
+    assert bold_dot == f"<p><strong>see {link}.</strong></p>"
+    assert em == f"<p><em>{link}</em></p>"
+    assert under == f"<p><em>{link}</em></p>"
+    assert 'href="https://en.wikipedia.org/wiki/Foo_(bar)"' in wiki and wiki.endswith("</a>).</p>")

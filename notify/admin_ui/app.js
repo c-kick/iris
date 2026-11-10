@@ -1790,10 +1790,11 @@ const chats = { colors: {}, folders: [], selected: null, currentId: null, lastId
 // field; the page is pinned to that area (top + height), so the composer sits right above the keyboard.
 if (window.visualViewport) {
   const vv = window.visualViewport;
+  const IOS = /iPhone|iPod/.test(navigator.userAgent); // the floating bar is the iPhone's; iPad's keyboard has none
+  const IOS_BAR = 60;
   const fit = () => {
     if (vv.scale > 1.01) return; // pinch zoom: keep the layout as it was
     const s = document.documentElement.style;
-    s.setProperty("--app-h", `${Math.round(vv.height)}px`);
     // While a field has focus the keyboard is up, and iOS scrolls the view down to show the field (it reported
     // offsetTop 330 with the page left 330 px above the view). Undo that scroll, so the page sits right above the
     // keyboard; if iOS keeps an offset anyway, follow it. Window sizes say nothing here: on current iOS the window
@@ -1802,6 +1803,12 @@ if (window.visualViewport) {
     // only the Chats page is pinned to the view; other pages scroll normally and are left alone
     const onChats = !!document.getElementById("chats");
     const keyboardOpen = !!typing && onChats;
+    // The bar with up/down/done that Safari shows over a focused field: older iOS docks it on the keyboard (outside
+    // the visual viewport; the window shrinks with the keyboard), newer iOS floats it inside the visual viewport,
+    // over the page's last ~57 px (measured: viewport 484 tall ending at the keyboard, window still 714, bar over
+    // 427..474). Then the page ends that much higher, so the composer sits above the bar instead of under it.
+    const floatingBar = keyboardOpen && IOS && innerHeight - vv.height > 120;
+    s.setProperty("--app-h", `${Math.round(vv.height) - (floatingBar ? IOS_BAR : 0)}px`);
     // nothing on Chats scrolls the page itself (html and body are overflow: hidden), so a leftover scroll is iOS's
     if (onChats && (window.scrollY > 0 || (keyboardOpen && vv.offsetTop > 0))) window.scrollTo(0, 0);
     s.setProperty("--app-top", `${keyboardOpen ? Math.max(0, Math.round(vv.offsetTop)) : 0}px`);
@@ -1823,7 +1830,7 @@ if (window.visualViewport) {
       box.style.top = `${Math.round(vv.offsetTop) + 4}px`;
       const a = document.activeElement;
       box.textContent = [`vv ${Math.round(vv.width)}x${Math.round(vv.height)} offsetTop ${Math.round(vv.offsetTop)} pageTop ${Math.round(vv.pageTop)} scale ${vv.scale.toFixed(2)}`,
-        `inner ${innerWidth}x${innerHeight} scrollY ${Math.round(scrollY)} keyboardOpen ${kb}`,
+        `inner ${innerWidth}x${innerHeight} scrollY ${Math.round(scrollY)} keyboardOpen ${kb} ios ${IOS}`,
         `--app-top ${s0("--app-top")} --app-h ${s0("--app-h")}`,
         `shell ${r(".shell")} composer ${r("#chat-compose")} field ${r("#chat-text")}`,
         `focus ${a?.id || a?.tagName || "-"}`].join("\n");
@@ -1930,12 +1937,36 @@ function chatMembersText(g) {
   return here.length ? `Here now: ${here.join(", ")}` : "Nobody here";
 }
 
-// ---- one colour per agent, by join order within its chat (the first 4 members never share one). Only violet to pink:
-// green, amber, red, blue and teal mean a status or an action on this page, orange and blue the Claude/Codex kinds,
-// so a name never looks like a state (tests/test_appearance.py keeps the hues apart)
+// ---- one colour per agent within its chat. A member takes the first colour that no member still present at its
+// join holds, so agents in the chat at the same time never share one (up to CHAT_COLORS of them), and a member keeps
+// its colour (also on its old messages) whoever leaves later. Counting departed members too gave two present agents
+// one colour. Only violet to pink and yellow-green: green, amber, red, blue and teal mean a status or an action on
+// this page, orange and blue the Claude/Codex kinds, so a name never looks like a state (tests/test_appearance.py)
 const CHAT_COLORS = 4;
+function chatColorIndex(members) {
+  const out = {};
+  const ordered = [...(members || [])].sort((a, b) => String(a.joined_at).localeCompare(String(b.joined_at)));
+  ordered.forEach((m, i) => {
+    const taken = new Set(ordered.slice(0, i).filter((o) => !o.left_at || o.left_at > m.joined_at).map((o) => out[o.id]));
+    let c = 0;
+    while (c < CHAT_COLORS && taken.has(c)) c += 1;
+    out[m.id] = c < CHAT_COLORS ? c : i % CHAT_COLORS; // more present than colours: they have to share
+  });
+  // then the members here now: one that shares its colour with an earlier one here now (because more were here when
+  // it joined) takes a free colour, so the chat as it is never shows two agents in one colour
+  const used = new Set();
+  for (const m of ordered.filter((o) => !o.left_at)) {
+    if (used.has(out[m.id])) {
+      let c = 0;
+      while (c < CHAT_COLORS && used.has(c)) c += 1;
+      if (c < CHAT_COLORS) out[m.id] = c;
+    }
+    used.add(out[m.id]);
+  }
+  return out;
+}
 function chatLearnColors(g) {
-  (g?.members || []).forEach((m, i) => { chats.colors[m.id] = i % CHAT_COLORS; });
+  Object.assign(chats.colors, chatColorIndex(g?.members));
 }
 
 // ---- members of the open thread: status dot, name, kind, what it said it would do, claims held

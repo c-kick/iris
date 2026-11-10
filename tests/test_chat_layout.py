@@ -207,7 +207,10 @@ def test_keyboard_correction_does_not_guess_from_window_sizes():
     # scrollY 330. innerHeight shrinks with the keyboard there, so "vv.height < innerHeight - 80" said no keyboard and
     # the page stayed 330 px above the view. While a field has focus: undo iOS's scroll, else follow its offset.
     fit = JS[JS.index("const fit = () => {"):JS.index("// ?vvdebug=1")]
-    assert "innerHeight" not in fit
+    # window sizes never decide whether the keyboard is up (focus does); 0.20.1 uses them only once the keyboard is
+    # known to be up, to tell the floating iOS bar (window unchanged) from the docked one (window shrinks)
+    uses = [ln.strip() for ln in fit.splitlines() if "innerHeight" in ln and not ln.strip().startswith("//")]
+    assert uses == ["const floatingBar = keyboardOpen && IOS && innerHeight - vv.height > 120;"], uses
     assert "window.scrollTo(0, 0)" in fit
     assert "keyboardOpen = !!typing" in fit
 
@@ -282,3 +285,38 @@ def test_unsent_text_survives_leaving_and_stays_with_its_chat():
     assert "chatDraftsForget(); boot();" in JS, "sign-out removes the drafts"
     assert "chatPendingLoad(gid)" in JS and "chatPendingSave(gid, list)" in JS, "uploaded but unsent files come back after a reload"
     assert "ta.oninput = () => { chatDraftSet(draftFor, ta.value)" in JS
+
+
+def test_composer_sits_above_the_floating_ios_keyboard_bar():
+    fit = JS[JS.index("if (window.visualViewport) {"):JS.index("const chatUnread")]
+    assert "const floatingBar = keyboardOpen && IOS && innerHeight - vv.height > 120;" in fit, \
+        "only while typing on an iPhone with a window that did not shrink (the bar floats inside the viewport)"
+    assert "const IOS = /iPhone|iPod/.test(navigator.userAgent);" in fit, "iPad has no floating bar over its keyboard"
+    assert '`${Math.round(vv.height) - (floatingBar ? IOS_BAR : 0)}px`' in fit
+    assert "const IOS_BAR = 60;" in fit, "measured: the bar covers the viewport's last ~57 px"
+
+
+def test_agents_present_together_never_share_a_colour():
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        import pytest
+        pytest.skip("node not installed")
+    fn = JS[JS.index("const CHAT_COLORS"):JS.index("function chatLearnColors")]
+    # a real case: 7 joined, 3 left; of the 4 present ones the 3rd and the 7th to join got the same colour
+    members = [
+        {"id": "raven", "joined_at": "2026-11-08T20:36:01Z", "left_at": "2026-11-09T17:53:55Z"},
+        {"id": "zinnia", "joined_at": "2026-11-08T20:37:10Z", "left_at": "2026-11-09T22:38:08Z"},
+        {"id": "quail", "joined_at": "2026-11-09T17:21:20Z", "left_at": None},
+        {"id": "bracken", "joined_at": "2026-11-09T17:43:17Z", "left_at": "2026-11-09T17:43:21Z"},
+        {"id": "sorrel", "joined_at": "2026-11-09T17:53:55Z", "left_at": None},
+        {"id": "larch", "joined_at": "2026-11-09T20:23:05Z", "left_at": None},
+        {"id": "fern", "joined_at": "2026-11-09T20:41:11Z", "left_at": None},
+    ]
+    script = fn + f"; console.log(JSON.stringify(chatColorIndex({json.dumps(members)})));"
+    out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30).stdout)
+    present = [out[m] for m in ("quail", "sorrel", "larch", "fern")]
+    assert len(set(present)) == 4, out
+    assert out["raven"] == out["raven"] and all(0 <= v < 4 for v in out.values())
