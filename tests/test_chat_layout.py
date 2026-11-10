@@ -252,3 +252,9 @@ def test_attach_paste_and_drop_are_wired():
     assert "ondrop" in fn and "ondragover" in fn
     assert 'method: "PUT"' in fn and '"X-Notify-Admin": "1"' in fn
     assert 'id="chat-file" multiple' in JS and 'id="chat-attach"' in JS
+
+
+def test_a_file_only_message_has_no_empty_body_and_quotes_its_files():
+    fn = JS[JS.index("function chatMessageHtml"):JS.index("function chatEarlierHtml")]
+    assert 'm.text === "" && m.files?.length ? ""' in fn, "no empty text bubble above the files"
+    assert "chatFilesSummary(m.files)" in fn, "the reply bar names the files"

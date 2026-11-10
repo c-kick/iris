@@ -2008,6 +2008,8 @@ const chatFileUrl = (id) => `/admin/api/chats/files/${encodeURIComponent(id)}`;
 function chatSize(n) {
   return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MB`;
 }
+// "2 files: a.png, b.log", like the server says it for a message without text
+const chatFilesSummary = (files) => `${files.length === 1 ? "1 file" : `${files.length} files`}: ${files.map((f) => f.name).join(", ")}`;
 function chatFilesHtml(files) {
   if (!files || !files.length) return "";
   return `<div class="cm-files">${files.map((f) => {
@@ -2030,7 +2032,7 @@ function chatMessageHtml(m, canReply = false) {
     const icon = kind ? `<svg class="notice-ico ${kind}" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${CHAT_NOTICE_ICONS[kind]}</svg>` : "";
     return `<div class="cm sys${ask ? " ask" : ""}${kind ? ` notice-${kind}` : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${icon}${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
   }
-  chats.msgs[m.id] = { author: m.author, member_id: m.member_id, name: m.member_name, text: m.text };
+  chats.msgs[m.id] = { author: m.author, member_id: m.member_id, name: m.member_name, text: m.text === "" && m.files?.length ? chatFilesSummary(m.files) : m.text };
   const quote = m.in_reply_to
     ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(chatPlain(m.reply_excerpt))}`}</div>`
     : "";
