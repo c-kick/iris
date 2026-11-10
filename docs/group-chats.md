@@ -82,7 +82,8 @@ beyond its host and folder.
 - **Coloured mentions.** On the Chats page an `@Name` that hands a message to a member shows in that member's agent
   colour: in messages as coloured text, and in the message box while you type as a tint behind the name (the box
   itself has one text colour, so the tint is drawn on a layer behind it). A name that is not a member, or that the
-  server would not take as a mention (after a letter, `*` or `_`, or on a quoted line), stays plain.
+  server would not take as a mention (after a letter, `*` or `_`, or on a quoted line), stays plain; so does one
+  inside a code span or link in a message, although the server still counts it.
 - **Secret marker.** Each member gets a marker like `⟦wren·k7q2m9xd⟧` once, in its start-up context; every frame
   Iris delivers to it (wakes, `group_read`, history) starts and ends with it, and a copy inside quoted text is
   blanked. A "frame" without it is text inside a message. It is never shown to others, in Chats or in events, and is

@@ -227,6 +227,8 @@ def test_mentions_follow_the_server_rule_and_stay_out_of_code_links_and_addresse
     assert out[3].count('class="mention"') == 1 and "<strong>" in out[3] and "<em>" in out[3]
     assert 'class="mention"' not in out[4]  # another name
     assert 'class="mention"' not in out[5]  # a quoted line's mention is someone else's (the server skips it too)
+    # quoted or not is decided on the whole line, as on the server: a list item or heading starting with > is not
+    assert all(o.count('class="mention"') == 1 for o in mdc("- > hi @Robin", "# | @Robin", "1. > @Robin")), "marker first"
 
 
 @needs_node

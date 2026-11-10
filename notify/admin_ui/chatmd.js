@@ -43,7 +43,7 @@ const mentionHtml = (tag, ci, name) => `<${tag} class="mention" style="--who: va
 const linkHtml = (url, label) => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
 
 // inline marks on one line of raw text
-function inline(raw, colour) {
+function inline(raw, colour, quoted = QUOTED.test(raw)) { // quoted: decided on the whole line, as on the server
   const kept = []; // links and code spans, set aside so no other mark reaches into them
   const keep = (html) => `\u0000${kept.push(html) - 1}\u0000`;
   // links first, their label shown as typed (no marks inside a link)
@@ -67,7 +67,7 @@ function inline(raw, colour) {
     return /^https?:\/\/./i.test(url) ? keep(linkHtml(url, url)) + tail : url + tail;
   });
   // a mention of a member in its agent colour (links and code spans are set aside already, so none inside them)
-  if (colour && !QUOTED.test(raw)) {
+  if (colour && !quoted) {
     s = s.replace(MENTION, (all, name) => {
       const ci = mentionIndex(colour, name);
       return ci === undefined ? all : keep(mentionHtml("span", ci, name));
@@ -104,7 +104,7 @@ export function chatMarkdown(text, colour) {
     }
     if (!line.trim()) { flush(); i += 1; continue; }
     const head = HEAD.test(line) ? headingText(line) : "";
-    if (head) { flush(); out.push(`<p class="md-h">${inline(head, colour)}</p>`); i += 1; continue; }
+    if (head) { flush(); out.push(`<p class="md-h">${inline(head, colour, QUOTED.test(line))}</p>`); i += 1; continue; }
     const kind = UL.test(line) ? "ul" : OL.test(line) ? "ol" : null;
     if (kind) {
       flush();
@@ -113,7 +113,7 @@ export function chatMarkdown(text, colour) {
       const items = [];
       for (; i < lines.length && re.test(lines[i]); i += 1) {
         const m = lines[i].match(re);
-        items.push(`<li>${inline(kind === "ul" ? m[1] : m[2], colour)}</li>`);
+        items.push(`<li>${inline(kind === "ul" ? m[1] : m[2], colour, QUOTED.test(lines[i]))}</li>`);
       }
       out.push(`<${kind}${first !== 1 ? ` start="${first}"` : ""}>${items.join("")}</${kind}>`);
       continue;
