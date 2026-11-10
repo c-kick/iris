@@ -1863,8 +1863,9 @@ if (window.visualViewport) {
   fit();
 }
 // Unsent text is never lost by leaving: one draft per chat, kept in this browser (localStorage) as it is typed and
-// put back when the chat opens, removed once sent or on sign-out. Where storage is blocked it is kept in memory and
-// leaving the page asks first; the same goes for files that are attached but not sent (they cannot be kept).
+// put back when the chat opens, removed once sent or on sign-out. Attached files that finished uploading are kept the
+// same way (their ids; the server holds them for an hour). Where storage is blocked, or a file is still uploading,
+// leaving the page asks first.
 const DRAFT_KEY = "iris-draft:";
 const DRAFT_DAYS = 14;
 const chatDrafts = { mem: {}, stored: true };
@@ -1887,11 +1888,13 @@ function chatDraftSet(gid, text) {
 }
 function chatDraftsForget() {
   chatDrafts.mem = {};
-  try { Object.keys(localStorage).filter((k) => k.startsWith(DRAFT_KEY)).forEach((k) => localStorage.removeItem(k)); } catch { /* blocked */ }
+  chats.pendingFiles = {};
+  try { Object.keys(localStorage).filter((k) => k.startsWith(DRAFT_KEY) || k.startsWith("iris-pending:")).forEach((k) => localStorage.removeItem(k)); } catch { /* blocked */ }
 }
 addEventListener("beforeunload", (e) => {
   const unsavedText = !chatDrafts.stored && Object.values(chatDrafts.mem).some((t) => t.trim());
-  const files = Object.values(chats.pendingFiles || {}).some((l) => l.length);
+  // files still uploading cannot be kept; uploaded ones can, unless storage is blocked
+  const files = Object.values(chats.pendingFiles || {}).some((l) => l.some((p) => p.state === "up" || (p.state === "ok" && !chatDrafts.stored)));
   if (unsavedText || files) { e.preventDefault(); e.returnValue = ""; }
 });
 const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
@@ -2547,7 +2550,9 @@ function chatAttach(el, pane, form, ta) {
   const gid = chats.currentId;
   chats.pendingFiles = chats.pendingFiles || {};
   chats.pendingRender = chats.pendingRender || {};
-  const list = (chats.pendingFiles[gid] = chats.pendingFiles[gid] || []); // survives a re-render of the thread
+  // survives a re-render of the thread; after a reload the uploaded ones come back from this browser's storage (the
+  // server keeps a pending file for an hour)
+  const list = (chats.pendingFiles[gid] = chats.pendingFiles[gid] || chatPendingLoad(gid));
   const strip = form.querySelector("#chat-pending");
   const input = form.querySelector("#chat-file");
   const err = form.querySelector(".form-error");
@@ -2566,6 +2571,7 @@ function chatAttach(el, pane, form, ta) {
       requestAnimationFrame(() => { if (!strip.hidden) el.style.setProperty("--pending-h", `${strip.offsetHeight + 8}px`); });
     }
     send.disabled = list.some((p) => p.state === "up");
+    chatPendingSave(gid, list);
     strip.innerHTML = list.map((p, i) => {
       const thumb = p.state === "ok" && p.file.kind === "image" ? `<img src="${esc(chatFileUrl(p.file.id))}" alt="">` : `<span class="ph" aria-hidden="true"></span>`;
       const label = p.state === "up" ? "uploading…" : p.state === "err" ? p.error : chatSize(p.size);
@@ -2638,6 +2644,19 @@ function chatAttach(el, pane, form, ta) {
     sent: (done) => { for (const p of done) { const k = list.indexOf(p); if (k >= 0) list.splice(k, 1); } render(); },
     gone: () => { for (const p of list) if (p.state === "ok") { p.state = "err"; p.error = "gone, attach it again"; } render(); },
   };
+}
+const PENDING_KEY = "iris-pending:";
+function chatPendingLoad(gid) {
+  try {
+    const l = JSON.parse(localStorage.getItem(PENDING_KEY + gid) || "[]");
+    return Array.isArray(l) ? l.filter((p) => p && p.file && p.file.id && Date.now() - p.at < 55 * 60 * 1000)
+      .map((p) => ({ name: String(p.name), size: Number(p.size) || 0, state: "ok", at: p.at, file: p.file })) : [];
+  } catch { return []; }
+}
+function chatPendingSave(gid, list) {
+  const ok = list.filter((p) => p.state === "ok").map(({ name, size, at, file }) => ({ name, size, at, file }));
+  try { if (ok.length) localStorage.setItem(PENDING_KEY + gid, JSON.stringify(ok)); else localStorage.removeItem(PENDING_KEY + gid); }
+  catch { chatDrafts.stored = false; }
 }
 // the room under the pending strip goes once nothing is pending and it is out of view, or with a new message
 function chatDropRoom(el) {

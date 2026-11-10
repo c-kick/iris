@@ -280,4 +280,5 @@ def test_unsent_text_survives_leaving_and_stays_with_its_chat():
     assert "localStorage.setItem(DRAFT_KEY + gid" in fn and "catch { chatDrafts.stored = false; }" in fn
     assert 'addEventListener("beforeunload"' in fn, "where storage is blocked, or files are pending, leaving asks first"
     assert "chatDraftsForget(); boot();" in JS, "sign-out removes the drafts"
+    assert "chatPendingLoad(gid)" in JS and "chatPendingSave(gid, list)" in JS, "uploaded but unsent files come back after a reload"
     assert "ta.oninput = () => { chatDraftSet(draftFor, ta.value)" in JS
