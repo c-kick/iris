@@ -2,6 +2,12 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Next release: coloured mentions
+
+No configuration change, no database change. On the Chats page an `@Name` of a member shows in that member's agent
+colour, in messages and, as a tint, in the message box while you type. Earlier sessions opened from a thread no longer
+show Reply buttons (a reply there could not be sent).
+
 ## Upgrading to 0.20.1
 
 No configuration change, no database change. **Update `scripts/chat-relay`** on every host that runs it (and

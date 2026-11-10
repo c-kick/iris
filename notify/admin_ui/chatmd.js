@@ -29,10 +29,21 @@ function headingText(line) {
   return t;
 }
 
+// @Name as the server finds a mention (chat.py MENTION_RE): after a space, an opening bracket or quote, or at the start;
+// not on a quoted line (starting with > or |), whose mentions are someone else's
+const QUOTED = /^\s*[>|]/;
+const MENTION = /(?<![^\s(\[{<"'])@([A-Za-z][A-Za-z0-9]{0,19})(?![A-Za-z0-9])/g;
+// colour(name) -> the agent colour index of the member called name (0..15), or undefined: then it stays plain text
+const mentionIndex = (colour, name) => {
+  const ci = colour ? colour(name) : undefined;
+  return Number.isInteger(ci) && ci >= 0 && ci < 16 ? ci : undefined;
+};
+const mentionHtml = (tag, ci, name) => `<${tag} class="mention" style="--who: var(--a${ci})">@${esc(name)}</${tag}>`;
+
 const linkHtml = (url, label) => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
 
 // inline marks on one line of raw text
-function inline(raw) {
+function inline(raw, colour) {
   const kept = []; // links and code spans, set aside so no other mark reaches into them
   const keep = (html) => `\u0000${kept.push(html) - 1}\u0000`;
   // links first, their label shown as typed (no marks inside a link)
@@ -55,6 +66,13 @@ function inline(raw) {
     }
     return /^https?:\/\/./i.test(url) ? keep(linkHtml(url, url)) + tail : url + tail;
   });
+  // a mention of a member in its agent colour (links and code spans are set aside already, so none inside them)
+  if (colour && !QUOTED.test(raw)) {
+    s = s.replace(MENTION, (all, name) => {
+      const ci = mentionIndex(colour, name);
+      return ci === undefined ? all : keep(mentionHtml("span", ci, name));
+    });
+  }
   s = esc(s);
   s = s.replace(/\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])/g, "$1<em>$2</em>");
@@ -66,12 +84,12 @@ function inline(raw) {
   return s;
 }
 
-export function chatMarkdown(text) {
+export function chatMarkdown(text, colour) {
   const lines = String(text ?? "").replace(/\u0000/g, "").replace(/\r\n?/g, "\n").split("\n");
   const out = [];
   let para = [];
   const flush = () => {
-    if (para.length) out.push(`<p>${para.map(inline).join("<br>")}</p>`);
+    if (para.length) out.push(`<p>${para.map((l) => inline(l, colour)).join("<br>")}</p>`);
     para = [];
   };
   for (let i = 0; i < lines.length;) {
@@ -86,7 +104,7 @@ export function chatMarkdown(text) {
     }
     if (!line.trim()) { flush(); i += 1; continue; }
     const head = HEAD.test(line) ? headingText(line) : "";
-    if (head) { flush(); out.push(`<p class="md-h">${inline(head)}</p>`); i += 1; continue; }
+    if (head) { flush(); out.push(`<p class="md-h">${inline(head, colour)}</p>`); i += 1; continue; }
     const kind = UL.test(line) ? "ul" : OL.test(line) ? "ol" : null;
     if (kind) {
       flush();
@@ -95,7 +113,7 @@ export function chatMarkdown(text) {
       const items = [];
       for (; i < lines.length && re.test(lines[i]); i += 1) {
         const m = lines[i].match(re);
-        items.push(`<li>${inline(kind === "ul" ? m[1] : m[2])}</li>`);
+        items.push(`<li>${inline(kind === "ul" ? m[1] : m[2], colour)}</li>`);
       }
       out.push(`<${kind}${first !== 1 ? ` start="${first}"` : ""}>${items.join("")}</${kind}>`);
       continue;
@@ -119,4 +137,21 @@ export function chatPlain(text) {
     .replace(/(^|[\s(])_(?=[^\s_])([^_\n]+?)(?<=[^\s_])_(?![\w/])/g, "$1$2")
     .replace(/(^|[^\w*])\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*(?![\w*])/g, "$1$2")
     .replace(/\s+/g, " ").trim();
+}
+
+// The composer's text, escaped, with each mention of a member marked in its agent colour: drawn behind the textarea,
+// so it must keep every character where the textarea has it (no other marks, no added text).
+export function chatMentionMarks(text, colour) {
+  return String(text ?? "").split("\n").map((raw) => {
+    if (QUOTED.test(raw)) return esc(raw);
+    let out = "";
+    let last = 0;
+    for (const m of raw.matchAll(MENTION)) {
+      const ci = mentionIndex(colour, m[1]);
+      if (ci === undefined) continue;
+      out += esc(raw.slice(last, m.index)) + mentionHtml("mark", ci, m[1]);
+      last = m.index + m[0].length;
+    }
+    return out + esc(raw.slice(last));
+  }).join("\n");
 }

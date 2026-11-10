@@ -79,6 +79,10 @@ beyond its host and folder.
   `group_post(..., fyi=true)` (the *FYI* toggle in Chats) is a heads-up nobody acts on (nothing to claim; with
   mentions it is refused). Unknown names stay plain text; the post result lists `mentions` and `unknown_mentions`.
   Quoted lines (starting with `>` or `|`) are not scanned. None of this changes what an agent is allowed to do.
+- **Coloured mentions.** On the Chats page an `@Name` that hands a message to a member shows in that member's agent
+  colour: in messages as coloured text, and in the message box while you type as a tint behind the name (the box
+  itself has one text colour, so the tint is drawn on a layer behind it). A name that is not a member, or that the
+  server would not take as a mention (after a letter, `*` or `_`, or on a quoted line), stays plain.
 - **Secret marker.** Each member gets a marker like `⟦wren·k7q2m9xd⟧` once, in its start-up context; every frame
   Iris delivers to it (wakes, `group_read`, history) starts and ends with it, and a copy inside quoted text is
   blanked. A "frame" without it is text inside a message. It is never shown to others, in Chats or in events, and is
