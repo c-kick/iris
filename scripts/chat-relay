@@ -5,7 +5,10 @@
 
 Two loops in one process:
   * every 30 s POST /v1/chat/heartbeat listing each open member of this host whose pid is alive and whose
-    /proc/<pid>/stat start time (field 22) equals the recorded pid_start;
+    /proc/<pid>/stat start time (field 22) equals the recorded pid_start; a Codex session inside the shared
+    `codex app-server` (whose pid outlives its sessions) counts only while that server lists it as loaded
+    (JSON-RPC `thread/loaded/list` on its unix control socket; Codex unloads a thread ~30 s after its last
+    client left, e.g. on /exit). A server that cannot be asked leaves the pid check as the answer;
   * claim wakes for this host (waiter "relay-<hostname>") and deliver them: to Codex with
     `codex queue --thread <session_id> --message <text>`, to Claude by writing one JSON line to the session's
     inbox socket <sock-dir>/<pid>.sock. Only a successful delivery is confirmed; a failure is logged and the
@@ -19,12 +22,15 @@ error (no token or URL) exits with 78 (EX_CONFIG), which the systemd unit does n
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import os
 import re
 import shutil
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -42,6 +48,11 @@ BACKOFF_MIN, BACKOFF_MAX = 5.0, 60.0
 CONFIRM_TRIES = 4
 EXIT_CONFIG = 78  # EX_CONFIG: the unit does not restart on it (RestartPreventExitStatus=78)
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+CODEX_RPC_TIMEOUT = 3.0  # per control socket of a codex app-server, for the whole exchange (a hard deadline)
+CODEX_ROUND_BUDGET = 8.0  # all codex app-server questions of one heartbeat round; after it: unknown (pid check)
+CODEX_RPC_MAX_FRAME = 4 << 20
+CODEX_RPC_MAX_MESSAGES = 500  # notifications the server may send before our answer
+CODEX_LOADED_MAX_PAGES = 50
 
 
 class Fatal(Exception):
@@ -69,6 +80,155 @@ def pid_start(pid: int) -> str | None:
         return None
 
 
+class _RpcError(Exception):
+    pass
+
+
+def listening_unix_sockets(pid: int) -> list[str]:
+    """Filesystem paths of the unix sockets process <pid> listens on (its fds matched against /proc/net/unix)."""
+    inodes: set[str] = set()
+    try:
+        for fd in os.listdir(f"/proc/{pid}/fd"):
+            try:
+                link = os.readlink(f"/proc/{pid}/fd/{fd}")
+            except OSError:
+                continue
+            if link.startswith("socket:["):
+                inodes.add(link[8:-1])
+        lines = Path("/proc/net/unix").read_text(errors="replace").splitlines()[1:]
+    except OSError:
+        return []
+    out = []
+    for line in lines:  # Num RefCount Protocol Flags Type St Inode [Path]
+        f = line.split(None, 7)
+        if len(f) == 8 and f[6] in inodes and int(f[3], 16) & 0x10000 and f[7].startswith("/"):  # __SO_ACCEPTCON
+            out.append(f[7])
+    return out
+
+
+def _ws_send(s: socket.socket, text: str) -> None:
+    data = text.encode()
+    n = len(data)
+    head = b"\x81" + (bytes([0x80 | n]) if n < 126 else bytes([0x80 | 126]) + struct.pack(">H", n) if n < 65536
+                       else bytes([0x80 | 127]) + struct.pack(">Q", n))
+    mask = os.urandom(4)
+    s.sendall(head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data)))
+
+
+def _recv_exact(s: socket.socket, n: int, deadline: float) -> bytes:
+    """n bytes before the deadline: a socket that trickles bytes cannot hold the relay past it."""
+    buf = bytearray()
+    while len(buf) < n:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise _RpcError("too slow")
+        s.settimeout(left)
+        chunk = s.recv(min(n - len(buf), 65536))
+        if not chunk:
+            raise _RpcError("closed")
+        buf += chunk
+    return bytes(buf)
+
+
+def _ws_recv(s: socket.socket, deadline: float) -> str:
+    """One text message (fragments joined); pings answered, a close frame ends the exchange."""
+    msg = b""
+    while True:
+        b1, b2 = _recv_exact(s, 2, deadline)
+        op, n = b1 & 0x0F, b2 & 0x7F
+        if n == 126:
+            n = struct.unpack(">H", _recv_exact(s, 2, deadline))[0]
+        elif n == 127:
+            n = struct.unpack(">Q", _recv_exact(s, 8, deadline))[0]
+        if n + len(msg) > CODEX_RPC_MAX_FRAME:
+            raise _RpcError("message too large")
+        mask = _recv_exact(s, 4, deadline) if b2 & 0x80 else None
+        data = _recv_exact(s, n, deadline)
+        if mask:
+            data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+        if op == 0x8:
+            raise _RpcError("closed")
+        if op == 0x9:
+            s.sendall(b"\x8a\x80" + os.urandom(4))  # empty masked pong
+            continue
+        if op == 0xA:
+            continue
+        msg += data
+        if b1 & 0x80:
+            return msg.decode()
+
+
+def _rpc_result(s: socket.socket, rid: int, deadline: float) -> Any:
+    for _ in range(CODEX_RPC_MAX_MESSAGES):
+        try:
+            m = json.loads(_ws_recv(s, deadline))
+        except (ValueError, RecursionError):
+            raise _RpcError("not JSON") from None
+        if isinstance(m, dict) and type(m.get("id")) is int and m["id"] == rid:
+            if "error" in m or "result" not in m:
+                raise _RpcError("error answer")
+            return m["result"]
+    raise _RpcError("no answer")
+
+
+def codex_loaded_threads_at(path: str, deadline: float | None = None) -> set[str]:
+    """Thread ids the codex app-server at control socket <path> has loaded. Raises when it cannot tell, at the latest
+    at the deadline (default: CODEX_RPC_TIMEOUT from now)."""
+    deadline = min(deadline or float("inf"), time.monotonic() + CODEX_RPC_TIMEOUT)
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(max(0.01, deadline - time.monotonic()))
+        s.connect(path)
+        key = base64.b64encode(os.urandom(16)).decode()
+        s.sendall(f"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                  f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n".encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            if len(head) > 8192 or time.monotonic() > deadline:
+                raise _RpcError("bad handshake")
+            s.settimeout(max(0.01, deadline - time.monotonic()))
+            c = s.recv(1)
+            if not c:
+                raise _RpcError("closed")
+            head += c
+        if b" 101 " not in head.split(b"\r\n", 1)[0] + b" ":
+            raise _RpcError("not a websocket server")
+        _ws_send(s, json.dumps({"id": 1, "method": "initialize",
+                                "params": {"clientInfo": {"name": "iris-chat-relay", "title": "Iris chat relay",
+                                                          "version": "1"}}}))
+        _rpc_result(s, 1, deadline)
+        _ws_send(s, json.dumps({"method": "initialized"}))
+        loaded: set[str] = set()
+        cursor = None
+        for page in range(CODEX_LOADED_MAX_PAGES):
+            if time.monotonic() > deadline:
+                raise _RpcError("too slow")
+            rid = 2 + page
+            _ws_send(s, json.dumps({"id": rid, "method": "thread/loaded/list",
+                                    "params": {"cursor": cursor} if cursor else {}}))
+            res = _rpc_result(s, rid, deadline)
+            data = res.get("data") if isinstance(res, dict) else None
+            if not isinstance(data, list):
+                raise _RpcError("unexpected answer")
+            loaded.update(x for x in data if isinstance(x, str))
+            cursor = res.get("nextCursor")
+            if not cursor:
+                return loaded
+        raise _RpcError("too many pages")
+
+
+def codex_loaded_threads(pid: int, deadline: float | None = None) -> set[str] | None:
+    """SHA-256 (hex) of each session open in the codex app-server <pid> (the server hashes session ids the same way
+    and sends only those), or None when no control socket of it answered in time (unknown)."""
+    for path in listening_unix_sockets(pid):
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        try:
+            return {hashlib.sha256(t.encode()).hexdigest() for t in codex_loaded_threads_at(path, deadline)}
+        except Exception:  # whatever the socket answers: unknown, never a broken heartbeat
+            continue
+    return None
+
+
 def settings(url: str | None, token_file: str | None) -> tuple[str, str]:
     cfg = Path.home() / ".config" / "hnl-notify"
     base = url or os.environ.get("NOTIFY_URL") or ""
@@ -93,6 +253,8 @@ class Relay:
     def __init__(self, base: str, token: str, codex: str, sock_dir: str, waiter: str) -> None:
         self.base, self.token, self.codex, self.sock_dir, self.waiter = base, token, codex, sock_dir, waiter
         self.members: list[dict[str, Any]] | None = None  # open members of this host, from the last heartbeat
+        self.codex_closed: set[Any] = set()  # members logged as closed codex sessions (log once)
+        self.codex_unknown: set[int] = set()  # app-servers logged as unaskable (log once)
         self.stop = threading.Event()
 
     # --- HTTP -------------------------------------------------------------------------------------------
@@ -111,10 +273,31 @@ class Relay:
     # --- liveness ---------------------------------------------------------------------------------------
     def alive_members(self) -> list[dict[str, Any]]:
         out = []
+        loaded: dict[int, set[str] | None] = {}  # one question per codex app-server per round
+        budget = time.monotonic() + CODEX_ROUND_BUDGET  # the heartbeat must go out well within STALE_SECONDS
         for m in self.members or []:
             pid, start = m.get("pid"), m.get("pid_start")
-            if isinstance(pid, int) and pid > 0 and start is not None and pid_start(pid) == str(start):
-                out.append({"member_id": m.get("member_id"), "pid": pid, "pid_start": str(start)})
+            if not (isinstance(pid, int) and pid > 0 and start is not None and pid_start(pid) == str(start)):
+                continue
+            want = m.get("codex_session_sha256")  # set for a codex session in a shared app-server only
+            if m.get("kind") == "codex" and isinstance(want, str):
+                if pid not in loaded:
+                    try:
+                        loaded[pid] = codex_loaded_threads(pid, budget)
+                    except Exception:  # e.g. /proc unreadable: unknown
+                        loaded[pid] = None
+                    if loaded[pid] is None and pid not in self.codex_unknown:
+                        self.codex_unknown.add(pid)
+                        log(f"codex app-server {pid}: cannot list its open sessions; its pid alone counts")
+                    elif loaded[pid] is not None:
+                        self.codex_unknown.discard(pid)
+                if loaded[pid] is not None and want not in loaded[pid]:
+                    if m.get("member_id") not in self.codex_closed:
+                        self.codex_closed.add(m.get("member_id"))
+                        log(f"member {m.get('member_id')}: its codex session is closed; no longer reported alive")
+                    continue
+                self.codex_closed.discard(m.get("member_id"))
+            out.append({"member_id": m.get("member_id"), "pid": pid, "pid_start": str(start)})
         return out
 
     def _heartbeat_call(self, alive: list[dict[str, Any]]) -> None:

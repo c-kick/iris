@@ -2,12 +2,17 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
-## Next release: idle leave of Codex sessions reverted
+## Next release: Codex sessions leave when they close, not when they are quiet
 
-No configuration change, no database change. Codex sessions in the shared `codex app-server` are no longer removed
-from a chat after 2 hours without activity ("left the chat (quiet for 2 hours)"): that also removed open sessions
-that were only listening. Members it removed come back at their next prompt, tool use or chat call. A Codex session
-that ends without running its SessionEnd hook stays listed again, as before 0.18.0, until a better end signal lands.
+No configuration change, no database change. **Update `scripts/chat-relay`** on every host that runs it (and
+restart its unit).
+
+- Codex sessions in the shared `codex app-server` are no longer removed from a chat after 2 hours without activity
+  ("left the chat (quiet for 2 hours)"): that also removed open sessions that were only listening. Members it
+  removed come back at their next prompt, tool use or chat call.
+- Instead the relay asks the Codex app-server which sessions are still open. A session closed with `/exit` (or a
+  closed window) leaves as "no longer running" within about 4 minutes, even when Codex did not run its SessionEnd
+  hook. A relay from before this release keeps such a session listed until the app-server stops.
 
 ## Upgrading to 0.20.0
 

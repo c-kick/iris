@@ -761,10 +761,15 @@ All additive; a 0.13.x service ignores them.
   (`reason`); a message whose mentioned members all left is open again. `for_line` adds the `→` line under the header.
 - **Shared process (0.18.0).** `chat_members.shared_process` / `chat_presence.shared_process`: set when the start
   hook finds the session's `codex` ancestor running as `codex app-server`. `_replace_same_process` skips such rows.
-  The heartbeat treats them like any other row (alive = the server pid is alive). The 0.18.0 idle leave (`idle`
-  after 2 h without a status hook) was removed; `set_status` and `member_from_handle` still take a member left as
-  `idle` back through `_take_back` (shared with `_rejoin_stale`) when its group is open and its session has no live
-  member, and `leave` of such a member closes an otherwise empty group.
+  `heartbeat` adds `codex_session_sha256` (SHA-256 hex of the session id) to a shared codex row only; session ids
+  themselves never leave the server (review D.5). For such a row whose pid check passes, the relay also asks that pid's app-server (each listening unix socket of the pid, found through
+  `/proc/<pid>/fd` and `/proc/net/unix`; WebSocket JSON-RPC: `initialize`, `initialized`, `thread/loaded/list` with
+  its cursor; 3 s per socket, once per server per round) and reports the row alive only if the hash is among the
+  hashes of the loaded thread ids (the hook's `session_id` is the thread id). No answer from any socket: the pid check decides.
+  A row not reported goes through the normal stale sweep; a stale shared member whose thread is loaded again within
+  the hour comes back through `_rejoin_stale`. The 0.18.0 idle leave (`idle` after 2 h without a status hook) was
+  removed; `set_status` and `member_from_handle` still take a member left as `idle` back through `_take_back` when
+  its group is open and its session has no live member, and `leave` of such a member closes an otherwise empty group.
 - **Marker.** `chat_members.marker` (`⟦name·8 chars⟧`), new at every join, kept for a stale leave (it may come back),
   cleared otherwise. `frame`/`history_frame(..., marker=)` put it before the header and after the end line and blank its
   code in quoted text and reply excerpts; `framed_text(message_id, member_id)` for wakes, `read()` and history pass it.

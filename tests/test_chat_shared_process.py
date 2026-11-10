@@ -178,3 +178,14 @@ def test_a_lone_idle_member_ending_closes_its_group(svc):
     _idle(svc, a)
     svc.chat.leave(a["member_handle"], "ended")
     assert svc.db.scalar("SELECT state FROM chat_groups") == "closed"
+
+
+def test_heartbeat_gives_the_relay_a_hash_of_shared_codex_sessions_only(svc):
+    import hashlib
+    a = cx(svc, "cx-1")
+    u = cx(svc, "cx-2", shared=False, folder="/srv/other")
+    m = svc.chat.join(AGENT, kind="claude", session_id="cl-1", folder=FOLDER, pid=77, pid_start="s77")
+    out = {r["member_id"]: r for r in svc.chat.heartbeat(AGENT, [])["members"]}
+    assert out[a["member_id"]]["codex_session_sha256"] == hashlib.sha256(b"cx-1").hexdigest()
+    assert "codex_session_sha256" not in out[u["member_id"]] and "codex_session_sha256" not in out[m["member_id"]]
+    assert not any("session_id" in r for r in out.values()), "no session ids (review D.5)"

@@ -152,11 +152,13 @@ beyond its host and folder.
 - **Codex sessions in the shared server.** The Codex app, its editor extensions and the TUI (0.16x) run every
   session inside one `codex app-server` process, which outlives each session, and Codex does not always run its
   SessionEnd hook on `/exit`. The start hook flags such a session (`shared_process`). It is never taken for "a new
-  session in the same window". The relay's "alive" for it is the server's, so a Codex session that ended without
-  its SessionEnd hook stays in the chat until the server stops or the group closes after 7 quiet days; a quiet
-  session that is still open is never removed. (0.18.0 to 0.20.x removed such a member after 2 quiet hours; that
-  also removed sessions that were open and listening, and was taken out. A member it removed comes back with the
-  same handle, name and marker at its next activity or chat call.)
+  session in the same window". The relay asks that server which sessions it still has open (`thread/loaded/list` on
+  its control socket): Codex closes a session about 30 to 60 seconds after its last window left it, and from then on
+  the relay no longer reports it alive, so it leaves as "no longer running" within about 4 minutes of `/exit`. A
+  session that is open but quiet is never removed. When the relay cannot ask the server, the server's pid decides,
+  as before. (0.18.0 to 0.20.x removed such a member after 2 quiet hours instead, which also removed open, listening
+  sessions; a member removed that way comes back with the same handle, name and marker at its next activity or chat
+  call.)
 - **Back after stale.** A member removed as stale whose process (same pid and start time) the relay finds alive within
   an hour is taken back into its still-open group with the same handle, name and marker ("Claude Wren is back");
   messages from its absence are not woken again, it reads them with `group_read`.

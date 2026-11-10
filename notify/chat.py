@@ -1794,20 +1794,25 @@ class Chat:
                 c.execute("UPDATE chat_members SET last_seen_at=? WHERE id=? AND left_at IS NULL AND group_id IN"
                           " (SELECT id FROM chat_groups WHERE host=?)", (now, mid, host))
                 c.execute("UPDATE chat_presence SET seen_at=? WHERE id=? AND host=?", (now, mid, host))
-            rows = c.execute("SELECT m.id, m.kind, m.pid, m.pid_start FROM chat_members m"
-                             " JOIN chat_groups g ON g.id=m.group_id WHERE g.host=? AND m.left_at IS NULL"
+            rows = c.execute("SELECT m.id, m.kind, m.pid, m.pid_start, m.session_id, m.shared_process"
+                             " FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=? AND m.left_at IS NULL"
                              " ORDER BY m.joined_at, m.rowid", (host,)).fetchall()
             # sessions present without a chat are checked the same way (the relay needs no change for them), and
             # so are members swept as stale in the last hour whose group is still open: alive means they come back
-            rows += c.execute("SELECT id, kind, pid, pid_start FROM chat_presence WHERE host=? ORDER BY rowid",
-                              (host,)).fetchall()
-            rows += c.execute("SELECT m.id, m.kind, m.pid, m.pid_start FROM chat_members m JOIN chat_groups g"
+            rows += c.execute("SELECT id, kind, pid, pid_start, session_id, shared_process FROM chat_presence"
+                              " WHERE host=? ORDER BY rowid", (host,)).fetchall()
+            rows += c.execute("SELECT m.id, m.kind, m.pid, m.pid_start, m.session_id, m.shared_process"
+                              " FROM chat_members m JOIN chat_groups g"
                               " ON g.id=m.group_id WHERE g.host=? AND g.state='open' AND m.leave_reason='stale'"
                               " AND m.left_at >= ? AND m.pid IS NOT NULL ORDER BY m.rowid",
                               (host, iso(t - timedelta(seconds=STALE_REJOIN_SECONDS)))).fetchall()
         if back:
             self.svc._after_commit()
-        return {"members": [{"member_id": r["id"], "kind": r["kind"], "pid": r["pid"], "pid_start": r["pid_start"]}
+        # a codex session in a shared app-server: the relay asks that server whether the session is still open and
+        # matches its thread ids against this hash (no session ids leave the server, review D.5)
+        return {"members": [{"member_id": r["id"], "kind": r["kind"], "pid": r["pid"], "pid_start": r["pid_start"],
+                             **({"codex_session_sha256": hashlib.sha256(r["session_id"].encode()).hexdigest()}
+                                if r["kind"] == "codex" and r["shared_process"] and r["session_id"] else {})}
                             for r in rows]}
 
     def _rejoin_stale(self, c: sqlite3.Connection, client: Client, host: str, member_id: str, alive: dict[str, Any],
