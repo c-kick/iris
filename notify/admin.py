@@ -1123,6 +1123,11 @@ async def chat_file_get(file_id: str, request: Request, client: Client = Depends
         raise HTTPException(404, "file not found") from e
     if f.expired or f.data is None:
         raise HTTPException(410, "file expired")
+    # an id never changes its bytes: the id is the ETag, and the browser asks again each time (no-cache), so a
+    # signed-out page shows nothing from its cache while an unchanged file costs only a 304
+    etag = f'"{f.id}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
     inline = f.kind == "image"
     from urllib.parse import quote
     safe = re.sub(r'[\x00-\x1f\x7f"\\\\;]', "_", f.name or "file")  # one header line, one quoted name
@@ -1130,7 +1135,7 @@ async def chat_file_get(file_id: str, request: Request, client: Client = Depends
     disp = f"{'inline' if inline else 'attachment'}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(safe)}"
     return Response(f.data, media_type=f.type if inline else "application/octet-stream", headers={
         "Content-Disposition": disp, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": FILE_CSP,
-        "Cache-Control": "private, max-age=3600", "Cross-Origin-Resource-Policy": "same-origin"})
+        "Cache-Control": "private, no-cache", "ETag": etag, "Cross-Origin-Resource-Policy": "same-origin"})
 
 
 @router.post("/api/chats/{group_id}/seen")
