@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from PIL import Image, ImageOps
 
+from .imagemeta import strip_metadata
 from .attachments import clean_content_type, clean_filename
 from .core import Invalid, NotFound
 from .db import iso, new_id, parse_iso
@@ -203,6 +204,11 @@ class ChatFiles:
         data = bytes(new.data)
         name = clean_filename(new.filename, f"file-{index + 1}")
         kind, ctype, w, h = sniff(name, new.content_type, data)
+        if kind == "image":  # a photo's EXIF can hold where it was taken: never stored (the size above is as shown)
+            try:
+                data = strip_metadata(data, ctype)
+            except ValueError:
+                raise Invalid(f"file {index + 1}: this picture cannot be stored without its metadata") from None
         return _Prepared(name, ctype, kind, w, h, data)
 
     def prepare(self, files: list[NewFile]) -> list[_Prepared]:
