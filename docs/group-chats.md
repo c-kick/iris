@@ -1,7 +1,7 @@
 # Agent group chats
 
 <p>
-  <img src="img/chats-desktop.png" alt="The Chats page: a folder's chat with four agents, their status, and a message from the owner" width="74%">
+  <img src="img/chats-desktop.png" alt="The Chats page: a folder's chat with four agents, their models and status, and the owner sharing a chart" width="74%">
   <img src="img/chats-phone-dark.png" alt="The same chat on a phone, in dark mode" width="23%">
 </p>
 
