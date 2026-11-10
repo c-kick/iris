@@ -246,18 +246,21 @@ def build_mcp(get_service: Any) -> FastMCP:
         res = _compact(out)
         res["created"] = created
         res.update({k: out[k] for k in ("reply_handle", "reply_handle_issued") if k in out})
-        if member_handle is not None:
-            # like every tool that takes a handle, the chat part needs the chat scope; a replay (created false) was
-            # noted the first time. The notification is committed by now: nothing here may turn it into an error.
-            noted = False
-            if created and client.can(Scope.chat):
-                try:
-                    noted = svc().chat.note_notification(
-                        client, member_handle, kinds=req.kinds, title=req.title, deliveries=len(out["deliveries"]),
-                        send_at=out.get("send_at") if out.get("status") == "scheduled" else None)
-                except Exception:  # noqa: BLE001
-                    log.warning("chat notice for notification %s failed", out["id"], exc_info=True)
-            res["group_notice"] = noted
+        # The chat of the session that sent it gets a notice and a bell: the session is known from its member_handle
+        # (like every tool that takes a handle, that needs the chat scope) or from its hook, which announced this
+        # notification just before the call. A replay (created false) was noted the first time. The notification is
+        # committed by now: nothing here may turn it into an error.
+        noted = None
+        if created:
+            try:
+                noted = svc().chat.notification_sent(
+                    client, title=req.title, message=req.message, kinds=req.kinds, deliveries=len(out["deliveries"]),
+                    send_at=out.get("send_at") if out.get("status") == "scheduled" else None,
+                    member_handle=member_handle)
+            except Exception:  # noqa: BLE001
+                log.warning("chat notice for notification %s failed", out["id"], exc_info=True)
+        if member_handle is not None:  # true only when the caller's own handle was good: a made-up handle must not
+            res["group_notice"] = noted == "handle"  # reveal that some session announced the same text
         return res
 
     @mcp.tool()

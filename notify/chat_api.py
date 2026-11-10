@@ -35,6 +35,13 @@ class StatusIn(BaseModel):
     status: str = Field(max_length=20)
 
 
+class NotifyingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    kind: str = Field(max_length=20)
+    session_id: str = Field(max_length=200)
+    digest: str = Field(max_length=64)  # sha256 over the notification's title and message, never the text
+
+
 class HeartbeatIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     alive: list[dict[str, Any]] = Field(default_factory=list, max_length=1000)
@@ -71,6 +78,15 @@ async def leave(request: Request, body: LeaveIn | None = None,
 async def status(body: StatusIn, request: Request, client: Client = Depends(require(Scope.chat))) -> Response:
     """Status hooks: busy / waiting / free, or an "active" ping. 404 when the session is in no chat."""
     service(request).chat.set_status(client, kind=body.kind, session_id=body.session_id, status=body.status)
+    return Response(status_code=204)
+
+
+@router.post("/notifying", status_code=204)
+@_errors
+async def notifying(body: NotifyingIn, request: Request, client: Client = Depends(require(Scope.chat))) -> Response:
+    """A session's tool hook, just before the session calls send_notification: when that notification arrives, the
+    session's chat shows that it was sent. 404 when the session is in no chat."""
+    service(request).chat.expect_notification(client, kind=body.kind, session_id=body.session_id, digest=body.digest)
     return Response(status_code=204)
 
 

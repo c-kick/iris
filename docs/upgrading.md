@@ -2,6 +2,14 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.19.2
+
+No configuration change, no database change. The bell on a chat no longer depends on the agent passing its member
+handle: the hook that already runs before every tool call (`notify-chat state active`) announces a `send_notification`
+call to Iris, and the notification that follows gets its notice and bell. Sessions that were already running are
+covered too, because the hook script is read on every call. Update `scripts/notify-chat` on every host that runs
+agent sessions and has its own copy; a host with the old script behaves as before 0.19.2.
+
 ## Upgrading to 0.19.1
 
 No configuration change. Chats on an iPhone: the first tap on the message field now focuses it without letting iOS

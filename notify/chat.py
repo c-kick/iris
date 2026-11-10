@@ -8,6 +8,8 @@ delivering them is the waking layer's job.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
 import secrets
@@ -22,7 +24,7 @@ from .auth import hash_token
 from .core import SYSTEM_CLIENT, Client, Conflict, Forbidden, Invalid, NotFound, TooMany, external_base
 from .db import dumps, iso, new_id, now_iso, parse_iso, utcnow
 from .handles import handle_matches, new_handle, parse_handle
-from .models import ActionIn, NotificationIn
+from .models import ActionIn, NotificationIn, Scope
 from .schedule import local_zone
 
 if TYPE_CHECKING:
@@ -117,6 +119,18 @@ def kind_line(kind: str, names: list[str]) -> str | None:
         return f"\u2192 for {_names(names)}: they act; everyone else reads and does not act"
     return None
 NOTICE_TITLE_MAX = 80  # a notification's title in its chat notice
+# a session's hook announces a notification before the tool call runs; a permission prompt may sit in between
+EXPECT_SECONDS = 600
+EXPECT_PER_MEMBER = 20  # announcements one member has open at once: its own oldest is dropped, nobody else's
+EXPECT_MAX = 500  # all members together; beyond it a new announcement is refused (429)
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def notification_digest(title: str | None, message: str) -> str:
+    """What a hook announces instead of the text: the same value from the tool call's input and from the
+    notification that arrives (scripts/notify-chat computes it the same way)."""
+    return hashlib.sha256(json.dumps([title or "", message], ensure_ascii=False, separators=(",", ":"))
+                          .encode("utf-8", "surrogatepass")).hexdigest()
 MEMBER_GONE = "membership ended; restart the session to rejoin the group chat"
 
 
@@ -321,6 +335,9 @@ class Chat:
         self.relay_seen: dict[str, tuple[datetime, datetime]] = {}
         self.auto_enable = False  # seam: tests that predate the folder opt-in treat every folder as enabled
         self.files = chat_files.ChatFiles(self)
+        # notifications announced by session hooks and not seen yet: (digest, member id, until, chat host); in
+        # memory only
+        self._expected: list[tuple[str, str, datetime, str]] = []
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -391,18 +408,85 @@ class Chat:
                   (mid, group_id, member_id, author, text, now_iso(), in_reply_to, kind))
         return mid
 
+    def expect_notification(self, client: Client, *, kind: str, session_id: str, digest: str) -> None:
+        """A session's hook, just before the session calls send_notification: this member is about to send the
+        notification with this digest (see notification_digest). The member is found by the client's host + kind +
+        session id, like a status report. Nothing is stored in the database and nothing shows until the
+        notification itself arrives (notification_sent)."""
+        host = self._host(client)
+        if kind not in KINDS or not isinstance(session_id, str) or not SESSION_ID_RE.match(session_id):
+            raise Invalid("kind and session_id are required")
+        if not isinstance(digest, str) or not DIGEST_RE.match(digest):
+            raise Invalid("digest must be a sha256 hex value")
+        m = self.db.one("SELECT m.id FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=?"
+                        " AND g.state='open' AND m.kind=? AND m.session_id=? AND m.left_at IS NULL",
+                        (host, kind, session_id))
+        if m is None:
+            raise NotFound("no member for this session")
+        now = self.now()
+        kept = [e for e in self._expected if e[2] > now]
+        mine = [e for e in kept if e[1] == m["id"]]
+        if len(mine) >= EXPECT_PER_MEMBER:  # a flood from one session costs that session its own oldest ones
+            drop = set(map(id, mine[:len(mine) - EXPECT_PER_MEMBER + 1]))
+            kept = [e for e in kept if id(e) not in drop]
+        if len(kept) >= EXPECT_MAX:
+            self._expected = kept
+            raise TooMany("too many announced notifications are waiting")
+        kept.append((digest, m["id"], now + timedelta(seconds=EXPECT_SECONDS), host))
+        self._expected = kept
+
+    def _take_expected(self, client: Client, digest: str) -> str | None:
+        """The member that announced this notification (the oldest announcement still valid), used up. A sending
+        client that is bound to a chat host only matches announcements from that host; an announcement it may not
+        match stays for the notification it was made for."""
+        now = self.now()
+        self._expected = [e for e in self._expected if e[2] > now]
+        own_host = getattr(self.svc.config.clients.get(client.id), "chat_host", None)
+        for i, (d, member_id, _, host) in enumerate(self._expected):
+            if d == digest and (not own_host or own_host == host):
+                del self._expected[i]
+                return member_id
+        return None
+
+    def notification_sent(self, client: Client, *, title: str | None, message: str, kinds: list[str] | None,
+                          deliveries: int, send_at: str | None = None, member_handle: str | None = None,
+                          ) -> str | None:
+        """A notification was accepted: if a member of a chat sent it, that chat gets its notice and bell, once.
+        Who sent it: the member handle given with it (the client then needs the chat scope), else the session whose
+        hook announced exactly this notification. Returns how the sender was known when a notice was written:
+        "handle" or "announced" (the caller is only ever told about the first), else None."""
+        announced = self._take_expected(client, notification_digest(title, message))  # used up either way: one notice
+        member, how = None, "handle"
+        if member_handle is not None and client.can(Scope.chat):
+            member = self._member_for_notice(client, member_handle)
+        if member is None and announced is not None:
+            member, how = self.db.one("SELECT * FROM chat_members WHERE id=? AND left_at IS NULL", (announced,)), "announced"
+        if member is None:
+            return None
+        noted = self._note_notification(member, kinds=kinds, title=title, deliveries=deliveries, send_at=send_at)
+        return how if noted else None
+
+    def _member_for_notice(self, client: Client, member_handle: str) -> sqlite3.Row | None:
+        try:
+            if not isinstance(member_handle, str) or len(member_handle) > 200:
+                return None
+            self.check_handle_host(client, member_handle)
+            return self.member_from_handle(member_handle)
+        except (NotFound, Forbidden):
+            return None
+
     def note_notification(self, client: Client, member_handle: str, *, kinds: list[str] | None, title: str | None,
                           deliveries: int, send_at: str | None = None) -> bool:
         """A member sent a notification (send_notification with its member_handle): one system line in its chat
         and, unless it only goes out later, the bell on the chat until the owner looks. Wakes nobody. A bad or dead
         handle, or a notification that reached no device, leaves no trace and never fails the send: False."""
-        try:
-            if not isinstance(member_handle, str) or len(member_handle) > 200:
-                return False
-            self.check_handle_host(client, member_handle)
-            member = self.member_from_handle(member_handle)
-        except (NotFound, Forbidden):
+        member = self._member_for_notice(client, member_handle)
+        if member is None:
             return False
+        return self._note_notification(member, kinds=kinds, title=title, deliveries=deliveries, send_at=send_at)
+
+    def _note_notification(self, member: sqlite3.Row, *, kinds: list[str] | None, title: str | None,
+                           deliveries: int, send_at: str | None = None) -> bool:
         if not send_at and deliveries < 1:
             return False
         use = kinds or ["push"]
