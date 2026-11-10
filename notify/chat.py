@@ -115,11 +115,12 @@ def model_label(model: str | None) -> str | None:
     it (gpt-5, o3) is shown as it is."""
     if not model:
         return None
-    parts = [p for p in re.split(r"[-_/:@]", model.split("[", 1)[0]) if p]
+    base = model.split("[", 1)[0]  # a "[1m]"-style suffix is never shown
+    parts = [p for p in re.split(r"[-_/:@]", base) if p]
     names = [p for p in parts if p.isalpha() and p.lower() not in _MODEL_VENDORS and p.lower() != "latest"]
     nums = [p for p in parts if re.fullmatch(r"\d{1,3}(\.\d{1,3})?", p)]
     if not names:
-        return model
+        return base or None
     return " ".join(n.capitalize() for n in names) + (" " + ".".join(nums) if nums else "")
 
 

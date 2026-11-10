@@ -29,6 +29,8 @@ def st(svc, sid, status, model=None, kind="claude"):
     ("gpt-6.1-terra-mini", "Terra Mini 6.1"),
     ("gpt-5", "gpt-5"),  # no name to show: the id as it is
     ("o3", "o3"),
+    ("gpt-5[1m]", "gpt-5"),  # brackets never reach a reader, also when the id has no name in it
+    ("0[x]", "0"),
     ("astra", "Astra"),
 ])
 def test_model_label(raw, label):
