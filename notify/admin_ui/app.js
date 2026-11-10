@@ -1940,9 +1940,9 @@ function chatMembersText(g) {
 // ---- one colour per agent within its chat. A member takes the first colour that no member still present at its
 // join holds, so agents in the chat at the same time never share one (up to CHAT_COLORS of them), and a member keeps
 // its colour (also on its old messages) whoever leaves later. Counting departed members too gave two present agents
-// one colour. Only violet to pink and yellow-green: green, amber, red, blue and teal mean a status or an action on
+// one colour. Picked with palette-pick (OKLab distance >= 0.15, 30 deg from every status hue, text contrast 4.5): green, amber, red, blue and teal mean a status or an action on
 // this page, orange and blue the Claude/Codex kinds, so a name never looks like a state (tests/test_appearance.py)
-const CHAT_COLORS = 4;
+const CHAT_COLORS = 6; // a soft ceiling of six agents present at once (owner, 2026-11-10)
 function chatColorIndex(members) {
   const out = {};
   const ordered = [...(members || [])].sort((a, b) => String(a.joined_at).localeCompare(String(b.joined_at)));

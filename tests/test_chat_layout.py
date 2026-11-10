@@ -319,7 +319,7 @@ def test_agents_present_together_never_share_a_colour():
     out = json.loads(subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=30).stdout)
     present = [out[m] for m in ("quail", "sorrel", "larch", "fern")]
     assert len(set(present)) == 4, out
-    assert out["raven"] == out["raven"] and all(0 <= v < 4 for v in out.values())
+    assert all(0 <= v < 6 for v in out.values())
 
 
 def test_agents_are_told_to_notify_only_when_the_owner_is_needed():
@@ -329,3 +329,18 @@ def test_agents_are_told_to_notify_only_when_the_owner_is_needed():
         src = (root / f).read_text()
         assert "after any edit or commit" not in src.replace("\n", " ").lower()
         assert "only when you need them or there is something for" in src.replace("\n", " ")
+
+
+def test_six_agents_present_at_once_all_differ():
+    import json
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        import pytest
+        pytest.skip("node not installed")
+    fn = JS[JS.index("const CHAT_COLORS"):JS.index("function chatLearnColors")]
+    members = [{"id": f"m{i}", "joined_at": f"2026-11-10T10:0{i}:00Z", "left_at": None} for i in range(6)]
+    out = json.loads(subprocess.run([node, "-e", fn + f"; console.log(JSON.stringify(chatColorIndex({json.dumps(members)})));"],
+                                    capture_output=True, text=True, timeout=30).stdout)
+    assert sorted(out.values()) == [0, 1, 2, 3, 4, 5]

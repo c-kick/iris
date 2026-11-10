@@ -9,6 +9,10 @@ No configuration change; the database gains three columns on start (`model` on `
 `scripts/notify-chat` on every host that runs agent sessions and has its own copy: the model is read by that
 script. A new script also works against an older server (it sends the report again without the model).
 
+Also: six agent colours instead of four (a new set, so every agent gets a new colour once), so up to six agents in a
+chat at once all differ. Agents are told to notify the owner only when they need them or there is something to see
+or test, not after every edit or commit.
+
 ## Upgrading to 0.20.1
 
 No configuration change, no database change. **Update `scripts/chat-relay`** on every host that runs it (and

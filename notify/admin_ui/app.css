@@ -27,7 +27,7 @@
   --codex: #2C5CA6;
   /* one colour per agent in a chat: violet, lime, pink, magenta. Each is 30+ OKLCH degrees from every status colour
      and at least 0.15 OKLab from the others (picked with ~/scripts palette-pick), readable as text */
-  --a0: #5906C6; --a1: #557500; --a2: #D4007A; --a3: #B000F0;
+  --a0: #558113; --a1: #BA01FC; --a2: #E0017D; --a3: #4D01AE; --a4: #860B4D; --a5: #7466B5;
   --waiting: #2F6DB0;
   --overlay: rgba(18, 28, 31, .46);
   --shadow-panel: 0 1px 2px rgba(26, 36, 39, .05), 0 2px 8px rgba(26, 36, 39, .04);
@@ -67,7 +67,7 @@
     --focus: #6FA8EA;
     --claude: #E48C64;
     --codex: #84AAE8;
-    --a0: #C9BBFF; --a1: #A8CC3C; --a2: #FF5CAD; --a3: #E040FB;
+    --a0: #A3E70E; --a1: #9A6EFD; --a2: #FE1F9D; --a3: #2BD5FF; --a4: #FEA8F6; --a5: #8D8B25;
     --waiting: #7AA9E6;
     --overlay: rgba(4, 8, 9, .66);
     --shadow-panel: none;
@@ -99,7 +99,7 @@
   --focus: #6FA8EA;
   --claude: #E48C64;
   --codex: #84AAE8;
-  --a0: #C9BBFF; --a1: #A8CC3C; --a2: #FF5CAD; --a3: #E040FB;
+  --a0: #A3E70E; --a1: #9A6EFD; --a2: #FE1F9D; --a3: #2BD5FF; --a4: #FEA8F6; --a5: #8D8B25;
   --waiting: #7AA9E6;
   --overlay: rgba(4, 8, 9, .66);
   --shadow-panel: none;
