@@ -761,10 +761,10 @@ All additive; a 0.13.x service ignores them.
   (`reason`); a message whose mentioned members all left is open again. `for_line` adds the `→` line under the header.
 - **Shared process (0.18.0).** `chat_members.shared_process` / `chat_presence.shared_process`: set when the start
   hook finds the session's `codex` ancestor running as `codex app-server`. `_replace_same_process` skips such rows.
-  In `heartbeat`, an alive report for a shared row counts only if `MAX(status_at, active_at, joined_at|started_at)`
-  is within `SHARED_IDLE_SECONDS` (2 h); otherwise the member leaves as `idle` (marker kept) and the presence is
-  deleted. `set_status` and `member_from_handle` take an `idle` member back through `_take_back` (shared with
-  `_rejoin_stale`) when its group is open and its session has no live member.
+  The heartbeat treats them like any other row (alive = the server pid is alive). The 0.18.0 idle leave (`idle`
+  after 2 h without a status hook) was removed; `set_status` and `member_from_handle` still take a member left as
+  `idle` back through `_take_back` (shared with `_rejoin_stale`) when its group is open and its session has no live
+  member, and `leave` of such a member closes an otherwise empty group.
 - **Marker.** `chat_members.marker` (`⟦name·8 chars⟧`), new at every join, kept for a stale leave (it may come back),
   cleared otherwise. `frame`/`history_frame(..., marker=)` put it before the header and after the end line and blank its
   code in quoted text and reply excerpts; `framed_text(message_id, member_id)` for wakes, `read()` and history pass it.

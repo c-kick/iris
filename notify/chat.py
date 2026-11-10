@@ -43,10 +43,6 @@ SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 MAX_WAKE_ATTEMPTS = 5
 WATCH_SECONDS = 30  # the owner watching a thread suspends the cap for this long
 STALE_SECONDS = 180  # no liveness heartbeat for this long: the member is gone
-# A session inside a process other sessions share (codex app-server): its pid stays alive after the session ends, and
-# Codex does not always run SessionEnd. It counts as alive only while it showed activity (a status hook) this recently;
-# then it leaves as idle, and its next activity takes it back with its handle, name and marker.
-SHARED_IDLE_SECONDS = 2 * 3600
 CLAIM_TIMEOUT_SECONDS = 120  # a claimed wake not confirmed in this time goes back to pending
 STATUSES = ("busy", "waiting", "free")  # reported by the session's hooks; "active" only stamps active_at
 BUSY_QUIET_SECONDS = 300  # Claude busy with no activity this long: shown as "busy?" (Esc fires no Stop hook)
@@ -1061,7 +1057,7 @@ class Chat:
             self._event(c, "group.member_left", by, {"group_id": gid, "member_id": member_id, "reason": reason})
             self._add_message(c, gid, "system", None, f"{who(m['kind'], m['name'], member_id)} left the chat"
                               + {"stale": " (no longer running)",
-                                 "idle": f" (quiet for {SHARED_IDLE_SECONDS // 3600} hours)",
+                                 "idle": " (quiet for 2 hours)",  # 0.18.0 to 0.20.x only; kept for their rows
                                  "replaced": " (new session in the same window)"}.get(reason, ""))
             for held in c.execute("SELECT id FROM chat_messages WHERE claimed_by_member_id=? ORDER BY rowid",
                                   (member_id,)).fetchall():
@@ -1787,9 +1783,6 @@ class Chat:
         since, last = self.relay_seen.get(host, (t, t))
         self.relay_seen[host] = (since if t - last < timedelta(seconds=STALE_SECONDS) else t, t)
         back: list[str] = []
-        idle_members: list[str] = []
-        idle_presences: list[str] = []
-        quiet_before = iso(t - timedelta(seconds=SHARED_IDLE_SECONDS))
         with self.db.tx() as c:
             for a in alive:
                 mid = a.get("member_id") if isinstance(a, dict) else None
@@ -1797,18 +1790,6 @@ class Chat:
                     continue
                 if self._rejoin_stale(c, client, host, mid, a, t):
                     back.append(mid)
-                    continue
-                # a shared process (codex app-server) outlives its sessions: alive counts only with recent activity
-                quiet = c.execute("SELECT 'm' FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE m.id=?"
-                                  " AND g.host=? AND m.client_id=? AND m.left_at IS NULL AND m.shared_process=1"
-                                  " AND MAX(COALESCE(m.status_at, ''), COALESCE(m.active_at, ''),"
-                                  " COALESCE(m.joined_at, ''))<?"
-                                  " UNION ALL SELECT 'p' FROM chat_presence WHERE id=? AND host=? AND client_id=?"
-                                  " AND shared_process=1"
-                                  " AND MAX(COALESCE(status_at, ''), COALESCE(active_at, ''), COALESCE(started_at, ''))<?",
-                                  (mid, host, client.id, quiet_before, mid, host, client.id, quiet_before)).fetchone()
-                if quiet is not None:
-                    (idle_members if quiet[0] == "m" else idle_presences).append(mid)
                     continue
                 c.execute("UPDATE chat_members SET last_seen_at=? WHERE id=? AND left_at IS NULL AND group_id IN"
                           " (SELECT id FROM chat_groups WHERE host=?)", (now, mid, host))
@@ -1826,15 +1807,8 @@ class Chat:
                               (host, iso(t - timedelta(seconds=STALE_REJOIN_SECONDS)))).fetchall()
         if back:
             self.svc._after_commit()
-        for mid in idle_members:  # re-checked: a status that arrived since the heartbeat transaction keeps it
-            if self._still_quiet("chat_members", mid, host, client.id):
-                self.remove_member(mid, "idle", keep_open=True)  # it may come back; close_quiet_groups closes later
-        for pid_ in idle_presences:
-            if self._still_quiet("chat_presence", pid_, host, client.id):
-                self.remove_presence(pid_)
-        gone = set(idle_members) | set(idle_presences)
         return {"members": [{"member_id": r["id"], "kind": r["kind"], "pid": r["pid"], "pid_start": r["pid_start"]}
-                            for r in rows if r["id"] not in gone]}
+                            for r in rows]}
 
     def _rejoin_stale(self, c: sqlite3.Connection, client: Client, host: str, member_id: str, alive: dict[str, Any],
                       t: datetime) -> bool:
@@ -1855,21 +1829,9 @@ class Chat:
         self._take_back(c, m, t)
         return True
 
-    def _still_quiet(self, table: str, row_id: str, host: str, client_id: str) -> bool:
-        """The idle check again, outside the heartbeat transaction: activity may have arrived in between."""
-        before = iso(self.now() - timedelta(seconds=SHARED_IDLE_SECONDS))
-        if table == "chat_members":
-            return self.db.one("SELECT 1 FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE m.id=?"
-                               " AND g.host=? AND m.client_id=? AND m.left_at IS NULL AND m.shared_process=1 AND"
-                               " MAX(COALESCE(m.status_at, ''), COALESCE(m.active_at, ''), COALESCE(m.joined_at, ''))<?",
-                               (row_id, host, client_id, before)) is not None
-        return self.db.one("SELECT 1 FROM chat_presence WHERE id=? AND host=? AND client_id=? AND shared_process=1 AND"
-                           " MAX(COALESCE(status_at, ''), COALESCE(active_at, ''), COALESCE(started_at, ''))<?",
-                           (row_id, host, client_id, before)) is not None
-
     def _take_back_idle(self, c: sqlite3.Connection, m: sqlite3.Row | None, t: datetime) -> bool:
-        """A member that left as idle (shared process, no activity for SHARED_IDLE_SECONDS) shows activity again: it
-        is taken back, if its group is still open and its session has not joined again meanwhile."""
+        """A member that left as idle (0.18.0 to 0.20.x removed a shared-process member after 2 quiet hours) shows
+        activity again: it is taken back, if its group is still open and its session has not joined again meanwhile."""
         if m is None or m["leave_reason"] != "idle" or not m["left_at"]:
             return False
         if c.execute("SELECT state FROM chat_groups WHERE id=?", (m["group_id"],)).fetchone()[0] != "open":

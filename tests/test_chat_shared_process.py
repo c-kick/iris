@@ -2,17 +2,20 @@
 
 Every such session reports the same pid (the server's), so a pid tells neither which session ended nor whether it
 is still open, and Codex does not always run its SessionEnd hook on /exit. Such members are flagged shared_process:
-same-process replacement does not apply to them, the relay's "alive" counts only while the session showed activity
-in the last SHARED_IDLE_SECONDS, after which it leaves as idle, and its next activity takes it back.
+same-process replacement does not apply to them.
+
+0.18.0 to 0.20.x also removed such a member as "idle" after 2 quiet hours; that removed dormant members that were
+still listening, so it was reverted. Members it left as idle come back at their next activity or chat call.
 """
 
 from __future__ import annotations
 
 from datetime import timedelta
 
-from notify.chat import SHARED_IDLE_SECONDS
-from notify.db import iso, parse_iso
+
 from tests.test_chat_core import AGENT, FOLDER, svc  # noqa: F401
+
+QUIET = 2 * 3600  # the former idle window
 
 SERVER_PID, SERVER_START = 4242, "srv-start"
 
@@ -57,30 +60,34 @@ def test_shared_presences_do_not_replace_each_other(svc):
     assert svc.db.scalar("SELECT COUNT(*) FROM chat_presence WHERE shared_process=1") == 2
 
 
-def test_alive_counts_only_while_the_session_is_active(svc):
-    a, b = cx(svc, "cx-1"), cx(svc, "cx-2")
-    svc.chat.set_status(AGENT, kind="codex", session_id="cx-2", status="busy")
-    at(svc, SHARED_IDLE_SECONDS - 60)
-    svc.chat.set_status(AGENT, kind="codex", session_id="cx-2", status="free")  # b keeps working
-    at(svc, 120)
+def test_a_quiet_shared_member_stays_while_its_server_is_alive(svc):
+    a, b = cx(svc, "cx-1"), cx(svc, "cx-2")  # a listens, never prompted
+    at(svc, QUIET * 12)
     svc.chat.heartbeat(AGENT, alive(a, b))
-    assert live(svc) == {b["member_id"]}
-    row = svc.db.one("SELECT leave_reason, marker FROM chat_members WHERE id=?", (a["member_id"],))
-    assert row["leave_reason"] == "idle" and row["marker"], "kept: it may come back"
-    assert f"Codex {a['name']} left the chat (quiet for 2 hours)" in notes(svc, a["group_id"])
+    assert live(svc) == {a["member_id"], b["member_id"]}
+    assert not any("quiet for" in n for n in notes(svc, a["group_id"]))
+    svc.chat.post(a["member_handle"], "still here")
+
+
+def test_a_quiet_shared_presence_stays(svc):
+    svc.chat.presence(AGENT, kind="codex", session_id="p1", folder="/srv/off", pid=SERVER_PID,
+                      pid_start=SERVER_START, shared_process=True)
+    pid_ = svc.db.scalar("SELECT id FROM chat_presence")
+    at(svc, QUIET * 12)
+    svc.chat.heartbeat(AGENT, [{"member_id": pid_, "pid": SERVER_PID, "pid_start": SERVER_START}])
+    assert svc.db.scalar("SELECT COUNT(*) FROM chat_presence") == 1
 
 
 def test_an_unshared_member_is_never_left_for_being_quiet(svc):
     m = svc.chat.join(AGENT, kind="claude", session_id="cl-1", folder=FOLDER, pid=77, pid_start="s77")
-    at(svc, SHARED_IDLE_SECONDS * 5)
+    at(svc, QUIET * 5)
     svc.chat.heartbeat(AGENT, [{"member_id": m["member_id"], "pid": 77, "pid_start": "s77"}])
     assert m["member_id"] in live(svc)
 
 
-def _idle(svc, a, keep):
-    at(svc, SHARED_IDLE_SECONDS + 60)
-    svc.chat.set_status(AGENT, kind="codex", session_id="cx-keep", status="free")
-    svc.chat.heartbeat(AGENT, alive(a, keep))
+def _idle(svc, a, keep=None):
+    """A member 0.18.0 to 0.20.x left as idle (the row the upgrade finds)."""
+    svc.chat.remove_member(a["member_id"], "idle", keep_open=True)
     assert a["member_id"] not in live(svc)
 
 
@@ -119,15 +126,6 @@ def test_no_take_back_when_the_group_closed_or_the_session_joined_again(svc):
     assert live(svc) == set()
 
 
-def test_idle_presence_is_dropped(svc):
-    svc.chat.presence(AGENT, kind="codex", session_id="p1", folder="/srv/off", pid=SERVER_PID,
-                      pid_start=SERVER_START, shared_process=True)
-    pid_ = svc.db.scalar("SELECT id FROM chat_presence")
-    at(svc, SHARED_IDLE_SECONDS + 60)
-    svc.chat.heartbeat(AGENT, [{"member_id": pid_, "pid": SERVER_PID, "pid_start": SERVER_START}])
-    assert svc.db.scalar("SELECT COUNT(*) FROM chat_presence") == 0
-
-
 def test_presence_turned_member_keeps_the_flag(svc):
     out = svc.chat.presence(AGENT, kind="codex", session_id="p1", folder="/srv/off", pid=SERVER_PID,
                             pid_start=SERVER_START, shared_process=True)
@@ -141,21 +139,9 @@ def test_api_accepts_the_flag(svc):
     assert JoinIn(kind="codex", session_id="s", folder="/x").shared_process is False
 
 
-def test_idle_window_is_measured_from_the_last_activity_not_the_join(svc):
-    a, keep = cx(svc, "cx-1"), cx(svc, "cx-keep")
-    joined = parse_iso(svc.db.scalar("SELECT joined_at FROM chat_members WHERE id=?", (a["member_id"],)))
-    with svc.db.tx() as c:  # long-running session: active recently, joined long ago
-        c.execute("UPDATE chat_members SET joined_at=?, status='busy', status_at=?, active_at=? WHERE id=?",
-                  (iso(joined - timedelta(days=2)), iso(joined), iso(joined), a["member_id"]))
-    at(svc, 600)
-    svc.chat.heartbeat(AGENT, alive(a, keep))
-    assert a["member_id"] in live(svc)
-
-
 def test_a_lone_member_going_idle_can_come_back(svc):
     a = cx(svc, "cx-1")
-    at(svc, SHARED_IDLE_SECONDS + 60)
-    svc.chat.heartbeat(AGENT, alive(a))
+    _idle(svc, a)
     assert a["member_id"] not in live(svc)
     assert svc.db.scalar("SELECT state FROM chat_groups") == "open", "kept open for its return"
     svc.chat.set_status(AGENT, kind="codex", session_id="cx-1", status="busy")
@@ -164,8 +150,7 @@ def test_a_lone_member_going_idle_can_come_back(svc):
 
 def test_quiet_group_with_only_an_idle_member_closes_after_a_week_not_at_once(svc):
     a = cx(svc, "cx-1")
-    at(svc, SHARED_IDLE_SECONDS + 60)
-    svc.chat.heartbeat(AGENT, alive(a))
+    _idle(svc, a)
     svc.chat.close_quiet_groups(svc.chat.now())
     assert svc.db.scalar("SELECT state FROM chat_groups") == "open"
     svc.chat.close_quiet_groups(svc.chat.now() + timedelta(days=8))
@@ -180,16 +165,6 @@ def test_stale_shared_member_comes_back_beside_a_live_sibling(svc):
     assert a["member_id"] in live(svc), "a sibling on the same server pid is not 'the same process joined again'"
 
 
-def test_starting_again_counts_as_activity(svc):
-    a, keep = cx(svc, "cx-1"), cx(svc, "cx-keep")
-    at(svc, SHARED_IDLE_SECONDS - 30)
-    cx(svc, "cx-1")  # SessionStart again for the live member (resume)
-    svc.chat.set_status(AGENT, kind="codex", session_id="cx-keep", status="free")
-    at(svc, 120)
-    svc.chat.heartbeat(AGENT, alive(a, keep))
-    assert a["member_id"] in live(svc)
-
-
 def test_ending_an_idle_member_does_not_bring_it_back_first(svc):
     a, keep = cx(svc, "cx-1"), cx(svc, "cx-keep")
     _idle(svc, a, keep)
@@ -198,17 +173,8 @@ def test_ending_an_idle_member_does_not_bring_it_back_first(svc):
     assert not any(n.endswith(" is back") for n in notes(svc, a["group_id"]))
 
 
-def test_idle_check_is_scoped_to_the_reporting_host(svc):
-    from tests.test_chat_core import OTHER_HOST
-    a = cx(svc, "cx-1")
-    at(svc, SHARED_IDLE_SECONDS + 60)
-    svc.chat.heartbeat(OTHER_HOST, alive(a))  # another host names this member
-    assert a["member_id"] in live(svc)
-
-
 def test_a_lone_idle_member_ending_closes_its_group(svc):
     a = cx(svc, "cx-1")
-    at(svc, SHARED_IDLE_SECONDS + 60)
-    svc.chat.heartbeat(AGENT, alive(a))
+    _idle(svc, a)
     svc.chat.leave(a["member_handle"], "ended")
     assert svc.db.scalar("SELECT state FROM chat_groups") == "closed"

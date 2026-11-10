@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Next release: idle leave of Codex sessions reverted
+
+No configuration change, no database change. Codex sessions in the shared `codex app-server` are no longer removed
+from a chat after 2 hours without activity ("left the chat (quiet for 2 hours)"): that also removed open sessions
+that were only listening. Members it removed come back at their next prompt, tool use or chat call. A Codex session
+that ends without running its SessionEnd hook stays listed again, as before 0.18.0, until a better end signal lands.
+
 ## Upgrading to 0.20.0
 
 Take a database backup first: the schema goes to 5 (one new table, `chat_files`; nothing existing changes).
