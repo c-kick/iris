@@ -44,6 +44,9 @@ def test_upload_post_list_download(ctx):
     assert d.headers["content-disposition"].startswith("inline;")
     assert d.headers["x-content-type-options"] == "nosniff"
     assert d.headers["content-security-policy"] == "default-src 'none'; sandbox"
+    assert d.headers["cache-control"] == "private, no-cache", "nothing served from cache after sign-out"
+    again = b.get(f"/admin/api/chats/files/{f['id']}", headers={"If-None-Match": d.headers["etag"]})
+    assert again.status_code == 304 and again.content == b""
 
 
 def test_html_named_png_downloads_never_inline(ctx):

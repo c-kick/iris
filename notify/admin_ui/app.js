@@ -2598,6 +2598,7 @@ function chatAttach(el, pane, form, ta) {
         headers: { "X-Notify-Admin": "1", "Content-Type": f.type || "application/octet-stream" },
       }).then(async (res) => {
         const data = await res.json().catch(() => null);
+        if (res.status === 408) throw new Error("too slow; try again on a faster connection");
         if (!res.ok) throw new Error(typeof data?.detail === "string" ? data.detail : `upload failed (HTTP ${res.status})`);
         p.file = data; p.state = "ok"; p.at = Date.now();
       }).catch((ex) => { p.state = "err"; p.error = ex.message; })
