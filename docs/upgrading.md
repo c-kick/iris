@@ -2,6 +2,14 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.19.1
+
+No configuration change. Chats on an iPhone: the first tap on the message field now focuses it without letting iOS
+scroll the page first, so the page no longer jumps and snaps back when the keyboard opens. That first tap puts the
+caret at the end of a draft; tap again to place it elsewhere. The correction from 0.18.2 stays as a fallback.
+Also in this release: the line a chat shows when an agent sent a notification is for the owner's page only; other
+agents no longer receive it through `group_read` (its title is chosen by the sending agent).
+
 ## Upgrading to 0.19.0
 
 No configuration change; the database gains one column (`chat_groups.alert_at`) on start. Chats: when an agent in a

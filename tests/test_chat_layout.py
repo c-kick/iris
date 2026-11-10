@@ -223,3 +223,15 @@ def test_leftover_scroll_on_chats_is_reset_even_without_focus():
     # the field lost focus while iOS still had the page scrolled: the pinned page would sit shifted up again
     fit = JS[JS.index("const fit = () => {"):JS.index("// ?vvdebug=1")]
     assert "if (onChats && (window.scrollY > 0 || (keyboardOpen && vv.offsetTop > 0))) window.scrollTo(0, 0);" in fit
+
+
+def test_a_tap_on_the_chat_box_focuses_it_without_scrolling_the_page():
+    fit = JS[JS.index("if (window.visualViewport) {"):JS.index("const chatUnread")]
+    guard = fit[fit.index('addEventListener("touchend"'):]
+    assert "e.preventDefault()" in guard and "focus({ preventScroll: true })" in guard
+    assert "document.activeElement !== ta" in guard, "a box that has focus keeps iOS caret placement and selection"
+    assert "passive: false" in guard
+    assert "new Event(\"click\")" in guard, "the @ picker still sees the tap"
+    assert 'addEventListener("touchmove"' in fit, "a drag or scroll is not a tap"
+    # every scripted focus of the box (reply, mention, after send) leaves the page where it is
+    assert not re.search(r'(?:ta|#chat-text"\))\.focus\(\)', JS)

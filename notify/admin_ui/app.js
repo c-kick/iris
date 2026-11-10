@@ -1830,6 +1830,32 @@ if (window.visualViewport) {
     addEventListener("scroll", () => debug(), { passive: true });
     setInterval(() => debug(), 500);
   }
+  // A tap on the Chats message box: iOS scrolls the page to show the box before the page has shrunk above the
+  // keyboard, and the correction above then shows as a jump. So the first tap on the unfocused box is taken over
+  // and the box focused without scrolling. Only a short, still tap; a box that already has focus is left to iOS
+  // (caret placement, selection, magnifier). The correction in fit() stays as a fallback.
+  let tap = null;
+  document.addEventListener("touchstart", (e) => {
+    const t = e.touches[0];
+    tap = e.touches.length === 1 && e.target.id === "chat-text" && document.activeElement !== e.target
+      ? { x: t.clientX, y: t.clientY, at: Date.now() } : null;
+  }, { passive: true, capture: true });
+  document.addEventListener("touchmove", (e) => {
+    const t = e.touches[0];
+    if (tap && (e.touches.length > 1 || Math.hypot(t.clientX - tap.x, t.clientY - tap.y) > 10)) tap = null;
+  }, { passive: true, capture: true });
+  document.addEventListener("touchend", (e) => {
+    const ta = e.target;
+    const ok = tap && ta.id === "chat-text" && Date.now() - tap.at < 500 && document.activeElement !== ta && !ta.disabled;
+    tap = null;
+    if (!ok || !e.cancelable) return;
+    e.preventDefault(); // no native focus, so no native scroll; the click that would follow is skipped too
+    ta.focus({ preventScroll: true });
+    const end = ta.value.length;
+    ta.setSelectionRange(end, end); // a draft continues where it ended
+    ta.dispatchEvent(new Event("click")); // the cancelled tap gave no click: the @ picker still looks at the caret
+    setTimeout(fit, 50);
+  }, { passive: false, capture: true });
   vv.addEventListener("resize", fit);
   vv.addEventListener("scroll", fit);
   document.addEventListener("focusin", () => setTimeout(fit, 50)); // a field got focus: the keyboard comes up
@@ -1923,8 +1949,13 @@ function chatMembersMini(g) {
   }).join("");
 }
 
+// the bell on a folder's row: an agent there sent a notification the owner has not looked at yet. Not drawn on the
+// chat the owner is looking at right now (open, window focused): that one is cleared in the same refresh.
+const chatBellShown = (g) => !!g.alert && !(chatKey(g) === chats.selected && document.hasFocus());
+
 function chatGroupRow(g) {
   const lm = g.last_message;
+  const bell = chatBellShown(g) ? `<svg class="chat-bell" viewBox="0 0 16 16" role="img" aria-label="An agent sent a notification" focusable="false"><title>An agent sent a notification</title>${CHAT_BELL}</svg>` : "";
   const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${chatPlain(lm.text_preview)}` : "No messages yet";
   return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
@@ -1948,13 +1979,8 @@ const chatWhoLabel = (author, memberId, name) => author === "owner" ? "you"
 const chatAuthorHtml = (author, name) => author === "owner" || !name ? esc(CHAT_WHO[author] || author)
   : `${esc(name)} <span class="kind">${esc(CHAT_WHO[author] || author)}</span>`;
 
-// the bell on a folder's row: an agent there sent a notification the owner has not looked at yet. Not drawn on the
-// chat the owner is looking at right now (open, window focused): that one is cleared in the same refresh.
-const chatBellShown = (g) => !!g.alert && !(chatKey(g) === chats.selected && document.hasFocus());
-
 // one dot on the owner's own messages: orange until an agent has read or claimed it, then green
 // ("read" = it reached the agent's session and the agent made a group call since; Iris cannot see more)
-  const bell = chatBellShown(g) ? `<svg class="chat-bell" viewBox="0 0 16 16" role="img" aria-label="An agent sent a notification" focusable="false"><title>An agent sent a notification</title>${CHAT_BELL}</svg>` : "";
 function chatTicksHtml(id, r, author) {
   if (author !== "owner" || !r || r.state === "none") return `<span class="ticks" data-ticks="${esc(id)}"></span>`;
   const done = r.claimed || r.read > 0;
@@ -1963,7 +1989,9 @@ function chatTicksHtml(id, r, author) {
 }
 
 // join and leave lines get an icon (the words stay: the icon is for scanning, screen readers read the text)
+const CHAT_BELL = '<path d="M4 11.500V7.500a4 4 0 0 1 8 0v4l1.200 1.500H2.800z"/><path d="M6.700 14.200a1.400 1.400 0 0 0 2.600 0"/>';
 const CHAT_NOTICE_ICONS = {
+  alert: CHAT_BELL,
   join: '<path d="M9.5 2.5h3v11h-3"/><path d="M2 8h7.5"/><path d="M6.5 5l3 3-3 3"/>',
   leave: '<path d="M6.5 2.5h-3v11h3"/><path d="M6.5 8H14"/><path d="M11 5l3 3-3 3"/>',
 };
@@ -1988,9 +2016,7 @@ function chatMessageHtml(m, canReply = false) {
   const quote = m.in_reply_to
     ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(chatPlain(m.reply_excerpt))}`}</div>`
     : "";
-const CHAT_BELL = '<path d="M4 11.500V7.500a4 4 0 0 1 8 0v4l1.200 1.500H2.800z"/><path d="M6.700 14.200a1.400 1.400 0 0 0 2.600 0"/>';
   const tag = m.kind === "fyi" ? `<span class="kind-tag fyi" title="Everyone reads it, nobody acts on it">heads-up</span>`
-  alert: CHAT_BELL,
     : m.kind === "all" ? `<span class="kind-tag all" title="Each member acts on it">for everyone</span>`
     : m.mentions && m.mentions.length ? `<span class="kind-tag for" title="Only they act; the others read it">for ${esc(m.mentions.join(", "))}</span>` : "";
   const w = m.wakes || {};
@@ -2133,7 +2159,7 @@ function chatAtPicker(el, ta, list) {
     ta.value = `${ta.value.slice(0, start)}@${h.name} ${ta.value.slice(end)}`;
     const pos = start + h.name.length + 2;
     close();
-    ta.focus();
+    ta.focus({ preventScroll: true });
     ta.setSelectionRange(pos, pos);
     ta.dispatchEvent(new Event("input"));
   };
@@ -2265,7 +2291,7 @@ function chatMention(el, name) {
   const pad = before && !/\s$/.test(before) ? " " : "";
   ta.value = `${before}${pad}@${name} ${ta.value.slice(ta.selectionEnd ?? at)}`;
   const pos = before.length + pad.length + name.length + 2;
-  ta.focus();
+  ta.focus({ preventScroll: true });
   ta.setSelectionRange(pos, pos);
   ta.dispatchEvent(new Event("input"));
 }
@@ -2371,7 +2397,7 @@ async function chatOpenThread(el, key, keep = false) {
     replying.hidden = !m;
     replying.querySelector(".rq").textContent = m ? `Replying to ${chatWhoLabel(m.author, m.member_id, m.name)}: ${chatExcerpt(m.text)}` : "";
   };
-  replying.querySelector("#chat-reply-cancel").onclick = () => { setReply(null); pane.querySelector("#chat-text").focus(); };
+  replying.querySelector("#chat-reply-cancel").onclick = () => { setReply(null); pane.querySelector("#chat-text").focus({ preventScroll: true }); };
   box.onclick = async (e) => {
     const rel = e.target.closest("[data-release]");
     if (rel) {
@@ -2381,7 +2407,7 @@ async function chatOpenThread(el, key, keep = false) {
       return;
     }
     const rb = e.target.closest("[data-reply]");
-    if (rb) { setReply(rb.dataset.reply); pane.querySelector("#chat-text").focus(); return; }
+    if (rb) { setReply(rb.dataset.reply); pane.querySelector("#chat-text").focus({ preventScroll: true }); return; }
     const bar = e.target.closest(".chat-earlier-bar");
     if (bar) { chatToggleEarlier(bar); return; }
     const b = e.target.closest("[data-hreq]");
@@ -2438,7 +2464,7 @@ async function chatOpenThread(el, key, keep = false) {
       grow();
       await chatTick(el);
     } catch (ex) { err.textContent = ex.message; }
-    finally { btn.disabled = false; ta.focus(); }
+    finally { btn.disabled = false; ta.focus({ preventScroll: true }); }
   };
   // picking the chat clears its bell; a thread that only reloaded (keep) clears it when the window has focus
   const bell = f.alert && (!keep || document.hasFocus());
@@ -2596,8 +2622,8 @@ async function chatTickOnce(el) {
       chats.lastId = data.messages[data.messages.length - 1].id;
       if (stick) box.scrollTop = box.scrollHeight;
     }
-  } catch (ex) { chats.tickError = ex; console.error("chat refresh failed (retried in 5 s)", ex); } // sign-out: api()
-}
     // the bell goes once the owner is looking: the chat open and the window focused (coming back runs this too)
     const bell = f.alert && document.hasFocus();
     if ((data.messages.length && data.group.unread) || bell) { await api("POST", `/chats/${encodeURIComponent(id)}/seen${bell ? `?alert_upto=${encodeURIComponent(f.alert_at)}` : ""}`); await chatsLoadList(el); }
+  } catch (ex) { chats.tickError = ex; console.error("chat refresh failed (retried in 5 s)", ex); } // sign-out: api()
+}
