@@ -122,7 +122,10 @@ def _image(data: bytes) -> tuple[str, int, int] | None:
 
 
 def _turned(im: Image.Image) -> int:
-    """The EXIF orientation (1 = upright as stored; 5 to 8 swap width and height when shown)."""
+    """The EXIF orientation (1 = upright as stored; 5 to 8 swap width and height when shown). Only for JPEG and
+    WebP, where it is in the header: for a PNG, Pillow decodes the whole picture to look for it."""
+    if im.format not in ("JPEG", "WEBP"):
+        return 1
     try:
         o = im.getexif().get(0x0112, 1)
     except Exception:  # noqa: BLE001

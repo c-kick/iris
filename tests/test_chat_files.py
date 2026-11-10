@@ -520,6 +520,25 @@ def test_a_photo_stored_on_its_side_has_its_shown_size_and_reaches_the_agent_upr
     assert svc.chat.files.for_agent(svc.chat.files.owner_get(post["files"][1]["id"])).note == "image 200x400, re-encoded"
 
 
+def test_looking_at_a_png_or_gif_never_decodes_it(svc, monkeypatch):
+    """Sniffing at upload and the checks before scaling read headers only: a huge PNG must not be decoded there."""
+    from PIL import GifImagePlugin, PngImagePlugin
+    big = png(3000, 3000)
+    buf = io.BytesIO()
+    Image.new("RGB", (30, 20), (1, 2, 3)).save(buf, "GIF")
+
+    def boom(self, *a, **k):
+        raise AssertionError("decoded")
+    monkeypatch.setattr(PngImagePlugin.PngImageFile, "load", boom)
+    monkeypatch.setattr(GifImagePlugin.GifImageFile, "load", boom)
+    assert chat_files.sniff("big.png", None, big) == ("image", "image/png", 3000, 3000)
+    assert chat_files.sniff("a.gif", None, buf.getvalue()) == ("image", "image/gif", 30, 20)
+    monkeypatch.setattr(chat_files, "IMAGE_MAX_PIXELS_WHOLE", 1000 * 1000)
+    a = join(svc, "s1")
+    f = svc.chat.files.owner_get(svc.chat.post(a["member_handle"], "x", files=[nf("big.png", big)])["files"][0]["id"])
+    assert svc.chat.files.for_agent(f).kind == "other"  # refused by its size, without decoding
+
+
 def test_a_progressive_jpeg_gets_the_whole_decode_limit(svc, monkeypatch):
     monkeypatch.setattr(chat_files, "IMAGE_MAX_PIXELS_WHOLE", 1000 * 1000)
     a = join(svc, "s1")
