@@ -54,7 +54,7 @@ def test_admin_list_groups_order(ctx):
     assert one["last_message"]["text_preview"].startswith("hello world x")
     assert len(one["last_message"]["text_preview"]) <= 120
     assert set(one["members"][0]) == {"id", "name", "kind", "joined_at", "last_seen_at", "left_at", "status",
-                                      "status_since", "quiet_minutes", "claims", "oldest_claim", "intent"}
+                                      "status_since", "quiet_minutes", "claims", "oldest_claim", "intent", "model", "model_id"}
     assert [g["id"] for g in b.get("/admin/api/chats?host=host-b").json()["groups"]] == [groups[3]["id"]]
     assert len(b.get("/admin/api/chats?host=host-a&folder=/srv/two").json()["groups"]) == 1
     # seen clears unread

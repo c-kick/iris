@@ -546,7 +546,12 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .cmem-main:hover { background: var(--sunken); }
 .cmem-main:focus-visible { outline: 3px solid var(--focus); outline-offset: -1px; }
 .cmem .nm { font-weight: 600; }
-.cmem small { color: var(--faint); font-size: .72rem; }
+/* one line whatever the label holds ("Claude · Fable 5.2" next to a claims button): the row never grows */
+.cmem small { color: var(--faint); font-size: .72rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmem .sub .model { color: var(--ink); }
+.cmem small .km { display: none; }
+.chat-roster .cmem small .km { display: inline; }
+.chat-roster .cmem .sub .model { display: none; }
 .cmem .sub { grid-column: 2 / -1; color: var(--muted); font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmem.away, .cmem.empty-row { padding: .3rem .9rem .3rem 1.25rem; color: var(--faint); display: grid; grid-template-columns: auto auto 1fr; column-gap: .4rem; align-items: baseline; }
 .cmem.away .nm { font-weight: 500; }

@@ -35,6 +35,7 @@ class StatusIn(BaseModel):
     session_id: str = Field(max_length=200)
     folder: str | None = Field(default=None, max_length=4096)  # informational; the session id finds the member
     status: str = Field(max_length=20)
+    model: str | None = Field(default=None, max_length=120)  # 0.21.0: the model the session runs, from its transcript
 
 
 class NotifyingIn(BaseModel):
@@ -79,7 +80,8 @@ async def leave(request: Request, body: LeaveIn | None = None,
 @_errors
 async def status(body: StatusIn, request: Request, client: Client = Depends(require(Scope.chat))) -> Response:
     """Status hooks: busy / waiting / free, or an "active" ping. 404 when the session is in no chat."""
-    service(request).chat.set_status(client, kind=body.kind, session_id=body.session_id, status=body.status)
+    service(request).chat.set_status(client, kind=body.kind, session_id=body.session_id, status=body.status,
+                                     model=body.model)
     return Response(status_code=204)
 
 
@@ -133,12 +135,24 @@ async def chat_file(file_id: str, request: Request, handle: str = Header(alias="
         return Response(status_code=404)
     chat = service(request).chat
     chat.check_handle_host(client, handle)  # same host binding as the MCP tools
-    f = await asyncio.to_thread(chat.files.member_get, handle, file_id)
+    from starlette.background import BackgroundTask
+    from .fetchgate import BUSY_HEADERS, FILE_FETCHES, Busy
+    try:
+        release = await FILE_FETCHES.acquire()  # held until the body is sent
+    except Busy as e:
+        return Response(content=str(e), status_code=503, headers=BUSY_HEADERS)
+    try:
+        f = await asyncio.to_thread(chat.files.member_get, handle, file_id)
+    except BaseException:
+        await release()
+        raise
     if f.expired or f.data is None:
+        await release()
         return Response(status_code=410)
     return Response(content=f.data, media_type="application/octet-stream", headers={
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(f.name or 'file', safe='')}",
-        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "X-Chat-File-Type": _header_safe(f.type)})
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "X-Chat-File-Type": _header_safe(f.type)},
+        background=BackgroundTask(release))
 
 
 def _header_safe(value: str | None) -> str:

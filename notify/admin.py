@@ -35,7 +35,7 @@ from .cleanup_service import record_event
 from .device_check import clear_flag
 from .providers.email_inbound import run_locked
 from .schedule import local_zone
-from .chat import _clean_desc, reply_excerpt, status_view, text_or_files, who
+from .chat import _clean_desc, model_label, reply_excerpt, status_view, text_or_files, who
 from .registrations import announce_targets, approve, deny, list_registrations
 from .store import ConfigStore
 
@@ -900,7 +900,8 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
                         "last_seen_at": m["last_seen_at"], "left_at": m["left_at"], "status": v.get("status"),
                         "status_since": v.get("since"), "quiet_minutes": v.get("quiet_minutes"),
                         "claims": len(claims.get(m["id"], [])), "oldest_claim": (claims.get(m["id"]) or [None])[0],
-                        "intent": m["intent"] if show_text else None})
+                        "intent": m["intent"] if show_text else None,
+                        "model": model_label(m["model"]), "model_id": m["model"]})
     presences = ([{"kind": p["kind"], "since": p["started_at"]} for p in svc.db.query(
         "SELECT kind, started_at FROM chat_presence WHERE host=? AND folder=? ORDER BY rowid", (g["host"], g["folder"]))]
         if g["state"] == "open" else [])
@@ -1018,6 +1019,8 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
             m["text"] = r["text"]
             m["member_id"] = r["author_member_id"]
             m["member_name"] = names.get(r["author_member_id"])
+            if r["model"]:  # the model its author ran when it wrote this
+                m["member_model"] = model_label(r["model"])
             if r["in_reply_to"]:
                 q = svc.db.one("SELECT * FROM chat_messages WHERE id=? AND group_id=?", (r["in_reply_to"], group_id))
                 if q is not None:
@@ -1117,17 +1120,29 @@ async def chat_file_get(file_id: str, request: Request, client: Client = Depends
     everything else downloads. nosniff and a sandboxing CSP, so a file can never run as a page of this origin."""
     require_session(client)
     svc = _svc(request)
+    # an id never changes its bytes: the id is the ETag, and the browser asks again each time (no-cache), so a
+    # signed-out page shows nothing from its cache while an unchanged file costs only a 304, without loading it
+    etag = f'"{file_id}"'
+    if request.headers.get("if-none-match") == etag:
+        row = svc.db.one("SELECT purged_at FROM chat_files WHERE id=? AND data IS NOT NULL", (file_id,))
+        if row is not None and row["purged_at"] is None:
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+    from starlette.background import BackgroundTask
+    from .fetchgate import BUSY_HEADERS, FILE_FETCHES, Busy
+    try:
+        release = await FILE_FETCHES.acquire()  # held until the body is sent: that is when the bytes leave memory
+    except Busy as e:
+        raise HTTPException(503, str(e), headers=BUSY_HEADERS) from e
     try:
         f = svc.chat.files.owner_get(file_id)
+        if f.expired or f.data is None:
+            raise HTTPException(410, "file expired")
     except NotFound as e:
+        await release()
         raise HTTPException(404, "file not found") from e
-    if f.expired or f.data is None:
-        raise HTTPException(410, "file expired")
-    # an id never changes its bytes: the id is the ETag, and the browser asks again each time (no-cache), so a
-    # signed-out page shows nothing from its cache while an unchanged file costs only a 304
-    etag = f'"{f.id}"'
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+    except BaseException:
+        await release()
+        raise
     inline = f.kind == "image"
     from urllib.parse import quote
     safe = re.sub(r'[\x00-\x1f\x7f"\\\\;]', "_", f.name or "file")  # one header line, one quoted name
@@ -1135,7 +1150,8 @@ async def chat_file_get(file_id: str, request: Request, client: Client = Depends
     disp = f"{'inline' if inline else 'attachment'}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(safe)}"
     return Response(f.data, media_type=f.type if inline else "application/octet-stream", headers={
         "Content-Disposition": disp, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": FILE_CSP,
-        "Cache-Control": "private, no-cache", "ETag": etag, "Cross-Origin-Resource-Policy": "same-origin"})
+        "Cache-Control": "private, no-cache", "ETag": etag, "Cross-Origin-Resource-Policy": "same-origin"},
+        background=BackgroundTask(release))
 
 
 @router.post("/api/chats/{group_id}/seen")

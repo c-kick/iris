@@ -97,6 +97,29 @@ def _names(names: list[str]) -> str:
 INTENT_MAX = 120
 
 
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@\[\]-]{0,79}$")
+_MODEL_VENDORS = frozenset({"claude", "gpt", "openai", "anthropic", "codex", "models"})
+
+
+def clean_model(model: Any) -> str | None:
+    """A model id as a session's hook reports it, or None for anything that does not look like one."""
+    return model if isinstance(model, str) and MODEL_RE.match(model) else None
+
+
+def model_label(model: str | None) -> str | None:
+    """A model id as people say it: claude-fable-5-2 → Fable 5.2, gpt-6.1-sol → Sol 6.1. An id with no name in
+    it (gpt-5, o3) is shown as it is."""
+    if not model:
+        return None
+    base = model.split("[", 1)[0]  # a "[1m]"-style suffix is never shown
+    parts = [p for p in re.split(r"[-_/:@]", base) if p]
+    names = [p for p in parts if p.isalpha() and p.lower() not in _MODEL_VENDORS and p.lower() != "latest"]
+    nums = [p for p in parts if re.fullmatch(r"\d{1,3}(\.\d{1,3})?", p)]
+    if not names:
+        return base or None
+    return " ".join(n.capitalize() for n in names) + (" " + ".".join(nums) if nums else "")
+
+
 def intent_text(text: str) -> str:
     """A member's stated plan as shown in the member list: one line, at most 120 characters."""
     flat = " ".join(_clean_desc(" ".join(text.split())).split())
@@ -382,12 +405,15 @@ class Chat:
             v = status_view(r["kind"], r["status"], r["status_at"], r["active_at"], now)
             out.append({"member_id": r["id"], "name": r["name"], "kind": r["kind"], "joined_at": r["joined_at"],
                         "last_seen_at": r["last_seen_at"], "present": True, "status": status_words(v),
-                        "since": v["since"], "intent": r["intent"]})
+                        "since": v["since"], "intent": r["intent"], "model": model_label(r["model"])})
         return out
 
-    def set_status(self, client: Client, *, kind: str, session_id: str, status: str) -> None:
+    def set_status(self, client: Client, *, kind: str, session_id: str, status: str,
+                   model: str | None = None) -> None:
         """A session's hook reports busy / waiting / free, or an "active" ping (tool use). The member is found by the
-        client's host + kind + session id, so the hook needs no handle. No message, no wake, no event."""
+        client's host + kind + session id, so the hook needs no handle. No message, no wake, no event.
+        model: the model the session runs now, as its hook read it; anything that is not a model id is ignored."""
+        model = clean_model(model)
         host = self._host(client)
         if status not in (*STATUSES, "active"):
             raise Invalid("status must be busy, waiting, free or active")
@@ -419,6 +445,8 @@ class Chat:
             else:
                 c.execute(f"UPDATE {table} SET status=?, status_at=?, active_at=? WHERE id=?",
                           (status, now, now, m["id"]))
+            if model is not None:
+                c.execute(f"UPDATE {table} SET model=? WHERE id=? AND model IS NOT ?", (model, m["id"], model))
         if back:
             self.svc._after_commit()
 
@@ -1254,6 +1282,9 @@ class Chat:
             elif not paused and not watching:
                 streak += 1
             msg_id = self._add_message(c, group_id, author, member_id, text, in_reply_to, kind)
+            if not owner:  # the model the author runs now stays with the message, whatever it switches to later
+                c.execute("UPDATE chat_messages SET model=(SELECT model FROM chat_members WHERE id=?) WHERE id=?",
+                          (member_id, msg_id))
             files, files_expired = ([], 0) if not (prepared or pending) else self.files.attach(
                 c, g, msg_id, now, prepared=prepared, pending=pending)
             if files_expired:

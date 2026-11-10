@@ -1990,12 +1990,15 @@ function chatMembersHtml(g) {
     const st = chatStatusOf(m);
     const kind = CHAT_WHO[m.kind] || m.kind;
     const name = m.name || kind;
-    const sub = [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
-      m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
+    // the model leads the one-line status of the side list (the ellipsis there cuts the plan text first, so the row
+    // keeps one height); the phone roster wraps its status, so there the model sits on the name line instead (.km)
+    const sub = (m.model ? `<span class="model"${m.model_id ? ` title="${esc(m.model_id)}"` : ""}>${esc(m.model)} · </span>` : "")
+      + [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
+        m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
     const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";
     const rename = `<button type="button" class="btn quiet cmem-rename" data-rename="${esc(m.id)}" data-name="${esc(name)}" aria-label="Rename ${esc(name)}" title="Rename">✎</button>`;
     return `<li class="cmem"><button type="button" class="cmem-main" data-mention="${esc(m.name || "")}" title="${m.name ? `Mention ${esc(name)} in your message` : ""}">
-      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chatNameStyle(m)}>${esc(name)}</span> <small>${esc(kind)}</small>
+      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chatNameStyle(m)}>${esc(name)}</span> <small>${esc(kind)}${m.model ? `<span class="km"> \u00b7 ${esc(m.model)}</span>` : ""}</small>
       <span class="sub">${sub}</span></button>${claims}${rename}</li>`;
   }).join("");
   const others = (g.presences || []).map((p) => `<li class="cmem away"><span class="sdot unknown" aria-hidden="true"></span><span class="nm">${esc(CHAT_WHO[p.kind] || p.kind)}</span> <small>not in the chat</small></li>`).join("");
@@ -2044,8 +2047,10 @@ const chatMemberLabel = (m) => m.name ? `${m.name} (${CHAT_WHO[m.kind] || m.kind
 const chatWhoLabel = (author, memberId, name) => author === "owner" ? "you"
   : name ? `${name} (${CHAT_WHO[author] || author})` : `${CHAT_WHO[author] || author} ${memberId || ""}`.trim();
 // the author line of a message: the member's name with its kind small, "You" for the owner
-const chatAuthorHtml = (author, name) => author === "owner" || !name ? esc(CHAT_WHO[author] || author)
-  : `${esc(name)} <span class="kind">${esc(CHAT_WHO[author] || author)}</span>`;
+// "Wren  Claude · Fable 5.2": the agent, and the model it ran when it wrote the message (when its hook reported one)
+const chatKindModel = (kind, model) => (CHAT_WHO[kind] || kind) + (model ? ` \u00b7 ${model}` : "");
+const chatAuthorHtml = (author, name, model) => author === "owner" || !name ? esc(CHAT_WHO[author] || author)
+  : `${esc(name)} <span class="kind">${esc(chatKindModel(author, model))}</span>`;
 
 // one dot on the owner's own messages: orange until an agent has read or claimed it, then green
 // ("read" = it reached the agent's session and the agent made a group call since; Iris cannot see more)
@@ -2111,7 +2116,7 @@ function chatMessageHtml(m, canReply = false) {
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
-  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name)}${tag}</div>
+  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name, m.member_model)}${tag}</div>
     ${quote}${m.text === "" && m.files?.length ? "" : `<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text)}</div>`}${chatFilesHtml(m.files)}
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }
