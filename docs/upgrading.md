@@ -2,6 +2,17 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.19.0
+
+No configuration change; the database gains one column (`chat_groups.alert_at`) on start. Chats: when an agent in a
+group chat sends a notification, the chat shows a line ("Claude Wren sent a push notification: <title>") and the
+folder gets a bell in the chat list until you click it, or come back to the window with that chat open. Iris only
+knows which session sent a notification when the agent passes its `member_handle` to `send_notification` (new,
+optional, MCP only; the client needs the `send` and the `chat` scope); the start-up context and the MCP instructions
+ask for it. Sessions started before the upgrade
+were not told, so their notifications show up in the chat only after a restart of the session (or when told).
+The chat relay script (`scripts/notify-chat`) carries the same sentence for Codex: update it on each host.
+
 ## Upgrading to 0.18.2
 
 No configuration change. Chats on an iPhone: tapping the message field no longer leaves the page scrolled out of view

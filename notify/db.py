@@ -315,9 +315,11 @@ class Database:
         self._add_chat_history()
         self._add_missing_columns({"chat_wakes": {"attempts": "INTEGER NOT NULL DEFAULT 0", "retry_after": "TEXT"},
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT",
-                                                  "adhoc": "INTEGER NOT NULL DEFAULT 0", "paused_posts": "INTEGER"},
+                                                  "adhoc": "INTEGER NOT NULL DEFAULT 0", "paused_posts": "INTEGER",
+                                                  # 0.19.0: a member sent a notification the owner has not looked at
+                                                  "alert_at": "TEXT"},
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT",
-                                                    "kind": "TEXT NOT NULL DEFAULT 'request'"},  # 0.14.0: request, fyi, all
+                                                    "kind": "TEXT NOT NULL DEFAULT 'request'"},  # request, fyi, all; alert = a notification notice
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
                                                    "name": "TEXT", "status": "TEXT", "status_at": "TEXT",
                                                    "active_at": "TEXT", "marker": "TEXT", "intent": "TEXT",

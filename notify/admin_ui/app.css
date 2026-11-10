@@ -500,6 +500,8 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-row small { font: 400 .72rem var(--mono); color: var(--faint); white-space: nowrap; }
 .chat-row .p { color: var(--muted); font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-row .badge { background: var(--action); color: var(--action-ink); flex: none; }
+.chat-row .r { display: flex; align-items: center; gap: .4rem; flex: none; }
+.chat-bell { width: 15px; height: 15px; flex: none; color: var(--warn); fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .paused-tag { color: var(--warn); font-weight: 600; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; display: inline-block; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
 .dot.off { background: var(--idle); box-shadow: none; }
@@ -638,6 +640,7 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .cm.sys .notice-ico { width: 14px; height: 14px; vertical-align: -2px; margin-right: .35rem; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .cm.sys .notice-ico.join { color: var(--ok); }
 .cm.sys .notice-ico.leave { color: var(--idle); }
+.cm.sys .notice-ico.alert { color: var(--warn); }
 .cm.sys.ask { padding: .55rem .8rem; border-radius: var(--radius-m); background: var(--surface); border-style: solid; border-left: 3px solid var(--warn); }
 .chat-earlier { align-self: stretch; }
 .chat-earlier-bar {

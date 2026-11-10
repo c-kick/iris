@@ -1928,7 +1928,7 @@ function chatGroupRow(g) {
   const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${chatPlain(lm.text_preview)}` : "No messages yet";
   return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
-      ${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span>
+      <span class="r">${bell}${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span></span>
     <span class="p">${esc(g.host)} · ${g.state === "open" ? `${g.adhoc ? "open on demand" : "open"} · ${chatAgentCount(g)}` : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
     <span class="p">${esc(preview)}</span></button>`;
 }
@@ -1948,8 +1948,13 @@ const chatWhoLabel = (author, memberId, name) => author === "owner" ? "you"
 const chatAuthorHtml = (author, name) => author === "owner" || !name ? esc(CHAT_WHO[author] || author)
   : `${esc(name)} <span class="kind">${esc(CHAT_WHO[author] || author)}</span>`;
 
+// the bell on a folder's row: an agent there sent a notification the owner has not looked at yet. Not drawn on the
+// chat the owner is looking at right now (open, window focused): that one is cleared in the same refresh.
+const chatBellShown = (g) => !!g.alert && !(chatKey(g) === chats.selected && document.hasFocus());
+
 // one dot on the owner's own messages: orange until an agent has read or claimed it, then green
 // ("read" = it reached the agent's session and the agent made a group call since; Iris cannot see more)
+  const bell = chatBellShown(g) ? `<svg class="chat-bell" viewBox="0 0 16 16" role="img" aria-label="An agent sent a notification" focusable="false"><title>An agent sent a notification</title>${CHAT_BELL}</svg>` : "";
 function chatTicksHtml(id, r, author) {
   if (author !== "owner" || !r || r.state === "none") return `<span class="ticks" data-ticks="${esc(id)}"></span>`;
   const done = r.claimed || r.read > 0;
@@ -1975,7 +1980,7 @@ function chatMessageHtml(m, canReply = false) {
     const ask = hr && hr.state === "pending"
       ? `<span class="req-reason">Reason: ${esc(hr.reason ?? "hidden")}</span><span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
       : "";
-    const kind = chatNoticeKind(m.text);
+    const kind = m.kind === "alert" ? "alert" : chatNoticeKind(m.text);
     const icon = kind ? `<svg class="notice-ico ${kind}" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${CHAT_NOTICE_ICONS[kind]}</svg>` : "";
     return `<div class="cm sys${ask ? " ask" : ""}${kind ? ` notice-${kind}` : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${icon}${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
   }
@@ -1983,7 +1988,9 @@ function chatMessageHtml(m, canReply = false) {
   const quote = m.in_reply_to
     ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(chatPlain(m.reply_excerpt))}`}</div>`
     : "";
+const CHAT_BELL = '<path d="M4 11.500V7.500a4 4 0 0 1 8 0v4l1.200 1.500H2.800z"/><path d="M6.700 14.200a1.400 1.400 0 0 0 2.600 0"/>';
   const tag = m.kind === "fyi" ? `<span class="kind-tag fyi" title="Everyone reads it, nobody acts on it">heads-up</span>`
+  alert: CHAT_BELL,
     : m.kind === "all" ? `<span class="kind-tag all" title="Each member acts on it">for everyone</span>`
     : m.mentions && m.mentions.length ? `<span class="kind-tag for" title="Only they act; the others read it">for ${esc(m.mentions.join(", "))}</span>` : "";
   const w = m.wakes || {};
@@ -2433,7 +2440,9 @@ async function chatOpenThread(el, key, keep = false) {
     } catch (ex) { err.textContent = ex.message; }
     finally { btn.disabled = false; ta.focus(); }
   };
-  if (g.unread) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
+  // picking the chat clears its bell; a thread that only reloaded (keep) clears it when the window has focus
+  const bell = f.alert && (!keep || document.hasFocus());
+  if (g.unread || bell) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen${bell ? `?alert_upto=${encodeURIComponent(f.alert_at)}` : ""}`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
 }
 
 async function chatToggleEarlier(bar) {
@@ -2586,7 +2595,9 @@ async function chatTickOnce(el) {
       }
       chats.lastId = data.messages[data.messages.length - 1].id;
       if (stick) box.scrollTop = box.scrollHeight;
-      if (data.group.unread) { await api("POST", `/chats/${encodeURIComponent(id)}/seen`); await chatsLoadList(el); }
     }
   } catch (ex) { chats.tickError = ex; console.error("chat refresh failed (retried in 5 s)", ex); } // sign-out: api()
 }
+    // the bell goes once the owner is looking: the chat open and the window focused (coming back runs this too)
+    const bell = f.alert && document.hasFocus();
+    if ((data.messages.length && data.group.unread) || bell) { await api("POST", `/chats/${encodeURIComponent(id)}/seen${bell ? `?alert_upto=${encodeURIComponent(f.alert_at)}` : ""}`); await chatsLoadList(el); }

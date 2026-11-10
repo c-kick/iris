@@ -68,7 +68,7 @@ def demo_config() -> NotifyConfig:
         "clients": {n: {"token_sha256": hash_token(f"dev-{n}"), "scopes": s, "description": d} for n, s, d in [
             ("home-assistant", ["send", "read"], "Automations and rest_command"),
             ("node-red", ["send"], None),
-            ("agents", ["send", "read", "manage"], "Claude Code and Codex via MCP")]}
+            ("agents", ["send", "read", "manage", "chat"], "Claude Code and Codex via MCP")]}
         | {"agent-a": {"token_sha256": hash_token("dev-agent-a"), "scopes": ["chat"], "chat_host": "host-a",
                        "description": "Agent sessions on host-a"},
            "agent-b": {"token_sha256": hash_token("dev-agent-b"), "scopes": ["chat"], "chat_host": "host-b"}},
@@ -137,6 +137,8 @@ def seed_chats(app) -> None:
     with chat.db.tx() as c:
         chat._add_message(c, cl["group_id"], "system", None, "Codex reconnected")
     chat.post(cl["member_handle"], "Done: the client reads both names, tests pass.")
+    # the notice of a notification an agent sent, and the bell on the folder until the owner opens it
+    chat.note_notification(a, cl["member_handle"], kinds=None, title="Client reads both names", deliveries=1)
     chat.post(cl["member_handle"], "Which tests did you run?", in_reply_to=yes["message_id"])
     chat.post(cx["member_handle"], f"@{cl['name']} can you also update the docs page?")
     chat.post(cx["member_handle"], "I'm rebasing main in a minute; expect a force-push on my branch only.", fyi=True)

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from datetime import timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -913,7 +913,7 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
             "paused_posts": g["paused_posts"], "paused_posts_effective": svc.chat.paused_limit(g),
             "last_message": ({"author": last["author"], "text_preview": _preview(last["text"]) if show_text else None,
                               "created_at": last["created_at"]} if last else None),
-            "unread": unread}
+            "unread": unread, "alert": bool(g["alert_at"]), "alert_at": g["alert_at"]}
 
 
 def _folder_out(svc: NotifyService, groups: list[Any], show_text: bool) -> dict[str, Any]:
@@ -922,6 +922,8 @@ def _folder_out(svc: NotifyService, groups: list[Any], show_text: bool) -> dict[
     out = _group_out(svc, newest, show_text)
     lm = out["last_message"]
     out["activity_at"] = (lm["created_at"] if lm else None) or newest["closed_at"] or newest["opened_at"] or ""
+    out["alert_at"] = max((g["alert_at"] for g in groups if g["alert_at"]), default=None)
+    out["alert"] = out["alert_at"] is not None  # the bell is the folder's: an earlier session's counts too
     out["group_count"] = len(groups)
     out["earlier_count"] = len(groups) - 1
     out["pending_history_requests"] = svc.db.scalar(
@@ -1056,13 +1058,18 @@ async def chat_post(group_id: str, body: ChatPostIn, request: Request,
 
 
 @router.post("/api/chats/{group_id}/seen")
-async def chat_seen(group_id: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+async def chat_seen(group_id: str, request: Request, alert_upto: str | None = Query(None, max_length=40),
+                    client: Client = Depends(admin)) -> dict[str, Any]:
+    """The owner read the chat. alert_upto (the folder's alert_at as the page showed it): they also looked at it
+    after a notification, so the bell goes, unless a newer notification came in since."""
     require_session(client)
     _check_browser_mutation(request)
     svc = _svc(request)
     _chat_group(svc, group_id)
     with svc.db.tx() as c:
         c.execute("UPDATE chat_groups SET owner_seen_at=? WHERE id=?", (now_iso(), group_id))
+    if alert_upto:
+        svc.chat.alert_seen(group_id, alert_upto)
     return {"ok": True}
 
 
