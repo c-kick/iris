@@ -2514,6 +2514,10 @@ function chatAttach(el, pane, form, ta) {
   const send = form.querySelector("button[type=submit]");
   const render = () => {
     strip.hidden = !list.length;
+    // as much room at the thread's end as the strip covers, so the lines under it can still be scrolled into view;
+    // only the scrollable length grows, nothing on screen moves
+    el.classList.toggle("has-pending", !!list.length);
+    requestAnimationFrame(() => el.style.setProperty("--pending-h", `${strip.hidden ? 0 : strip.offsetHeight + 8}px`));
     send.disabled = list.some((p) => p.state === "up");
     strip.innerHTML = list.map((p, i) => {
       const thumb = p.state === "ok" && p.file.kind === "image" ? `<img src="${esc(chatFileUrl(p.file.id))}" alt="">` : `<span class="ph" aria-hidden="true"></span>`;

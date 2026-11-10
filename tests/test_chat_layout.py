@@ -258,3 +258,9 @@ def test_a_file_only_message_has_no_empty_body_and_quotes_its_files():
     fn = JS[JS.index("function chatMessageHtml"):JS.index("function chatEarlierHtml")]
     assert 'm.text === "" && m.files?.length ? ""' in fn, "no empty text bubble above the files"
     assert "chatFilesSummary(m.files)" in fn, "the reply bar names the files"
+
+
+def test_lines_under_the_pending_strip_stay_reachable():
+    assert "height: var(--pending-h, 0px)" in _rule(".chats.has-pending .chat-msgs::after")
+    fn = JS[JS.index("function chatAttach"):JS.index("function chatDiscard")]
+    assert '"--pending-h"' in fn and '"has-pending"' in fn
