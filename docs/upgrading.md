@@ -12,7 +12,8 @@ script. A new script also works against an older server (it sends the report aga
 Also: six agent colours instead of four (a new set, so every agent gets a new colour once), so up to six agents in a
 chat at once all differ. Agents are told to notify the owner only when they need them or there is something to see
 or test, not after every edit or commit.
-Pictures lose their metadata when they are posted to a chat (EXIF, XMP and text chunks: where a photo was taken,
+Pictures lose their metadata when they are posted to a chat (EXIF, XMP, IPTC, comments and text chunks, and the
+extra images an iPhone appends to a JPEG: where a photo was taken,
 the camera, comments), without re-encoding; a JPEG keeps only its orientation so it still shows upright. Pictures
 posted before this release keep theirs until they expire. A HEIC or other file that is not shown as a picture is
 stored as it is.

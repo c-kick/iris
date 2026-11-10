@@ -75,3 +75,64 @@ def test_uploads_are_stored_without_gps():
 def test_non_images_are_left_alone():
     data = b"Exif\x00\x00 not a picture"
     assert strip_metadata(data, "application/octet-stream") == data
+
+
+def test_jpeg_drops_everything_after_the_picture_and_between_scans():
+    raw = _jpeg(1)
+    # an iPhone-style second image after the first one's end, with its own EXIF and GPS
+    tail = _jpeg(6).replace(b"PhoneMaker", b"SecondCam!")
+    out = strip_metadata(raw + tail, "image/jpeg")
+    assert out.endswith(b"\xff\xd9") and b"SecondCam!" not in out and out.count(b"\xff\xd8") == 1
+    # MPF (APP2 "MPF\0", the index of those extra images) goes too
+    mpf = b"\xff\xe2" + (4 + 2 + 8).to_bytes(2, "big") + b"MPF\x00" + b"II*\x00\x08\x00\x00\x00"
+    out = strip_metadata(raw[:2] + mpf + raw[2:], "image/jpeg")
+    assert b"MPF\x00" not in out
+    # a progressive JPEG has several scans; metadata between them goes as well
+    im = Image.new("RGB", (64, 48), (90, 30, 160))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", progressive=True, quality=85)
+    prog = buf.getvalue()
+    sos2 = prog.index(b"\xff\xda", prog.index(b"\xff\xda") + 2)
+    sneaky = b"\xff\xfe" + (2 + 9).to_bytes(2, "big") + b"GPS:52,5;"
+    out = strip_metadata(prog[:sos2] + sneaky + prog[sos2:], "image/jpeg")
+    assert b"GPS:52,5;" not in out
+    assert Image.open(io.BytesIO(out)).size == (64, 48)
+    Image.open(io.BytesIO(out)).load()  # still decodes
+
+
+def test_gif_loses_comments_and_xmp_but_keeps_looping():
+    frames = [Image.new("RGB", (6, 6), c) for c in ((255, 0, 0), (0, 0, 255))]
+    buf = io.BytesIO()
+    frames[0].save(buf, "GIF", save_all=True, append_images=frames[1:], loop=0, comment=b"shot at home")
+    gif = buf.getvalue()
+    xmp = b"\x21\xff\x0bXMP DataXMP" + b"\x05where" + b"\x00"
+    k = gif.index(b"\x21\xff\x0bNETSCAPE")  # just before the looping block
+    out = strip_metadata(gif[:k] + xmp + gif[k:], "image/gif")
+    assert b"shot at home" not in out and b"XMP DataXMP" not in out and b"where" not in out
+    assert b"NETSCAPE2.0" in out, "looping kept"
+    g = Image.open(io.BytesIO(out))
+    assert g.n_frames == 2
+
+
+def test_malformed_pictures_are_refused_cleanly_and_fast():
+    import time
+    im = Image.new("RGB", (16, 12), (1, 2, 3))
+    samples = {"image/jpeg": _jpeg(6)}
+    for fmt, ct in (("PNG", "image/png"), ("WEBP", "image/webp"), ("GIF", "image/gif")):
+        buf = io.BytesIO()
+        im.save(buf, fmt)
+        samples[ct] = buf.getvalue()
+    t = time.monotonic()
+    for ct, data in samples.items():
+        for cut in range(1, len(data)):
+            try:
+                strip_metadata(data[:cut], ct)
+            except ValueError:
+                pass
+        for k in range(0, len(data), 7):  # a flipped byte anywhere
+            bad = data[:k] + bytes([data[k] ^ 0xFF]) + data[k + 1:]
+            try:
+                strip_metadata(bad, ct)
+            except ValueError:
+                pass
+    assert time.monotonic() - t < 10

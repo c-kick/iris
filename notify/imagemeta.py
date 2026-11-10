@@ -3,8 +3,10 @@
 EXIF and XMP can hold where a photo was taken (GPS), the device and its serial, comments. They are removed from the
 bytes without decoding the picture, so the pixels stay exactly as they were:
 
-- JPEG: APP1 (EXIF, XMP), APP13 (IPTC) and comment segments go; a minimal EXIF with only the orientation comes back
-  when the photo is stored on its side, so it still shows upright. Colour profiles (APP2) stay.
+- JPEG: APP1 (EXIF, XMP), APP13 (IPTC), MPF and comment segments go, wherever they are, and nothing after the first
+  end-of-image survives; a minimal EXIF with only the orientation comes back when the photo is stored on its side, so
+  it still shows upright. Colour profiles (APP2 ICC) stay.
+- GIF: comments and application blocks go (XMP, ICC), except the one that makes an animation loop.
 - PNG: eXIf and the text chunks (tEXt, zTXt, iTXt, where XMP lives) go.
 - WebP: the EXIF and XMP chunks go, and the extended header no longer announces them.
 
@@ -21,13 +23,24 @@ _WEBP_DROP = {b"EXIF", b"XMP "}
 
 
 def strip_metadata(data: bytes, content_type: str) -> bytes:
+    try:
+        return _strip(data, content_type)
+    except ValueError:
+        raise
+    except (IndexError, struct.error) as e:  # a malformed file is refused, never a server error
+        raise ValueError(f"malformed picture: {e}") from None
+
+
+def _strip(data: bytes, content_type: str) -> bytes:
     if content_type == "image/jpeg":
         return _jpeg(data)
     if content_type == "image/png":
         return _png(data)
     if content_type == "image/webp":
         return _webp(data)
-    return data  # GIF carries no location; everything else is not a picture we keep as one
+    if content_type == "image/gif":
+        return _gif(data)
+    return data  # not a picture we keep as one
 
 
 def _orientation_app1(o: int) -> bytes:
@@ -61,37 +74,119 @@ def _exif_orientation(seg: bytes) -> int:
 
 
 def _jpeg(data: bytes) -> bytes:
+    """Walks the whole file: every scan's picture data is kept, metadata segments go wherever they are (also between
+    the scans of a progressive JPEG), and nothing after the first end-of-image marker survives (iPhone photos append
+    whole second images there, each with its own EXIF and GPS)."""
     if data[:2] != b"\xff\xd8":
         raise ValueError("not a JPEG")
     out = [b"\xff\xd8"]
     orientation = 1
+    scanned = False
+    n = len(data)
     i = 2
-    while i < len(data):
+    while i < n:
         if data[i] != 0xFF:
             raise ValueError("JPEG segment marker expected")
-        marker = data[i + 1]
-        if marker == 0xFF:  # fill byte
+        while i + 1 < n and data[i + 1] == 0xFF:  # fill bytes before a marker
             i += 1
-            continue
-        if marker == 0xDA or marker == 0xD9:  # start of scan (or end): the rest is picture data
-            rest = data[i:]
-            if orientation != 1:
-                out.insert(1, _orientation_app1(orientation))
-            return b"".join(out) + rest
+        if i + 1 >= n:
+            break
+        marker = data[i + 1]
+        if marker == 0xD9:  # end of image: whatever follows is not this picture
+            out.append(b"\xff\xd9")
+            break
         if 0xD0 <= marker <= 0xD7 or marker == 0x01:  # markers without a length
             out.append(data[i:i + 2])
             i += 2
             continue
-        (length,) = struct.unpack(">H", data[i + 2:i + 4])
-        seg = data[i:i + 2 + length]
-        if len(seg) != 2 + length:
+        if i + 4 > n:
             raise ValueError("JPEG segment runs past the end")
+        (length,) = struct.unpack(">H", data[i + 2:i + 4])
+        if length < 2 or i + 2 + length > n:
+            raise ValueError("JPEG segment runs past the end")
+        seg = data[i:i + 2 + length]
+        i += 2 + length
+        if marker == 0xDA:  # start of scan: the header, then entropy-coded data up to the next real marker
+            out.append(seg)
+            j = i
+            while True:
+                j = data.find(b"\xff", j)
+                if j < 0 or j + 1 >= n:
+                    j = n
+                    break
+                nxt = data[j + 1]
+                if nxt == 0x00 or 0xD0 <= nxt <= 0xD7:  # a stuffed 0xFF or a restart marker: still picture data
+                    j += 2
+                    continue
+                break
+            out.append(data[i:j])
+            i = j
+            scanned = True
+            continue
         if marker == 0xE1 and orientation == 1:
             orientation = _exif_orientation(seg[4:])
-        if marker not in _JPEG_DROP:
-            out.append(seg)
-        i += 2 + length
-    raise ValueError("JPEG without picture data")
+        if marker in _JPEG_DROP or (marker == 0xE2 and seg[4:8] == b"MPF\x00"):
+            continue
+        out.append(seg)
+    if not scanned:
+        raise ValueError("JPEG without picture data")
+    if out[-1] != b"\xff\xd9":
+        out.append(b"\xff\xd9")
+    if orientation != 1:
+        out.insert(1, _orientation_app1(orientation))
+    return b"".join(out)
+
+
+def _gif_blocks(data: bytes, i: int) -> int:
+    """The index after a run of GIF data sub-blocks starting at i (size byte, bytes, ..., 0)."""
+    n = len(data)
+    while True:
+        if i >= n:
+            raise ValueError("GIF sub-blocks run past the end")
+        size = data[i]
+        i += 1
+        if size == 0:
+            return i
+        i += size
+
+
+_GIF_KEEP_APPS = (b"NETSCAPE2.0", b"ANIMEXTS1.0")  # looping; every other application block (XMP, ICC...) goes
+
+
+def _gif(data: bytes) -> bytes:
+    if data[:6] not in (b"GIF87a", b"GIF89a") or len(data) < 13:
+        raise ValueError("not a GIF")
+    packed = data[10]
+    i = 13 + (3 * 2 ** ((packed & 7) + 1) if packed & 0x80 else 0)
+    out = [data[:i]]
+    n = len(data)
+    while i < n:
+        b = data[i]
+        if b == 0x3B:  # trailer: nothing after it survives
+            out.append(b"\x3b")
+            return b"".join(out)
+        if b == 0x21:
+            if i + 2 > n:
+                raise ValueError("GIF extension runs past the end")
+            label = data[i + 1]
+            end = _gif_blocks(data, i + 2)
+            keep = label in (0xF9, 0x01) or (label == 0xFF and data[i + 3:i + 14] in _GIF_KEEP_APPS)
+            if keep:
+                out.append(data[i:end])
+            i = end
+            continue
+        if b == 0x2C:  # image descriptor (+ local colour table), LZW code size, picture sub-blocks
+            if i + 10 > n:
+                raise ValueError("GIF image runs past the end")
+            lp = data[i + 9]
+            k = i + 10 + (3 * 2 ** ((lp & 7) + 1) if lp & 0x80 else 0)
+            end = _gif_blocks(data, k + 1)
+            out.append(data[i:end])
+            i = end
+            continue
+        raise ValueError("unknown GIF block")
+    out.append(b"\x3b")
+    return b"".join(out)
 
 
 def _png(data: bytes) -> bytes:
