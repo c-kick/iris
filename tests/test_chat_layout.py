@@ -25,7 +25,7 @@ def test_fyi_and_send_share_one_column_fyi_on_top():
     assert side, "FYI and Send sit together in .compose-side"
     inner = side.group(1)
     assert inner.index('id="chat-fyi"') < inner.index('type="submit"'), "FYI above Send"
-    assert "minmax(0, 1fr) auto;" in _rule(".chat-compose"), "two columns: the field and the FYI/Send column"
+    assert "auto minmax(0, 1fr) auto;" in _rule(".chat-compose"), "paperclip, the field, and the FYI/Send column"
     assert "flex-direction: column" in _rule(".compose-side")
 
 
@@ -235,3 +235,20 @@ def test_a_tap_on_the_chat_box_focuses_it_without_scrolling_the_page():
     assert 'addEventListener("touchmove"' in fit, "a drag or scroll is not a tap"
     # every scripted focus of the box (reply, mention, after send) leaves the page where it is
     assert not re.search(r'(?:ta|#chat-text"\))\.focus\(\)', JS)
+
+
+def test_attaching_files_never_moves_the_thread():
+    assert "position: absolute" in _rule(".chat-pending"), "pending files float over the thread"
+    assert "position: absolute" in _rule(".chat-drop") and "pointer-events: none" in _rule(".chat-drop")
+    fn = JS[JS.index("function chatFilesHtml"):JS.index("function chatMessageHtml")]
+    assert "aspect-ratio:" in fn and 'width="${f.width}" height="${f.height}"' in fn, "an image's box is known before it loads"
+    assert 'loading="lazy"' in fn
+    assert "max-height: 280px" in _rule(".cm-img")
+
+
+def test_attach_paste_and_drop_are_wired():
+    fn = JS[JS.index("function chatAttach"):JS.index("function chatDiscard")]
+    assert 'addEventListener("paste"' in fn and "clipboardData" in fn
+    assert "ondrop" in fn and "ondragover" in fn
+    assert 'method: "PUT"' in fn and '"X-Notify-Admin": "1"' in fn
+    assert 'id="chat-file" multiple' in JS and 'id="chat-attach"' in JS

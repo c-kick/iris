@@ -2002,6 +2002,24 @@ function chatNoticeKind(text) {
   return "";
 }
 
+// files of a message: raster images as previews whose box is reserved from their size (nothing moves when they load),
+// everything else as a download chip; an expired file as a muted chip
+const chatFileUrl = (id) => `/admin/api/chats/files/${encodeURIComponent(id)}`;
+function chatSize(n) {
+  return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MB`;
+}
+function chatFilesHtml(files) {
+  if (!files || !files.length) return "";
+  return `<div class="cm-files">${files.map((f) => {
+    if (f.expired) return `<span class="cm-file expired" title="Files are kept for a limited time">${esc(f.name)} · file expired</span>`;
+    if (f.kind === "image" && f.width && f.height) {
+      // max 280 px high and the bubble's width; the width follows from the height, so the box is known before loading
+      return `<a class="cm-img" href="${esc(chatFileUrl(f.id))}" target="_blank" rel="noopener" title="${esc(f.name)} · ${esc(chatSize(f.size))}" style="aspect-ratio: ${f.width} / ${f.height}; width: min(100%, ${Math.round(Math.min(f.height, 280) * f.width / f.height)}px)"><img src="${esc(chatFileUrl(f.id))}" alt="${esc(f.name)}" width="${f.width}" height="${f.height}" loading="lazy" decoding="async"></a>`;
+    }
+    return `<a class="cm-file" href="${esc(chatFileUrl(f.id))}" download="${esc(f.name)}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 1.5h5l3 3v10H4z M9 1.5v3h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span class="nm">${esc(f.name)}</span><span class="sz">${esc(chatSize(f.size))}</span></a>`;
+  }).join("")}</div>`;
+}
+
 function chatMessageHtml(m, canReply = false) {
   if (m.author === "system") {
     const hr = m.history_request;
@@ -2024,7 +2042,7 @@ function chatMessageHtml(m, canReply = false) {
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
   return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name)}${tag}</div>
-    ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text)}</div>
+    ${quote}${m.text === "" && m.files?.length ? "" : `<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text)}</div>`}${chatFilesHtml(m.files)}
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }
 
@@ -2349,13 +2367,17 @@ async function chatOpenThread(el, key, keep = false) {
     <form class="chat-compose" id="chat-compose" hidden>
       <div class="chat-replying" id="chat-replying" hidden><span class="rq"></span><button type="button" class="btn quiet" id="chat-reply-cancel" aria-label="Cancel reply">✕</button></div>
       <label class="sr" for="chat-text">Message this group</label>
+      <button type="button" class="btn quiet chat-attach" id="chat-attach" aria-label="Attach files" title="Attach files (or paste, or drop them here)"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M10.5 4.5 5.3 9.7a1.5 1.5 0 0 0 2.1 2.1l5.4-5.4a3 3 0 0 0-4.2-4.2L3.2 7.6a4.5 4.5 0 0 0 6.4 6.4l4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+      <input type="file" id="chat-file" multiple hidden>
+      <div class="chat-pending" id="chat-pending" aria-live="polite" hidden></div>
       <textarea id="chat-text" rows="2" placeholder="Message the group (@ to pick who acts)" spellcheck="true" autocorrect="on" autocapitalize="sentences" autocomplete="off" aria-autocomplete="list" aria-controls="chat-at"></textarea>
       <ul class="chat-at" id="chat-at" role="listbox" aria-label="Members to mention" hidden></ul>
       <div class="compose-side"><label class="fyi-toggle" title="A heads-up: everyone reads it, nobody acts on it"><input type="checkbox" id="chat-fyi"> FYI</label>
       <button type="submit" class="btn primary">Send</button></div>
       <div class="form-error" role="alert"></div>
     </form>
-    <div class="chat-readonly hint" id="chat-readonly" hidden>This group is closed. It is read-only.</div>`;
+    <div class="chat-readonly hint" id="chat-readonly" hidden>This group is closed. It is read-only.</div>
+    <div class="chat-drop" id="chat-drop" hidden><span>Drop files to attach them</span></div>`;
   pane.querySelector("#chat-pausebtn").onclick = async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
@@ -2444,10 +2466,13 @@ async function chatOpenThread(el, key, keep = false) {
     if (at.key(e)) return;
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   };
+  const files = chatAttach(el, pane, form, ta);
   form.onsubmit = async (e) => {
     e.preventDefault();
     const text = ta.value.trim();
-    if (!text) return;
+    if (files.busy()) return; // Send waits for uploads
+    const ids = files.ids();
+    if (!text && !ids.length) return;
     const err = form.querySelector(".form-error");
     const btn = form.querySelector("button[type=submit]");
     btn.disabled = true;
@@ -2455,12 +2480,14 @@ async function chatOpenThread(el, key, keep = false) {
     try {
       const payload = chats.replyTo ? { text, in_reply_to: chats.replyTo } : { text };
       if (fyi.checked) payload.fyi = true;
+      if (ids.length) payload.files = ids;
       const res = await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/messages`, payload);
       if (res && res.unknown_mentions && res.unknown_mentions.length) toast(`Nobody here is called ${res.unknown_mentions.map((n) => `@${n}`).join(", ")}: sent as plain text`);
       setReply(null);
       fyi.checked = false;
       ta.value = "";
       chats.composeDraft = "";
+      files.clear();
       grow();
       await chatTick(el);
     } catch (ex) { err.textContent = ex.message; }
@@ -2469,6 +2496,84 @@ async function chatOpenThread(el, key, keep = false) {
   // picking the chat clears its bell; a thread that only reloaded (keep) clears it when the window has focus
   const bell = f.alert && (!keep || document.hasFocus());
   if (g.unread || bell) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen${bell ? `?alert_upto=${encodeURIComponent(f.alert_at)}` : ""}`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
+}
+
+// Attaching files in the composer: the paperclip, pasting an image, dropping files on the thread. Each file is sent
+// as soon as it is picked (one PUT with the raw bytes) and waits on the server until Send names it. The strip of
+// pending files floats above the composer, so the thread never moves.
+const CHAT_FILE_MAX = 10 * 1024 * 1024;
+function chatAttach(el, pane, form, ta) {
+  const gid = chats.currentId;
+  chats.pendingFiles = chats.pendingFiles || {};
+  const list = (chats.pendingFiles[gid] = chats.pendingFiles[gid] || []); // survives a re-render of the thread
+  const strip = form.querySelector("#chat-pending");
+  const input = form.querySelector("#chat-file");
+  const err = form.querySelector(".form-error");
+  const send = form.querySelector("button[type=submit]");
+  const render = () => {
+    strip.hidden = !list.length;
+    send.disabled = list.some((p) => p.state === "up");
+    strip.innerHTML = list.map((p, i) => {
+      const thumb = p.state === "ok" && p.file.kind === "image" ? `<img src="${esc(chatFileUrl(p.file.id))}" alt="">` : `<span class="ph" aria-hidden="true"></span>`;
+      const label = p.state === "up" ? "uploading…" : p.state === "err" ? p.error : chatSize(p.size);
+      return `<span class="pend ${p.state}">${thumb}<span class="nm">${esc(p.name)}</span><span class="sz">${esc(label)}</span><button type="button" class="btn quiet" data-unpend="${i}" aria-label="Remove ${esc(p.name)}">✕</button></span>`;
+    }).join("");
+  };
+  const add = (fileList) => {
+    err.textContent = "";
+    for (const f of fileList) {
+      if (list.length >= 10) { err.textContent = "At most 10 files per message."; break; }
+      const p = { name: f.name || "pasted.png", size: f.size, state: "up" };
+      list.push(p);
+      if (f.size > CHAT_FILE_MAX) { p.state = "err"; p.error = "over 10 MB"; continue; }
+      fetch(`/admin/api/chats/${encodeURIComponent(gid)}/files?name=${encodeURIComponent(p.name)}`, {
+        method: "PUT", credentials: "same-origin", body: f,
+        headers: { "X-Notify-Admin": "1", "Content-Type": f.type || "application/octet-stream" },
+      }).then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(typeof data?.detail === "string" ? data.detail : `upload failed (HTTP ${res.status})`);
+        p.file = data; p.state = "ok";
+      }).catch((ex) => { p.state = "err"; p.error = ex.message; })
+        .finally(() => { if (list.includes(p)) render(); else if (p.file) chatDiscard(gid, p.file.id); });
+    }
+    render();
+  };
+  form.querySelector("#chat-attach").onclick = () => input.click();
+  input.onchange = () => { add([...input.files]); input.value = ""; };
+  ta.addEventListener("paste", (e) => {
+    const fs = [...(e.clipboardData?.files || [])];
+    if (!fs.length) return; // plain text pastes as usual
+    e.preventDefault();
+    add(fs.map((f, i) => (f.name && f.name !== "image.png" ? f : new File([f], `pasted-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}${fs.length > 1 ? `-${i + 1}` : ""}.${(f.type.split("/")[1] || "png").replace("jpeg", "jpg")}`, { type: f.type }))));
+  });
+  strip.onclick = (e) => {
+    const b = e.target.closest("[data-unpend]");
+    if (!b) return;
+    const [p] = list.splice(Number(b.dataset.unpend), 1);
+    if (p?.file) chatDiscard(gid, p.file.id);
+    render();
+  };
+  // drop anywhere on the open thread; the overlay covers it without moving anything
+  const drop = pane.querySelector("#chat-drop");
+  let depth = 0;
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+  pane.ondragenter = (e) => { if (!hasFiles(e) || form.hidden) return; depth++; drop.hidden = false; };
+  pane.ondragleave = () => { if (depth && --depth === 0) drop.hidden = true; };
+  pane.ondragover = (e) => { if (hasFiles(e) && !form.hidden) e.preventDefault(); };
+  pane.ondrop = (e) => {
+    if (!hasFiles(e) || form.hidden) return;
+    e.preventDefault(); depth = 0; drop.hidden = true;
+    add([...e.dataTransfer.files]);
+  };
+  render();
+  return {
+    busy: () => list.some((p) => p.state === "up"),
+    ids: () => list.filter((p) => p.state === "ok").map((p) => p.file.id),
+    clear: () => { list.length = 0; render(); },
+  };
+}
+function chatDiscard(gid, fid) {
+  api("DELETE", `/chats/${encodeURIComponent(gid)}/files/${encodeURIComponent(fid)}`).catch(() => { /* goes after an hour anyway */ });
 }
 
 async function chatToggleEarlier(bar) {

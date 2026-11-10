@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any, Callable
 
@@ -20,6 +21,21 @@ DEFAULT_LARGE_SCOPES: dict[tuple[str, str], frozenset[str]] = {
 # dependency runs (~25x memory), and nothing public (registration, login, callbacks, decide pages, browser
 # push, admin session forms) needs more
 UNAUTHENTICATED_MAX = 64 << 10
+# routes the signed-in admin page sends large bodies to (method, full path pattern, cap): there a valid admin session
+# cookie counts as a credential. Only the owner's chat file upload, a raw body that is never parsed as JSON.
+SESSION_COOKIE = "notify_admin"
+DEFAULT_SESSION_ROUTES: list[tuple[str, "re.Pattern[str]", int]] = [
+    ("PUT", re.compile(r"^/admin/api/chats/[A-Za-z0-9_-]{1,64}/files$"), 10 << 20)]
+
+
+def _cookie(headers: list[tuple[bytes, bytes]], name: str) -> str | None:
+    for k, v in headers:
+        if k.lower() == b"cookie":
+            for part in v.decode("latin-1").split(";"):
+                key, _, val = part.strip().partition("=")
+                if key == name:
+                    return val
+    return None
 
 
 class _Rejected(Exception):
@@ -35,7 +51,9 @@ class BodyLimit:
     def __init__(self, app: ASGIApp, default: int = 1 << 20, routes: dict[tuple[str, str], int] | None = None,
                  large: int = 1 << 20, large_concurrency: int = 2, get_auth: Callable[[], Any] | None = None,
                  read_deadline: float = 60.0, unauthenticated_max: int = UNAUTHENTICATED_MAX,
-                 large_scopes: dict[tuple[str, str], frozenset[str]] | None = None):
+                 large_scopes: dict[tuple[str, str], frozenset[str]] | None = None,
+                 session_routes: list[tuple[str, "re.Pattern[str]", int]] | None = None,
+                 session_ok: Callable[[str | None], bool] | None = None):
         self.app = app
         self.default = default
         self.routes = DEFAULT_ROUTES if routes is None else routes
@@ -45,6 +63,8 @@ class BodyLimit:
         self.read_deadline = read_deadline
         self.unauthenticated_max = unauthenticated_max
         self.large_scopes = DEFAULT_LARGE_SCOPES if large_scopes is None else large_scopes
+        self.session_routes = DEFAULT_SESSION_ROUTES if session_routes is None else session_routes
+        self.session_ok = session_ok  # without it no session route is open
         self._sem: asyncio.Semaphore | None = None
 
     def _semaphore(self) -> asyncio.Semaphore:
@@ -66,6 +86,10 @@ class BodyLimit:
         has_auth = auth is not None and (self.get_auth is None or who is not None)
         need = self.large_scopes.get((scope["method"], scope["path"]))
         large_ok = has_auth and (need is None or who is None or bool({getattr(s, "value", s) for s in who.scopes} & need))
+        if auth is None and self.session_ok is not None:
+            route = next((c for m, rx, c in self.session_routes if m == scope["method"] and rx.match(scope["path"])), None)
+            if route is not None and self.session_ok(_cookie(headers, SESSION_COOKIE)):
+                cap, has_auth, large_ok = route, True, True
         size = int(declared) if declared is not None and declared.isdigit() else None
         if size is not None and size > cap:
             await self._reject(cap, scope, receive, send)

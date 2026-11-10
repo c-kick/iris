@@ -10,6 +10,7 @@ Origin header when present.
 from __future__ import annotations
 
 import asyncio
+import re
 import secrets
 import time
 from urllib.parse import urlsplit
@@ -1026,6 +1027,11 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
                     m["reply_excerpt"] = reply_excerpt(
                         q["text"], None if q["text"].strip() else svc.chat.message_files([q["id"]]).get(q["id"]))
         out.append(m)
+    if client.via_session and out:  # file names are what people wrote: like text, for the signed-in page only
+        files = svc.chat.files.for_messages([m["id"] for m in out])
+        for m in out:
+            if m["id"] in files:
+                m["files"] = files[m["id"]]
     pending = [h["id"] for h in svc.db.query(
         "SELECT id FROM chat_history_requests WHERE group_id=? AND state='pending'", (group_id,))]
     # ticks for every message of the group, so ones already on screen update too (counts only, no text)
@@ -1039,9 +1045,10 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
 
 class ChatPostIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    text: str
+    text: str = ""
     in_reply_to: str | None = None
     fyi: bool = False
+    files: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list, max_length=10)  # pending upload ids
 
 
 @router.post("/api/chats/{group_id}/messages", status_code=201)
@@ -1053,11 +1060,77 @@ async def chat_post(group_id: str, body: ChatPostIn, request: Request,
     if _chat_group(svc, group_id)["state"] != "open":
         raise HTTPException(409, "group is closed")
     try:
-        return svc.chat.post_owner(group_id, body.text, body.in_reply_to, body.fyi)
+        return svc.chat.post_owner(group_id, body.text, body.in_reply_to, body.fyi, files=body.files or None)
     except NotFound as e:
         raise HTTPException(404, str(e)) from e
     except Invalid as e:
         raise HTTPException(409 if "closed" in str(e) else 422, str(e)) from e
+
+
+# ------------------------------------------------------------------ chat files (owner)
+
+FILE_MAX = 10 << 20  # one upload; BodyLimit lets a signed-in page send this much to the upload route only
+FILE_CSP = "default-src 'none'; sandbox"
+
+
+@router.put("/api/chats/{group_id}/files", status_code=201)
+async def chat_file_upload(group_id: str, request: Request, name: str = Query("", max_length=255),
+                           client: Client = Depends(admin)) -> dict[str, Any]:
+    """One file per request, the raw bytes as the body (no multipart): it waits as a pending file until a post
+    names it. The X-Notify-Admin header (checked in `admin`) makes this a preflighted request, like the JSON routes."""
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    if _chat_group(svc, group_id)["state"] != "open":
+        raise HTTPException(409, "group is closed")
+    data = await request.body()
+    if len(data) > FILE_MAX:
+        raise HTTPException(413, f"a file is at most {FILE_MAX >> 20} MiB")
+    from .chat_files import NewFile
+    try:
+        return await asyncio.to_thread(svc.chat.files.add_pending, group_id,
+                                       NewFile(filename=name or None,
+                                               content_type=request.headers.get("content-type"), data=data))
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+
+
+@router.delete("/api/chats/{group_id}/files/{file_id}", status_code=204)
+async def chat_file_discard(group_id: str, file_id: str, request: Request,
+                            client: Client = Depends(admin)) -> Response:
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    _chat_group(svc, group_id)
+    try:
+        svc.chat.files.discard_pending(group_id, file_id)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    return Response(status_code=204)
+
+
+@router.get("/api/chats/files/{file_id}")
+async def chat_file_get(file_id: str, request: Request, client: Client = Depends(admin)) -> Response:
+    """The bytes, for the signed-in page only. Only a sniffed raster image is shown inline (with its sniffed type);
+    everything else downloads. nosniff and a sandboxing CSP, so a file can never run as a page of this origin."""
+    require_session(client)
+    svc = _svc(request)
+    try:
+        f = svc.chat.files.owner_get(file_id)
+    except NotFound as e:
+        raise HTTPException(404, "file not found") from e
+    if f.expired or f.data is None:
+        raise HTTPException(410, "file expired")
+    inline = f.kind == "image"
+    from urllib.parse import quote
+    safe = re.sub(r'[\x00-\x1f\x7f"\\\\;]', "_", f.name or "file")  # one header line, one quoted name
+    ascii_name = safe.encode("ascii", "replace").decode().replace("?", "_")
+    disp = f"{'inline' if inline else 'attachment'}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(safe)}"
+    return Response(f.data, media_type=f.type if inline else "application/octet-stream", headers={
+        "Content-Disposition": disp, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": FILE_CSP,
+        "Cache-Control": "private, max-age=3600", "Cross-Origin-Resource-Policy": "same-origin"})
 
 
 @router.post("/api/chats/{group_id}/seen")
