@@ -315,3 +315,23 @@ def test_page_draws_an_envelope_for_an_email():
     row = js[js.index("function chatGroupRow"):js.index("function chatGroupRow") + 1200]
     assert 'g.alert_kind === "email"' in row and "CHAT_ENVELOPE" in row
     assert "mail:" in js[js.index("const CHAT_NOTICE_ICONS"):js.index("function chatNoticeKind")]
+
+
+def test_an_alert_from_before_the_upgrade_counts_as_a_push(svc):
+    a = join(svc, "s1")
+    gid = a["group_id"]
+    svc.db.conn.execute("UPDATE chat_groups SET alert_at='2026-11-10T10:00:00Z', alert_kind=NULL WHERE id=?", (gid,))
+    assert svc.chat.note_notification(AGENT, a["member_handle"], kinds=["email"], title="Report", deliveries=1)
+    assert alert_kind(svc, gid) == "both", "the older unseen push keeps the bell"
+
+
+def test_envelope_only_for_an_email_notice_whatever_its_title():
+    import re
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "notify/admin_ui/app.js").read_text()
+    rx = re.search(r'\(/(\^\[\^:\]\* \(sent\|scheduled\) an email\(:\|\$\| for\))/\.test', js).group(1)
+    mail = re.compile(rx.replace("\\/", "/"))
+    assert mail.search("Claude Wren sent an email: Deploy push failed")
+    assert mail.search("Claude Wren scheduled an email for 2026-11-11 09:00")
+    assert not mail.search("Claude Wren sent a push notification: an email: x")
+    assert not mail.search("Claude Wren sent a push notification and an email: Report")

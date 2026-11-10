@@ -63,3 +63,12 @@ def test_page_shows_tmux_in_the_member_list():
     js = (Path(__file__).resolve().parent.parent / "notify/admin_ui/app.js").read_text()
     fn = js[js.index("function chatMembersHtml"):js.index("function chatNameStyle")]
     assert "m.tmux" in fn and "esc(m.tmux)" in fn
+
+
+def test_tmux_is_hidden_where_text_is(chatlive):  # noqa: F811
+    from notify.admin import _group_out
+    c = chatlive.client("hosta")
+    j = c.post("/v1/chat/join", json={"kind": "claude", "session_id": "s1", "folder": "/srv/app"}).json()
+    c.post("/v1/chat/status", json={"kind": "claude", "session_id": "s1", "status": "busy", "tmux": "secret-proj:1.0"})
+    g = chatlive.service.db.one("SELECT * FROM chat_groups WHERE id=?", (j["group_id"],))
+    assert _group_out(chatlive.service, g, False)["members"][0]["tmux"] is None

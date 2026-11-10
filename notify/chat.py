@@ -571,9 +571,10 @@ class Chat:
             mid = self._add_message(c, member["group_id"], "system", None, text, kind="alert")
             if not send_at:
                 kind = "email" if set(use) == {"email"} else "push" if set(use) == {"push"} else "both"
-                c.execute("UPDATE chat_groups SET alert_kind=CASE WHEN alert_at IS NULL OR alert_kind IS NULL"
-                          " OR alert_kind=? THEN ? ELSE 'both' END, alert_at=? WHERE id=?",
-                          (kind, kind, iso(self.now()), member["group_id"]))
+                # an unseen alert from before 0.21.0 has no kind: it was a push
+                c.execute("UPDATE chat_groups SET alert_kind=CASE WHEN alert_at IS NULL THEN ?"
+                          " WHEN COALESCE(alert_kind, 'push')=? THEN ? ELSE 'both' END, alert_at=? WHERE id=?",
+                          (kind, kind, kind, iso(self.now()), member["group_id"]))
             self._event(c, "group.notification", "hnl-notify",
                         {"group_id": member["group_id"], "message_id": mid, "member_id": member["id"],
                          "scheduled": bool(send_at)})

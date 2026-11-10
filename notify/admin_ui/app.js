@@ -2122,7 +2122,7 @@ function chatMessageHtml(m, canReply = false, names = chats.names) {
       ? `<span class="req-reason">Reason: ${esc(hr.reason ?? "hidden")}</span><span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
       : "";
     // a notice of an email only (no push in it): the envelope; any other notification notice: the bell
-    const kind = m.kind === "alert" ? (/ (sent|scheduled) an email\b/.test(m.text ?? "") && !/push/.test(m.text ?? "") ? "mail" : "alert")
+    const kind = m.kind === "alert" ? (/^[^:]* (sent|scheduled) an email(:|$| for)/.test(m.text ?? "") ? "mail" : "alert")
       : chatNoticeKind(m.text);
     const icon = kind ? `<svg class="notice-ico ${kind}" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${CHAT_NOTICE_ICONS[kind]}</svg>` : "";
     return `<div class="cm sys${ask ? " ask" : ""}${kind ? ` notice-${kind}` : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${icon}${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
