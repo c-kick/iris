@@ -549,6 +549,7 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 /* one line whatever the label holds ("Claude · Fable 5.2" next to a claims button): the row never grows */
 .cmem small { color: var(--faint); font-size: .72rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cmem .sub .model { color: var(--ink); }
+.cmem .sub .tmux { font-family: var(--mono, ui-monospace, monospace); font-size: .72rem; }
 .cmem small .km { display: none; }
 .chat-roster .cmem small .km { display: inline; }
 .chat-roster .cmem .sub .model { display: none; }

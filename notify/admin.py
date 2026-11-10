@@ -901,7 +901,7 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
                         "status_since": v.get("since"), "quiet_minutes": v.get("quiet_minutes"),
                         "claims": len(claims.get(m["id"], [])), "oldest_claim": (claims.get(m["id"]) or [None])[0],
                         "intent": m["intent"] if show_text else None,
-                        "model": model_label(m["model"]), "model_id": m["model"]})
+                        "model": model_label(m["model"]), "model_id": m["model"], "tmux": m["tmux"]})
     presences = ([{"kind": p["kind"], "since": p["started_at"]} for p in svc.db.query(
         "SELECT kind, started_at FROM chat_presence WHERE host=? AND folder=? ORDER BY rowid", (g["host"], g["folder"]))]
         if g["state"] == "open" else [])

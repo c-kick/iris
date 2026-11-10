@@ -2007,6 +2007,7 @@ function chatMembersHtml(g) {
     // the model leads the one-line status of the side list (the ellipsis there cuts the plan text first, so the row
     // keeps one height); the phone roster wraps its status, so there the model sits on the name line instead (.km)
     const sub = (m.model ? `<span class="model"${m.model_id ? ` title="${esc(m.model_id)}"` : ""}>${esc(m.model)} · </span>` : "")
+      + (m.tmux ? `<span class="tmux" title="tmux session:window.pane">tmux ${esc(m.tmux)} · </span>` : "")
       + [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
         m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
     const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";

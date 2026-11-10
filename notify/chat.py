@@ -106,6 +106,15 @@ def clean_model(model: Any) -> str | None:
     return model if isinstance(model, str) and MODEL_RE.match(model) else None
 
 
+# tmux "#S:#I.#P": a session name (no control characters, no ":" or "."), window and pane numbers
+TMUX_RE = re.compile(r"^[^\x00-\x1f\x7f:.]{1,40}:\d{1,4}\.\d{1,4}$")
+
+
+def clean_tmux(value: Any) -> str | None:
+    """Where a session runs in tmux, as its hook reports it, or None for anything else."""
+    return value if isinstance(value, str) and TMUX_RE.match(value) else None
+
+
 def model_label(model: str | None) -> str | None:
     """A model id as people say it: claude-fable-5-2 → Fable 5.2, gpt-6.1-sol → Sol 6.1. An id with no name in
     it (gpt-5, o3) is shown as it is."""
@@ -409,11 +418,12 @@ class Chat:
         return out
 
     def set_status(self, client: Client, *, kind: str, session_id: str, status: str,
-                   model: str | None = None) -> None:
+                   model: str | None = None, tmux: str | None = None) -> None:
         """A session's hook reports busy / waiting / free, or an "active" ping (tool use). The member is found by the
         client's host + kind + session id, so the hook needs no handle. No message, no wake, no event.
         model: the model the session runs now, as its hook read it; anything that is not a model id is ignored."""
         model = clean_model(model)
+        tmux = clean_tmux(tmux)
         host = self._host(client)
         if status not in (*STATUSES, "active"):
             raise Invalid("status must be busy, waiting, free or active")
@@ -447,6 +457,8 @@ class Chat:
                           (status, now, now, m["id"]))
             if model is not None:
                 c.execute(f"UPDATE {table} SET model=? WHERE id=? AND model IS NOT ?", (model, m["id"], model))
+            if tmux is not None:
+                c.execute(f"UPDATE {table} SET tmux=? WHERE id=? AND tmux IS NOT ?", (tmux, m["id"], tmux))
         if back:
             self.svc._after_commit()
 

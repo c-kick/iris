@@ -369,6 +369,8 @@ class Database:
         # model its author ran when it was written
         self._add_missing_columns({"chat_members": {"model": "TEXT"}, "chat_presence": {"model": "TEXT"},
                                    "chat_messages": {"model": "TEXT"}})
+        # 0.21.0: where the session runs in tmux (session:window.pane), from its hook
+        self._add_missing_columns({"chat_members": {"tmux": "TEXT"}, "chat_presence": {"tmux": "TEXT"}})
         if not had_adhoc:  # 0.14.0: a group open at the upgrade stays open as an ad-hoc group until it empties
             self.conn.execute("UPDATE chat_groups SET adhoc=1 WHERE state='open'")
         self._name_open_members()

@@ -430,11 +430,31 @@ def session_model(hook: dict[str, Any]) -> str | None:
     return m if isinstance(m, str) and MODEL_RE.match(m) else None
 
 
-def post_status(base: str, token: str, body: dict[str, Any], model: str | None) -> int:
-    """Report the status, with the model when known. A server from before 0.21.0 refuses the unknown field
-    (422): the report is then sent again without it, so a newer script never breaks an older server."""
-    if model:
-        code, _ = post(base, token, "/v1/chat/status", {**body, "model": model}, STATE_TIMEOUT)
+TMUX_RE = re.compile(r"^[^\x00-\x1f\x7f:.]{1,40}:\d{1,4}\.\d{1,4}$")
+
+
+def session_tmux() -> str | None:
+    """Where this session runs in tmux ("session:window.pane"), or None outside tmux. The hook inherits the agent's
+    environment, so TMUX/TMUX_PANE name its pane; one quick tmux call (1 s at most) reads its place."""
+    pane = os.environ.get("TMUX_PANE")
+    if not os.environ.get("TMUX") or not pane:
+        return None
+    try:
+        p = subprocess.run(["tmux", "display-message", "-p", "-t", pane, "#S:#I.#P"], capture_output=True,
+                           text=True, timeout=1)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    value = p.stdout.strip()
+    return value if p.returncode == 0 and TMUX_RE.match(value) else None
+
+
+def post_status(base: str, token: str, body: dict[str, Any], model: str | None, tmux: str | None = None) -> int:
+    """Report the status, with the model and the tmux place when known. A server from before 0.21.0 refuses the
+    unknown fields (422): the report is then sent again without them, so a newer script never breaks an older
+    server."""
+    extra = {k: v for k, v in (("model", model), ("tmux", tmux)) if v}
+    if extra:
+        code, _ = post(base, token, "/v1/chat/status", {**body, **extra}, STATE_TIMEOUT)
         if code != 422:
             return code
     code, _ = post(base, token, "/v1/chat/status", body, STATE_TIMEOUT)
@@ -467,7 +487,7 @@ def do_state(args: argparse.Namespace, hook: dict[str, Any]) -> int:
             status = "busy"  # the turn ended, but the session still waits on its own background command
     base, token = settings(args.url, args.token_file)
     body = {"kind": args.agent, "session_id": sid, "status": status}  # the session id finds the member
-    code = post_status(base, token, body, session_model(hook))
+    code = post_status(base, token, body, session_model(hook), session_tmux())
     if announce:
         announce_notification(args, hook, sid)
     if code not in (204, 404):
