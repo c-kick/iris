@@ -136,3 +136,12 @@ def test_malformed_pictures_are_refused_cleanly_and_fast():
             except ValueError:
                 pass
     assert time.monotonic() - t < 10
+
+
+def test_jpeg_keeps_only_what_decodes_and_colours_the_picture():
+    raw = _jpeg(1)
+    app5 = b"\xff\xe5" + (2 + 10).to_bytes(2, "big") + b"VENDOR-GPS"
+    icc = b"\xff\xe2" + (2 + 14).to_bytes(2, "big") + b"ICC_PROFILE\x00\x01\x01"
+    out = strip_metadata(raw[:2] + app5 + icc + raw[2:], "image/jpeg")
+    assert b"VENDOR-GPS" not in out and b"ICC_PROFILE\x00" in out
+    Image.open(io.BytesIO(out)).load()

@@ -3,8 +3,9 @@
 EXIF and XMP can hold where a photo was taken (GPS), the device and its serial, comments. They are removed from the
 bytes without decoding the picture, so the pixels stay exactly as they were:
 
-- JPEG: APP1 (EXIF, XMP), APP13 (IPTC), MPF and comment segments go, wherever they are, and nothing after the first
-  end-of-image survives; a minimal EXIF with only the orientation comes back when the photo is stored on its side, so
+- JPEG: only what decodes and colours the picture is kept (frame headers, tables, scans, JFIF, an ICC profile,
+  Adobe's colour transform); every other segment goes (EXIF, XMP, IPTC, MPF, comments, unknown ones), wherever it is,
+  and nothing after the first end-of-image survives; a minimal EXIF with only the orientation comes back when the photo is stored on its side, so
   it still shows upright. Colour profiles (APP2 ICC) stay.
 - GIF: comments and application blocks go (XMP, ICC), except the one that makes an animation loop.
 - PNG: eXIf and the text chunks (tEXt, zTXt, iTXt, where XMP lives) go.
@@ -17,7 +18,19 @@ from __future__ import annotations
 
 import struct
 
-_JPEG_DROP = {0xE1, 0xED, 0xFE}  # APP1 (EXIF, XMP), APP13 (IPTC), COM
+# what a JPEG needs to decode and colour-manage: frame headers (SOF0-15 without C4/C8/CC), Huffman and arithmetic
+# tables, quantisation tables, restart interval, expand reference; of the APPn segments only JFIF, an ICC profile and
+# Adobe's colour transform. Everything else (EXIF, XMP, IPTC, MPF, maker notes, JUMBF, comments, unknown) goes.
+_JPEG_TABLES = {0xC4, 0xCC, 0xDB, 0xDD, 0xDF}
+_JPEG_APPS = {0xE0: (b"JFIF\x00", b"JFXX\x00"), 0xE2: (b"ICC_PROFILE\x00",), 0xEE: (b"Adobe",)}
+
+
+def _jpeg_keeps(marker: int, body: bytes) -> bool:
+    if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+        return True  # a frame header
+    if marker in _JPEG_TABLES:
+        return True
+    return any(body.startswith(sig) for sig in _JPEG_APPS.get(marker, ()))
 _PNG_DROP = {b"eXIf", b"tEXt", b"zTXt", b"iTXt"}
 _WEBP_DROP = {b"EXIF", b"XMP "}
 
@@ -125,9 +138,8 @@ def _jpeg(data: bytes) -> bytes:
             continue
         if marker == 0xE1 and orientation == 1:
             orientation = _exif_orientation(seg[4:])
-        if marker in _JPEG_DROP or (marker == 0xE2 and seg[4:8] == b"MPF\x00"):
-            continue
-        out.append(seg)
+        if _jpeg_keeps(marker, seg[4:]):
+            out.append(seg)
     if not scanned:
         raise ValueError("JPEG without picture data")
     if out[-1] != b"\xff\xd9":
