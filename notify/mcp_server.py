@@ -480,9 +480,14 @@ def build_mcp(get_service: Any) -> FastMCP:
         _need(client, Scope.chat)
         if not isinstance(file_id, str) or len(file_id) > 64 or offset < 0 or (limit is not None and limit < 1):
             raise ToolError("invalid request: file_id, offset >= 0 and limit >= 1 are required")
-        stored = await _chat_call(client, svc().chat.files.member_get, member_handle, file_id)
-        # decoding and scaling an image is CPU and memory work: never on the event loop
-        view = await call(asyncio.to_thread, svc().chat.files.for_agent, stored, offset, limit)
+        from .fetchgate import FILE_FETCHES, Busy
+        try:
+            async with FILE_FETCHES.slot():  # a whole file in memory: a few at a time across all file fetches
+                stored = await _chat_call(client, svc().chat.files.member_get, member_handle, file_id)
+                # decoding and scaling an image is CPU and memory work: never on the event loop
+                view = await call(asyncio.to_thread, svc().chat.files.for_agent, stored, offset, limit)
+        except Busy as e:
+            raise ToolError(str(e)) from None
         head = (f"File {stored.id} · {_one_line(stored.name)} · {_one_line(stored.type)} · {stored.size} bytes. "
                 f"{FILE_RULE}" + (f"\n{view.note}" if view.note else ""))
         if view.kind == "image" and view.image is not None:

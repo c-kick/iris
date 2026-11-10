@@ -135,12 +135,24 @@ async def chat_file(file_id: str, request: Request, handle: str = Header(alias="
         return Response(status_code=404)
     chat = service(request).chat
     chat.check_handle_host(client, handle)  # same host binding as the MCP tools
-    f = await asyncio.to_thread(chat.files.member_get, handle, file_id)
+    from starlette.background import BackgroundTask
+    from .fetchgate import BUSY_HEADERS, FILE_FETCHES, Busy
+    try:
+        release = await FILE_FETCHES.acquire()  # held until the body is sent
+    except Busy as e:
+        return Response(content=str(e), status_code=503, headers=BUSY_HEADERS)
+    try:
+        f = await asyncio.to_thread(chat.files.member_get, handle, file_id)
+    except BaseException:
+        await release()
+        raise
     if f.expired or f.data is None:
+        await release()
         return Response(status_code=410)
     return Response(content=f.data, media_type="application/octet-stream", headers={
         "Content-Disposition": f"attachment; filename*=UTF-8''{quote(f.name or 'file', safe='')}",
-        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "X-Chat-File-Type": _header_safe(f.type)})
+        "X-Content-Type-Options": "nosniff", "Cache-Control": "no-store", "X-Chat-File-Type": _header_safe(f.type)},
+        background=BackgroundTask(release))
 
 
 def _header_safe(value: str | None) -> str:

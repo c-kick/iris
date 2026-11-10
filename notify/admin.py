@@ -1120,17 +1120,29 @@ async def chat_file_get(file_id: str, request: Request, client: Client = Depends
     everything else downloads. nosniff and a sandboxing CSP, so a file can never run as a page of this origin."""
     require_session(client)
     svc = _svc(request)
+    # an id never changes its bytes: the id is the ETag, and the browser asks again each time (no-cache), so a
+    # signed-out page shows nothing from its cache while an unchanged file costs only a 304, without loading it
+    etag = f'"{file_id}"'
+    if request.headers.get("if-none-match") == etag:
+        row = svc.db.one("SELECT purged_at FROM chat_files WHERE id=? AND data IS NOT NULL", (file_id,))
+        if row is not None and row["purged_at"] is None:
+            return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+    from starlette.background import BackgroundTask
+    from .fetchgate import BUSY_HEADERS, FILE_FETCHES, Busy
+    try:
+        release = await FILE_FETCHES.acquire()  # held until the body is sent: that is when the bytes leave memory
+    except Busy as e:
+        raise HTTPException(503, str(e), headers=BUSY_HEADERS) from e
     try:
         f = svc.chat.files.owner_get(file_id)
+        if f.expired or f.data is None:
+            raise HTTPException(410, "file expired")
     except NotFound as e:
+        await release()
         raise HTTPException(404, "file not found") from e
-    if f.expired or f.data is None:
-        raise HTTPException(410, "file expired")
-    # an id never changes its bytes: the id is the ETag, and the browser asks again each time (no-cache), so a
-    # signed-out page shows nothing from its cache while an unchanged file costs only a 304
-    etag = f'"{f.id}"'
-    if request.headers.get("if-none-match") == etag:
-        return Response(status_code=304, headers={"ETag": etag, "Cache-Control": "private, no-cache"})
+    except BaseException:
+        await release()
+        raise
     inline = f.kind == "image"
     from urllib.parse import quote
     safe = re.sub(r'[\x00-\x1f\x7f"\\\\;]', "_", f.name or "file")  # one header line, one quoted name
@@ -1138,7 +1150,8 @@ async def chat_file_get(file_id: str, request: Request, client: Client = Depends
     disp = f"{'inline' if inline else 'attachment'}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(safe)}"
     return Response(f.data, media_type=f.type if inline else "application/octet-stream", headers={
         "Content-Disposition": disp, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": FILE_CSP,
-        "Cache-Control": "private, no-cache", "ETag": etag, "Cross-Origin-Resource-Policy": "same-origin"})
+        "Cache-Control": "private, no-cache", "ETag": etag, "Cross-Origin-Resource-Policy": "same-origin"},
+        background=BackgroundTask(release))
 
 
 @router.post("/api/chats/{group_id}/seen")
