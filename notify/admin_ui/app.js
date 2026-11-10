@@ -431,7 +431,7 @@ function render() {
       <main class="main" id="main"></main>
     </div>`;
   root.querySelectorAll("[data-nav]").forEach((b) => (b.onclick = () => goTo(b.dataset.nav)));
-  root.querySelectorAll("[data-signout]").forEach((b) => (b.onclick = async () => { await api("POST", "/logout"); boot(); }));
+  root.querySelectorAll("[data-signout]").forEach((b) => (b.onclick = async () => { await api("POST", "/logout"); chatDraftsForget(); boot(); }));
   root.querySelector('.nav [aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "center" });
   const main = document.getElementById("main");
   VIEWS[section](main);
@@ -1782,7 +1782,7 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 
 // ---------------------------------------------------------------- chats
 
-const chats = { colors: {}, folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "", replyTo: null, msgs: {} };
+const chats = { colors: {}, folders: [], selected: null, currentId: null, lastId: null, timer: null, replyTo: null, msgs: {} };
 // The Chats page covers exactly what the viewer can see. visualViewport shrinks when a phone keyboard
 // opens (100dvh does not on iOS), and iOS also slides the visible area down (offsetTop) to show the
 // field; the page is pinned to that area (top + height), so the composer sits right above the keyboard.
@@ -1862,6 +1862,38 @@ if (window.visualViewport) {
   document.addEventListener("focusout", () => setTimeout(fit, 50)); // keyboard gone: back to the top
   fit();
 }
+// Unsent text is never lost by leaving: one draft per chat, kept in this browser (localStorage) as it is typed and
+// put back when the chat opens, removed once sent or on sign-out. Where storage is blocked it is kept in memory and
+// leaving the page asks first; the same goes for files that are attached but not sent (they cannot be kept).
+const DRAFT_KEY = "iris-draft:";
+const DRAFT_DAYS = 14;
+const chatDrafts = { mem: {}, stored: true };
+function chatDraftGet(gid) {
+  if (gid in chatDrafts.mem) return chatDrafts.mem[gid];
+  try {
+    const d = JSON.parse(localStorage.getItem(DRAFT_KEY + gid) || "null");
+    if (d && typeof d.t === "string" && Date.now() - d.at < DRAFT_DAYS * 864e5) return (chatDrafts.mem[gid] = d.t);
+    localStorage.removeItem(DRAFT_KEY + gid);
+  } catch { /* storage blocked: memory only */ }
+  return "";
+}
+function chatDraftSet(gid, text) {
+  chatDrafts.mem[gid] = text;
+  try {
+    if (text.trim()) localStorage.setItem(DRAFT_KEY + gid, JSON.stringify({ t: text, at: Date.now() }));
+    else localStorage.removeItem(DRAFT_KEY + gid);
+    chatDrafts.stored = true;
+  } catch { chatDrafts.stored = false; }
+}
+function chatDraftsForget() {
+  chatDrafts.mem = {};
+  try { Object.keys(localStorage).filter((k) => k.startsWith(DRAFT_KEY)).forEach((k) => localStorage.removeItem(k)); } catch { /* blocked */ }
+}
+addEventListener("beforeunload", (e) => {
+  const unsavedText = !chatDrafts.stored && Object.values(chatDrafts.mem).some((t) => t.trim());
+  const files = Object.values(chats.pendingFiles || {}).some((l) => l.length);
+  if (unsavedText || files) { e.preventDefault(); e.returnValue = ""; }
+});
 const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
 const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
 const CHAT_ACTIVE_MS = 10 * 60 * 1000; // the owner counts as watching this long after the last input
@@ -2458,9 +2490,10 @@ async function chatOpenThread(el, key, keep = false) {
   }
   const form = pane.querySelector("#chat-compose");
   const ta = form.querySelector("textarea");
-  ta.value = chats.composeDraft;
+  const draftFor = chats.currentId;
+  ta.value = chatDraftGet(draftFor);
   const grow = () => { ta.style.height = "auto"; if (ta.value) ta.style.height = `${ta.scrollHeight + 2}px`; };
-  ta.oninput = () => { chats.composeDraft = ta.value; grow(); };
+  ta.oninput = () => { chatDraftSet(draftFor, ta.value); grow(); };
   grow();
   const at = chatAtPicker(el, ta, form.querySelector("#chat-at"));
   const fyi = form.querySelector("#chat-fyi");
@@ -2491,7 +2524,7 @@ async function chatOpenThread(el, key, keep = false) {
       setReply(null);
       fyi.checked = false;
       ta.value = "";
-      chats.composeDraft = "";
+      chatDraftSet(draftFor, "");
       files.sent(going);
       grow();
       await chatTick(el);

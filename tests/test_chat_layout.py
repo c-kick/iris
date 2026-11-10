@@ -272,3 +272,12 @@ def test_pending_files_review_fixes():
     assert '"over 10 MB in total"' in fn, "the server keeps 10 MiB pending: refuse before it drops one"
     assert "chatDropRoom" in JS[JS.index("async function chatTickOnce"):], "the room goes with new content, not on its own"
     assert 'getData("text/plain")' in fn, "pasted text wins over a picture of it"
+
+
+def test_unsent_text_survives_leaving_and_stays_with_its_chat():
+    assert "composeDraft" not in JS, "one draft per chat, never a shared one"
+    fn = JS[JS.index("const DRAFT_KEY"):JS.index("const chatUnread")]
+    assert "localStorage.setItem(DRAFT_KEY + gid" in fn and "catch { chatDrafts.stored = false; }" in fn
+    assert 'addEventListener("beforeunload"' in fn, "where storage is blocked, or files are pending, leaving asks first"
+    assert "chatDraftsForget(); boot();" in JS, "sign-out removes the drafts"
+    assert "ta.oninput = () => { chatDraftSet(draftFor, ta.value)" in JS
