@@ -360,6 +360,28 @@ def test_files_of_an_earlier_session_need_a_used_history_approval(svc):
         svc.chat.files.member_get(b["member_handle"], f["id"])
 
 
+def test_history_approval_covers_only_what_the_history_showed(svc):
+    old = join(svc, "s0")
+    stale = svc.chat.post(old["member_handle"], "long ago", files=[nf("old.txt", b"old")])["files"][0]
+    svc.chat.leave(old["member_handle"])
+    with svc.db.tx() as c:  # closed longer ago than group_history reaches back
+        c.execute("UPDATE chat_groups SET closed_at=? WHERE id=?", (iso(utcnow() - timedelta(days=8)), old["group_id"]))
+    a = join(svc, "s1")
+    recent = svc.chat.post(a["member_handle"], "recent", files=[nf("new.txt", b"new")])["files"][0]
+    svc.chat.leave(a["member_handle"])
+    elsewhere = join(svc, "s8", folder="/srv/other")
+    foreign = svc.chat.post(elsewhere["member_handle"], "x", files=[nf("f.txt", b"f")])["files"][0]
+    svc.chat.leave(elsewhere["member_handle"])
+    b = join(svc, "s2")
+    svc.chat.decide_history(svc.chat.history(b["member_handle"], "why")["request_id"], True)
+    shown = {m["id"] for m in svc.chat.history(b["member_handle"])["messages"]}
+    assert svc.db.scalar("SELECT message_id FROM chat_files WHERE id=?", (recent["id"],)) in shown
+    assert svc.chat.files.member_get(b["member_handle"], recent["id"]).data == b"new"
+    for fid in (stale["id"], foreign["id"]):
+        with pytest.raises(NotFound):
+            svc.chat.files.member_get(b["member_handle"], fid)
+
+
 # ------------------------------------------------------------------ what an agent is handed
 def test_for_agent_text_pages_on_line_boundaries(svc, monkeypatch):
     monkeypatch.setattr(chat_files, "TEXT_PAGE", 25)

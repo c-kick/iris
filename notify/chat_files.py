@@ -20,7 +20,7 @@ from PIL import Image
 
 from .attachments import clean_content_type, clean_filename
 from .core import Invalid, NotFound
-from .db import iso, new_id
+from .db import iso, new_id, parse_iso
 
 if TYPE_CHECKING:
     from .chat import Chat
@@ -313,9 +313,9 @@ class ChatFiles:
         return f
 
     def member_get(self, member_handle: str, file_id: str) -> StoredFile:
-        """A member reads the files of its own open group. Files of an earlier session in the same folder only
-        for the member the owner approved group_history for, and only shortly after it read that history. Every
-        other case is the same "not found"."""
+        """A member reads the files of its own open group. Files of an earlier session only when they hang on a
+        message that an owner-approved group_history showed this very member, and only shortly after it read that
+        history. Every other case is the same "not found"."""
         from .chat import HISTORY_TTL
         member = self.chat.member_from_handle(member_handle)
         f = self._get(file_id)
@@ -324,12 +324,13 @@ class ChatFiles:
         if f.group_id == member["group_id"]:
             return f
         since = iso(self.chat.now() - HISTORY_TTL)
-        ok = self.db.one(
-            "SELECT 1 FROM chat_groups old JOIN chat_groups mine ON mine.host=old.host AND mine.folder=old.folder"
-            " WHERE old.id=? AND old.state='closed' AND mine.id=? AND EXISTS (SELECT 1 FROM chat_history_requests h"
-            " WHERE h.member_id=? AND h.state='used' AND h.used_at>=?)",
-            (f.group_id, member["group_id"], member["id"], since))
-        if ok is None:
+        with self.db.tx() as c:
+            used = c.execute("SELECT used_at FROM chat_history_requests WHERE member_id=? AND state='used'"
+                             " AND used_at>=? ORDER BY used_at DESC LIMIT 1", (member["id"], since)).fetchone()
+            # exactly the messages that read showed: the same sessions, days and count, as of that moment
+            shown = (set() if used is None else
+                     {m["id"] for m in self.chat._history_messages(c, member, parse_iso(used["used_at"]))["messages"]})
+        if f.message_id not in shown:
             raise NotFound("file not found")
         return f
 
