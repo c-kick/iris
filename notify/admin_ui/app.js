@@ -431,7 +431,7 @@ function render() {
       <main class="main" id="main"></main>
     </div>`;
   root.querySelectorAll("[data-nav]").forEach((b) => (b.onclick = () => goTo(b.dataset.nav)));
-  root.querySelectorAll("[data-signout]").forEach((b) => (b.onclick = async () => { await api("POST", "/logout"); boot(); }));
+  root.querySelectorAll("[data-signout]").forEach((b) => (b.onclick = async () => { await api("POST", "/logout"); chatDraftsForget(); boot(); }));
   root.querySelector('.nav [aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "center" });
   const main = document.getElementById("main");
   VIEWS[section](main);
@@ -1782,7 +1782,7 @@ boot().catch((ex) => { root.innerHTML = `<main class="gate"><div class="panel"><
 
 // ---------------------------------------------------------------- chats
 
-const chats = { colors: {}, folders: [], selected: null, currentId: null, lastId: null, timer: null, composeDraft: "", replyTo: null, msgs: {} };
+const chats = { colors: {}, folders: [], selected: null, currentId: null, lastId: null, timer: null, replyTo: null, msgs: {} };
 // The Chats page covers exactly what the viewer can see. visualViewport shrinks when a phone keyboard
 // opens (100dvh does not on iOS), and iOS also slides the visible area down (offsetTop) to show the
 // field; the page is pinned to that area (top + height), so the composer sits right above the keyboard.
@@ -1862,6 +1862,41 @@ if (window.visualViewport) {
   document.addEventListener("focusout", () => setTimeout(fit, 50)); // keyboard gone: back to the top
   fit();
 }
+// Unsent text is never lost by leaving: one draft per chat, kept in this browser (localStorage) as it is typed and
+// put back when the chat opens, removed once sent or on sign-out. Attached files that finished uploading are kept the
+// same way (their ids; the server holds them for an hour). Where storage is blocked, or a file is still uploading,
+// leaving the page asks first.
+const DRAFT_KEY = "iris-draft:";
+const DRAFT_DAYS = 14;
+const chatDrafts = { mem: {}, stored: true };
+function chatDraftGet(gid) {
+  if (gid in chatDrafts.mem) return chatDrafts.mem[gid];
+  try {
+    const d = JSON.parse(localStorage.getItem(DRAFT_KEY + gid) || "null");
+    if (d && typeof d.t === "string" && Date.now() - d.at < DRAFT_DAYS * 864e5) return (chatDrafts.mem[gid] = d.t);
+    localStorage.removeItem(DRAFT_KEY + gid);
+  } catch { /* storage blocked: memory only */ }
+  return "";
+}
+function chatDraftSet(gid, text) {
+  chatDrafts.mem[gid] = text;
+  try {
+    if (text.trim()) localStorage.setItem(DRAFT_KEY + gid, JSON.stringify({ t: text, at: Date.now() }));
+    else localStorage.removeItem(DRAFT_KEY + gid);
+    chatDrafts.stored = true;
+  } catch { chatDrafts.stored = false; }
+}
+function chatDraftsForget() {
+  chatDrafts.mem = {};
+  chats.pendingFiles = {};
+  try { Object.keys(localStorage).filter((k) => k.startsWith(DRAFT_KEY) || k.startsWith("iris-pending:")).forEach((k) => localStorage.removeItem(k)); } catch { /* blocked */ }
+}
+addEventListener("beforeunload", (e) => {
+  const unsavedText = !chatDrafts.stored && Object.values(chatDrafts.mem).some((t) => t.trim());
+  // files still uploading cannot be kept; uploaded ones can, unless storage is blocked
+  const files = Object.values(chats.pendingFiles || {}).some((l) => l.some((p) => p.state === "up" || (p.state === "ok" && !chatDrafts.stored)));
+  if (unsavedText || files) { e.preventDefault(); e.returnValue = ""; }
+});
 const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
 const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
 const CHAT_ACTIVE_MS = 10 * 60 * 1000; // the owner counts as watching this long after the last input
@@ -2002,6 +2037,26 @@ function chatNoticeKind(text) {
   return "";
 }
 
+// files of a message: raster images as previews whose box is reserved from their size (nothing moves when they load),
+// everything else as a download chip; an expired file as a muted chip
+const chatFileUrl = (id) => `/admin/api/chats/files/${encodeURIComponent(id)}`;
+function chatSize(n) {
+  return n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MB`;
+}
+// "2 files: a.png, b.log", like the server says it for a message without text
+const chatFilesSummary = (files) => `${files.length === 1 ? "1 file" : `${files.length} files`}: ${files.map((f) => f.name).join(", ")}`;
+function chatFilesHtml(files) {
+  if (!files || !files.length) return "";
+  return `<div class="cm-files">${files.map((f) => {
+    if (f.expired) return `<span class="cm-file expired" title="Files are kept for a limited time">${esc(f.name)} · file expired</span>`;
+    if (f.kind === "image" && f.width && f.height) {
+      // max 280 px high and the bubble's width; the width follows from the height, so the box is known before loading
+      return `<a class="cm-img" href="${esc(chatFileUrl(f.id))}" target="_blank" rel="noopener" title="${esc(f.name)} · ${esc(chatSize(f.size))}" style="aspect-ratio: ${f.width} / ${f.height}; width: min(100%, ${Math.max(24, Math.round(Math.min(f.height, 280) * f.width / f.height))}px)"><img src="${esc(chatFileUrl(f.id))}" alt="${esc(f.name)}" width="${f.width}" height="${f.height}" loading="lazy" decoding="async"></a>`;
+    }
+    return `<a class="cm-file" href="${esc(chatFileUrl(f.id))}" download="${esc(f.name)}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M4 1.5h5l3 3v10H4z M9 1.5v3h3" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg><span class="nm">${esc(f.name)}</span><span class="sz">${esc(chatSize(f.size))}</span></a>`;
+  }).join("")}</div>`;
+}
+
 function chatMessageHtml(m, canReply = false) {
   if (m.author === "system") {
     const hr = m.history_request;
@@ -2012,7 +2067,7 @@ function chatMessageHtml(m, canReply = false) {
     const icon = kind ? `<svg class="notice-ico ${kind}" viewBox="0 0 16 16" aria-hidden="true" focusable="false">${CHAT_NOTICE_ICONS[kind]}</svg>` : "";
     return `<div class="cm sys${ask ? " ask" : ""}${kind ? ` notice-${kind}` : ""}" data-id="${esc(m.id)}"${ask ? ` data-req="${esc(hr.id)}"` : ""}>${icon}${esc(when(m.created_at))} · ${esc(m.text ?? "notice")}${ask}</div>`;
   }
-  chats.msgs[m.id] = { author: m.author, member_id: m.member_id, name: m.member_name, text: m.text };
+  chats.msgs[m.id] = { author: m.author, member_id: m.member_id, name: m.member_name, text: m.text === "" && m.files?.length ? chatFilesSummary(m.files) : m.text };
   const quote = m.in_reply_to
     ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(chatPlain(m.reply_excerpt))}`}</div>`
     : "";
@@ -2024,7 +2079,7 @@ function chatMessageHtml(m, canReply = false) {
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
   return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name)}${tag}</div>
-    ${quote}<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text)}</div>
+    ${quote}${m.text === "" && m.files?.length ? "" : `<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text)}</div>`}${chatFilesHtml(m.files)}
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }
 
@@ -2349,13 +2404,17 @@ async function chatOpenThread(el, key, keep = false) {
     <form class="chat-compose" id="chat-compose" hidden>
       <div class="chat-replying" id="chat-replying" hidden><span class="rq"></span><button type="button" class="btn quiet" id="chat-reply-cancel" aria-label="Cancel reply">✕</button></div>
       <label class="sr" for="chat-text">Message this group</label>
+      <button type="button" class="btn quiet chat-attach" id="chat-attach" aria-label="Attach files" title="Attach files (or paste, or drop them here)"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M10.5 4.5 5.3 9.7a1.5 1.5 0 0 0 2.1 2.1l5.4-5.4a3 3 0 0 0-4.2-4.2L3.2 7.6a4.5 4.5 0 0 0 6.4 6.4l4-4" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button>
+      <input type="file" id="chat-file" multiple hidden>
+      <div class="chat-pending" id="chat-pending" aria-live="polite" hidden></div>
       <textarea id="chat-text" rows="2" placeholder="Message the group (@ to pick who acts)" spellcheck="true" autocorrect="on" autocapitalize="sentences" autocomplete="off" aria-autocomplete="list" aria-controls="chat-at"></textarea>
       <ul class="chat-at" id="chat-at" role="listbox" aria-label="Members to mention" hidden></ul>
       <div class="compose-side"><label class="fyi-toggle" title="A heads-up: everyone reads it, nobody acts on it"><input type="checkbox" id="chat-fyi"> FYI</label>
       <button type="submit" class="btn primary">Send</button></div>
       <div class="form-error" role="alert"></div>
     </form>
-    <div class="chat-readonly hint" id="chat-readonly" hidden>This group is closed. It is read-only.</div>`;
+    <div class="chat-readonly hint" id="chat-readonly" hidden>This group is closed. It is read-only.</div>
+    <div class="chat-drop" id="chat-drop" hidden><span>Drop files to attach them</span></div>`;
   pane.querySelector("#chat-pausebtn").onclick = async (e) => {
     const btn = e.currentTarget;
     btn.disabled = true;
@@ -2434,9 +2493,10 @@ async function chatOpenThread(el, key, keep = false) {
   }
   const form = pane.querySelector("#chat-compose");
   const ta = form.querySelector("textarea");
-  ta.value = chats.composeDraft;
+  const draftFor = chats.currentId;
+  ta.value = chatDraftGet(draftFor);
   const grow = () => { ta.style.height = "auto"; if (ta.value) ta.style.height = `${ta.scrollHeight + 2}px`; };
-  ta.oninput = () => { chats.composeDraft = ta.value; grow(); };
+  ta.oninput = () => { chatDraftSet(draftFor, ta.value); grow(); };
   grow();
   const at = chatAtPicker(el, ta, form.querySelector("#chat-at"));
   const fyi = form.querySelector("#chat-fyi");
@@ -2444,10 +2504,16 @@ async function chatOpenThread(el, key, keep = false) {
     if (at.key(e)) return;
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); form.requestSubmit(); }
   };
+  const files = chatAttach(el, pane, form, ta);
   form.onsubmit = async (e) => {
     e.preventDefault();
     const text = ta.value.trim();
-    if (!text) return;
+    if (files.busy()) return; // Send waits for uploads
+    const err0 = form.querySelector(".form-error");
+    if (files.failed()) { err0.textContent = "Remove the files that could not be attached first."; return; }
+    const going = files.sending();
+    const ids = going.map((p) => p.file.id);
+    if (!text && !ids.length) return;
     const err = form.querySelector(".form-error");
     const btn = form.querySelector("button[type=submit]");
     btn.disabled = true;
@@ -2455,20 +2521,150 @@ async function chatOpenThread(el, key, keep = false) {
     try {
       const payload = chats.replyTo ? { text, in_reply_to: chats.replyTo } : { text };
       if (fyi.checked) payload.fyi = true;
+      if (ids.length) payload.files = ids;
       const res = await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/messages`, payload);
       if (res && res.unknown_mentions && res.unknown_mentions.length) toast(`Nobody here is called ${res.unknown_mentions.map((n) => `@${n}`).join(", ")}: sent as plain text`);
       setReply(null);
       fyi.checked = false;
       ta.value = "";
-      chats.composeDraft = "";
+      chatDraftSet(draftFor, "");
+      files.sent(going);
       grow();
       await chatTick(el);
-    } catch (ex) { err.textContent = ex.message; }
+    } catch (ex) {
+      err.textContent = ex.message;
+      if (ex.status === 422 && /attach it again/i.test(ex.message)) files.gone();
+    }
     finally { btn.disabled = false; ta.focus({ preventScroll: true }); }
   };
   // picking the chat clears its bell; a thread that only reloaded (keep) clears it when the window has focus
   const bell = f.alert && (!keep || document.hasFocus());
   if (g.unread || bell) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen${bell ? `?alert_upto=${encodeURIComponent(f.alert_at)}` : ""}`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
+}
+
+// Attaching files in the composer: the paperclip, pasting an image, dropping files on the thread. Each file is sent
+// as soon as it is picked (one PUT with the raw bytes) and waits on the server until Send names it. The strip of
+// pending files floats above the composer, so the thread never moves.
+const CHAT_FILE_MAX = 10 * 1024 * 1024;
+function chatAttach(el, pane, form, ta) {
+  const gid = chats.currentId;
+  chats.pendingFiles = chats.pendingFiles || {};
+  chats.pendingRender = chats.pendingRender || {};
+  // survives a re-render of the thread; after a reload the uploaded ones come back from this browser's storage (the
+  // server keeps a pending file for an hour)
+  const list = (chats.pendingFiles[gid] = chats.pendingFiles[gid] || chatPendingLoad(gid));
+  const strip = form.querySelector("#chat-pending");
+  const input = form.querySelector("#chat-file");
+  const err = form.querySelector(".form-error");
+  const send = form.querySelector("button[type=submit]");
+  const box = pane.querySelector("#chat-msgs");
+  // the server keeps a pending file for an hour; a chip older than that is shown as gone before Send can fail on it
+  const stale = (p) => p.state === "ok" && Date.now() - p.at > 55 * 60 * 1000;
+  const render = () => {
+    for (const p of list) if (stale(p)) { p.state = "err"; p.error = "expired, attach it again"; }
+    strip.hidden = !list.length;
+    // as much room at the thread's end as the strip covers, so the lines under it can still be scrolled into view;
+    // only the scrollable length grows, nothing on screen moves. When the strip goes, the room stays until it is
+    // out of view or a new message comes in (chatDropRoom), so closing the strip never moves the thread either.
+    if (list.length) {
+      el.classList.add("has-pending");
+      requestAnimationFrame(() => { if (!strip.hidden) el.style.setProperty("--pending-h", `${strip.offsetHeight + 8}px`); });
+    }
+    send.disabled = list.some((p) => p.state === "up");
+    chatPendingSave(gid, list);
+    strip.innerHTML = list.map((p, i) => {
+      const thumb = p.state === "ok" && p.file.kind === "image" ? `<img src="${esc(chatFileUrl(p.file.id))}" alt="">` : `<span class="ph" aria-hidden="true"></span>`;
+      const label = p.state === "up" ? "uploading…" : p.state === "err" ? p.error : chatSize(p.size);
+      return `<span class="pend ${p.state}">${thumb}<span class="nm">${esc(p.name)}</span><span class="sz">${esc(label)}</span><button type="button" class="btn quiet" data-unpend="${i}" aria-label="Remove ${esc(p.name)}">✕</button></span>`;
+    }).join("");
+  };
+  chats.pendingRender[gid] = render; // an upload that ends after the thread re-rendered updates the strip on screen
+  box.onscroll = ((prev) => (e) => {
+    prev?.(e);
+    const room = parseFloat(el.style.getPropertyValue("--pending-h")) || 0;
+    if (!list.length && room && box.scrollHeight - box.scrollTop - box.clientHeight > room) chatDropRoom(el);
+  })(box.onscroll);
+  const add = (fileList) => {
+    err.textContent = "";
+    for (const f of fileList) {
+      if (list.length >= 10) { err.textContent = "At most 10 files per message."; break; }
+      const total = list.filter((q) => q.state !== "err").reduce((n, q) => n + q.size, 0);
+      const p = { name: f.name || "pasted.png", size: f.size, state: "up", at: Date.now() };
+      list.push(p);
+      if (f.size > CHAT_FILE_MAX) { p.state = "err"; p.error = "over 10 MB"; continue; }
+      if (total + f.size > CHAT_FILE_MAX) { p.state = "err"; p.error = "over 10 MB in total"; continue; }
+      fetch(`/admin/api/chats/${encodeURIComponent(gid)}/files?name=${encodeURIComponent(p.name)}`, {
+        method: "PUT", credentials: "same-origin", body: f,
+        headers: { "X-Notify-Admin": "1", "Content-Type": f.type || "application/octet-stream" },
+      }).then(async (res) => {
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(typeof data?.detail === "string" ? data.detail : `upload failed (HTTP ${res.status})`);
+        p.file = data; p.state = "ok"; p.at = Date.now();
+      }).catch((ex) => { p.state = "err"; p.error = ex.message; })
+        .finally(() => { if (list.includes(p)) chats.pendingRender[gid]?.(); else if (p.file) chatDiscard(gid, p.file.id); });
+    }
+    render();
+  };
+  form.querySelector("#chat-attach").onclick = () => input.click();
+  input.onchange = () => { add([...input.files]); input.value = ""; };
+  ta.addEventListener("paste", (e) => {
+    const fs = [...(e.clipboardData?.files || [])];
+    // text wins: Word and Excel put a picture of the copied text on the clipboard too
+    if (!fs.length || e.clipboardData.getData("text/plain")) return;
+    e.preventDefault();
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T-]/g, "");
+    add(fs.map((f, i) => (f.name && f.name !== "image.png" ? f : new File([f], `pasted-${stamp}${fs.length > 1 ? `-${i + 1}` : ""}.${(f.type.split("/")[1] || "png").split("+")[0].replace("jpeg", "jpg")}`, { type: f.type }))));
+  });
+  strip.onclick = (e) => {
+    const b = e.target.closest("[data-unpend]");
+    if (!b) return;
+    const [p] = list.splice(Number(b.dataset.unpend), 1);
+    if (p?.file) chatDiscard(gid, p.file.id);
+    render();
+  };
+  // drop anywhere on the open thread; the overlay covers it without moving anything
+  const drop = pane.querySelector("#chat-drop");
+  let depth = 0;
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+  pane.ondragenter = (e) => { if (!hasFiles(e) || form.hidden) return; depth++; drop.hidden = false; };
+  pane.ondragleave = () => { if (depth && --depth === 0) drop.hidden = true; };
+  pane.ondragover = (e) => { if (hasFiles(e) && !form.hidden) e.preventDefault(); };
+  pane.ondrop = (e) => {
+    if (!hasFiles(e) || form.hidden) return;
+    e.preventDefault(); depth = 0; drop.hidden = true;
+    add([...e.dataTransfer.files]);
+  };
+  if (!list.length) chatDropRoom(el); // a freshly drawn thread starts without room
+  render();
+  return {
+    busy: () => list.some((p) => p.state === "up"),
+    failed: () => list.some((p) => p.state === "err"),
+    sending: () => list.filter((p) => p.state === "ok"),
+    // after Send: only the files that went out; one added while the post was on its way stays
+    sent: (done) => { for (const p of done) { const k = list.indexOf(p); if (k >= 0) list.splice(k, 1); } render(); },
+    gone: () => { for (const p of list) if (p.state === "ok") { p.state = "err"; p.error = "gone, attach it again"; } render(); },
+  };
+}
+const PENDING_KEY = "iris-pending:";
+function chatPendingLoad(gid) {
+  try {
+    const l = JSON.parse(localStorage.getItem(PENDING_KEY + gid) || "[]");
+    return Array.isArray(l) ? l.filter((p) => p && p.file && p.file.id && Date.now() - p.at < 55 * 60 * 1000)
+      .map((p) => ({ name: String(p.name), size: Number(p.size) || 0, state: "ok", at: p.at, file: p.file })) : [];
+  } catch { return []; }
+}
+function chatPendingSave(gid, list) {
+  const ok = list.filter((p) => p.state === "ok").map(({ name, size, at, file }) => ({ name, size, at, file }));
+  try { if (ok.length) localStorage.setItem(PENDING_KEY + gid, JSON.stringify(ok)); else localStorage.removeItem(PENDING_KEY + gid); }
+  catch { chatDrafts.stored = false; }
+}
+// the room under the pending strip goes once nothing is pending and it is out of view, or with a new message
+function chatDropRoom(el) {
+  el.classList.remove("has-pending");
+  el.style.removeProperty("--pending-h");
+}
+function chatDiscard(gid, fid) {
+  api("DELETE", `/chats/${encodeURIComponent(gid)}/files/${encodeURIComponent(fid)}`).catch(() => { /* goes after an hour anyway */ });
 }
 
 async function chatToggleEarlier(bar) {
@@ -2615,11 +2811,13 @@ async function chatTickOnce(el) {
     if (data.messages.length) {
       const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
       box.querySelector(":scope > .empty")?.remove();
+      let added = false;
       for (const m of data.messages) {
         const old = box.querySelector(`:scope > [data-id="${CSS.escape(m.id)}"]`);
-        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open"));
+        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else { box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open")); added = true; }
       }
       chats.lastId = data.messages[data.messages.length - 1].id;
+      if (added && !(chats.pendingFiles?.[chats.currentId] || []).length) chatDropRoom(el); // the room goes with new content
       if (stick) box.scrollTop = box.scrollHeight;
     }
     // the bell goes once the owner is looking: the chat open and the window focused (coming back runs this too)

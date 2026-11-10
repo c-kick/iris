@@ -155,13 +155,14 @@ def create_app(config: NotifyConfig | None = None, db_path: str | None = None, k
     async def admin_headers(request: Any, call_next: Any) -> Any:
         response = await call_next(request)
         if request.url.path.startswith("/admin"):
-            response.headers["Content-Security-Policy"] = ADMIN_CSP
+            response.headers.setdefault("Content-Security-Policy", ADMIN_CSP)  # a chat file sets its own, stricter one
             response.headers["X-Content-Type-Options"] = "nosniff"
             response.headers["Referrer-Policy"] = "no-referrer"
             response.headers.setdefault("Cache-Control", "no-cache")
         return response
 
-    app.add_middleware(BodyLimit, get_auth=lambda: app.state.auth)  # added last = outermost: caps bodies before auth or routing
+    app.add_middleware(BodyLimit, get_auth=lambda: app.state.auth,  # added last = outermost: caps bodies before auth or routing
+                       session_ok=lambda sid: app.state.store.session_valid(sid))  # the owner's chat file upload
     return app
 
 

@@ -505,7 +505,7 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .paused-tag { color: var(--warn); font-weight: 600; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; display: inline-block; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
 .dot.off { background: var(--idle); box-shadow: none; }
-.chat-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.chat-pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-pane > .empty { margin: auto; text-align: center; max-width: 30ch; }
 .chat-head { display: flex; align-items: center; gap: .5rem; padding: .65rem 1rem; border-bottom: 1px solid var(--line); background: var(--surface); }
 .chat-head { flex-wrap: wrap; }
@@ -659,13 +659,41 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .cm .act { font-size: .76rem; color: var(--warn); margin-top: .15rem; }
 .cm .act.claimed { color: var(--muted); }
 .cm .release-btn { font-size: .76rem; padding: 0 .35rem; min-height: 0; }
-/* the field, and one narrow column beside it: FYI on top, Send under it */
-.chat-compose { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .5rem; padding: .7rem; border-top: 1px solid var(--line); background: var(--surface); align-items: end; }
+/* the paperclip, the field, and one narrow column beside it: FYI on top, Send under it */
+.chat-compose { position: relative; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .5rem; padding: .7rem; border-top: 1px solid var(--line); background: var(--surface); align-items: end; }
 .compose-side { display: flex; flex-direction: column; gap: .35rem; min-width: 4.75rem; }
 .compose-side .fyi-toggle { justify-content: center; min-height: 34px; padding-block: .25rem; }
 .fyi-toggle { display: inline-flex; align-items: center; gap: .3rem; font-size: .8rem; color: var(--muted); padding: .45rem .55rem; border: 1px solid var(--line); border-radius: var(--radius-s); cursor: pointer; user-select: none; min-height: 40px; }
 .fyi-toggle:has(input:checked) { color: var(--ink); border-color: var(--action); background: var(--action-wash); }
 .fyi-toggle:has(input:focus-visible) { outline: 3px solid var(--focus); outline-offset: 1px; }
+/* attaching files: a paperclip at the field's foot, a strip of pending files that floats over the thread's last
+   lines (never pushes it), a drop overlay over the whole thread */
+.chat-attach { align-self: end; width: 2.25rem; min-height: 40px; padding: 0; color: var(--muted); }
+.chat-attach:hover { color: var(--action); }
+.chat-attach svg { width: 18px; height: 18px; }
+.chat-pending { position: absolute; left: .7rem; right: .7rem; bottom: calc(100% + .35rem); z-index: 4; display: flex; gap: .4rem; overflow-x: auto; padding: .35rem; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-s); box-shadow: var(--shadow-float); }
+.chat-pending[hidden] { display: none; }
+.chats.has-pending .chat-msgs::after { content: ""; flex: none; height: var(--pending-h, 0px); }
+.chat-pending .pend { flex: none; display: grid; grid-template-columns: 2.25rem minmax(0, 9rem) auto; grid-template-rows: auto auto; column-gap: .45rem; align-items: center; padding: .2rem .25rem .2rem .2rem; border: 1px solid var(--line); border-radius: 6px; font-size: .78rem; }
+.chat-pending .pend img, .chat-pending .pend .ph { grid-row: 1 / 3; width: 2.25rem; height: 2.25rem; object-fit: cover; border-radius: 4px; background: var(--sunken); }
+.chat-pending .pend .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); }
+.chat-pending .pend .sz { grid-column: 2; color: var(--muted); font-size: .72rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-pending .pend.up .sz { color: var(--action); }
+.chat-pending .pend.err { border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.chat-pending .pend.err .sz { color: var(--bad); }
+.chat-pending .pend button { grid-column: 3; grid-row: 1 / 3; min-height: 0; padding: .2rem .35rem; }
+.chat-drop { position: absolute; inset: 0; z-index: 9; display: grid; place-items: center; background: color-mix(in srgb, var(--action-wash) 85%, transparent); border: 2px dashed var(--action); border-radius: var(--radius-s); pointer-events: none; font-weight: 600; color: var(--action); }
+.chat-drop[hidden] { display: none; }
+/* files in a message: an image keeps the box its size asks for (set inline), so loading never moves the thread */
+.cm-files { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .35rem; }
+.cm-img { display: block; max-width: 100%; max-height: 280px; border-radius: 6px; overflow: hidden; background: var(--sunken); border: 1px solid var(--line); }
+.cm-img img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.cm-file { display: inline-flex; align-items: center; gap: .4rem; max-width: 100%; padding: .3rem .55rem; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); text-decoration: none; font-size: .82rem; }
+.cm-file:hover { border-color: var(--action); }
+.cm-file svg { width: 15px; height: 15px; flex: none; color: var(--muted); }
+.cm-file .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cm-file .sz { color: var(--muted); font-size: .74rem; flex: none; }
+.cm-file.expired { color: var(--faint); border-style: dashed; background: none; }
 .chat-at { position: absolute; left: .7rem; bottom: calc(100% - .4rem); z-index: 5; margin: 0; padding: .25rem; list-style: none; min-width: 12rem; max-width: calc(100% - 1.4rem); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-s); box-shadow: var(--shadow-float); }
 .chat-at[hidden] { display: none; }
 .chat-at li { padding: .3rem .5rem; border-radius: 5px; cursor: pointer; font-size: .86rem; }
