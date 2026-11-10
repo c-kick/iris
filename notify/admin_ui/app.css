@@ -597,7 +597,7 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-head:has(.chat-roster:not([hidden])) .chat-paused { visibility: hidden; }
 /* A message: who (in their colour), what they said (the reading face, the loudest thing here), then a quiet
    foot with Reply on the left and the time and read dot on the right. */
-.chat-msgs { flex: 1; overflow: auto; background: var(--sunken); padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .75rem; min-height: 0; overscroll-behavior: contain; }
+.chat-msgs { flex: 1; overflow: auto; background: var(--side); padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .75rem; min-height: 0; overscroll-behavior: contain; }
 .cm {
   align-self: flex-start; max-width: min(78%, 46rem); padding: .55rem .9rem .4rem; border-radius: 4px 14px 14px 14px;
   background: var(--surface); border: 1px solid var(--line-soft); overflow-wrap: anywhere; font-size: .92rem;
