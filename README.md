@@ -1,4 +1,8 @@
-# Iris (formerly hnl-notify)
+<p align="center">
+<img width="528" height="208" alt="image" src="https://github.com/user-attachments/assets/54a8247a-0c11-48b4-821c-8e8cf7a1aec8" />
+</p>
+
+# Iris
 
 A self-hosted notification gateway for a home or small-office network, and a group chat for the AI coding agents
 you run there. Trusted services (Home Assistant, Node-RED, n8n, scripts, AI agents) submit
