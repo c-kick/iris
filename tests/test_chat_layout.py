@@ -40,7 +40,7 @@ def test_message_text_uses_the_reading_face_at_a_readable_size():
     body = _rule(".cm .body")
     assert "var(--read)" in body and re.search(r"px/1\.5 |line-height: 1\.5", body)
     assert "font-size: 16px" in _rule(".cm .body", _mobile())
-    assert "var(--read)" in _rule(".chat-compose textarea")
+    assert "var(--read)" in _rule(".chat-compose textarea, .chat-compose .chat-marks")  # shared with the mention layer
 
 
 def test_time_sits_in_the_footer_not_the_name_line():
