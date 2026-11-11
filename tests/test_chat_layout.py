@@ -356,7 +356,7 @@ def test_six_agents_present_at_once_all_differ():
 def test_typing_stays_cheap_with_a_long_thread():
     fn = JS[JS.index("let shrink = true;"):JS.index("const at = chatAtPicker(el, ta")]
     assert "requestAnimationFrame(grow)" in fn, "the box and the mention layer once per frame, not per key"
-    assert 'e.inputType.startsWith("delete")' in fn, "the height is only reset (a full layout) when text was removed"
+    assert 'e.inputType.startsWith("delete") || ta.value.length < lastLen' in fn, "reset only when the text got shorter"
     marks = JS[JS.index("function chatMarksSync"):JS.index("function chatMention(")]
     assert 'text.includes("@")' in marks and "marks.dataset.size !== size" in marks
     assert "contain: layout paint style" in _rule(".chat-msgs")

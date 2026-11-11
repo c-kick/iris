@@ -1884,7 +1884,7 @@ function chatDraftGet(gid) {
     const d = JSON.parse(localStorage.getItem(DRAFT_KEY + gid) || "null");
     if (d && typeof d.t === "string" && Date.now() - d.at < DRAFT_DAYS * 864e5) return (chatDrafts.mem[gid] = d.t);
     localStorage.removeItem(DRAFT_KEY + gid);
-  } catch { /* storage blocked: memory only */ }
+  } catch { chatDrafts.stored = false; /* storage blocked: memory only, and leaving asks first */ }
   return "";
 }
 function chatDraftSet(gid, text) {
@@ -2620,8 +2620,11 @@ async function chatOpenThread(el, key, keep = false) {
     if (chats.flushDraft === saveNow && ta.isConnected) chatDraftSet(draftFor, ta.value);
   };
   chats.flushDraft = saveNow;
+  let lastLen = ta.value.length;
   ta.oninput = (e) => {
-    if (!e || !e.inputType || e.inputType.startsWith("delete") || e.inputType === "historyUndo") shrink = true;
+    // anything that made the text shorter (a delete, typing or pasting over a selection, autocorrect, undo)
+    if (!e || !e.inputType || e.inputType.startsWith("delete") || ta.value.length < lastLen) shrink = true;
+    lastLen = ta.value.length;
     chatDrafts.mem[draftFor] = ta.value;
     if (!saveTimer) saveTimer = setTimeout(saveNow, 400);
     later();
