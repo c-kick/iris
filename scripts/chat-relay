@@ -55,6 +55,144 @@ CODEX_RPC_MAX_MESSAGES = 500  # notifications the server may send before our ans
 CODEX_LOADED_MAX_PAGES = 50
 
 
+
+# --- context reset (0.22.0) ----------------------------------------------------------------------------------------
+# The owner asked to clear a session's context: type /clear into its tmux pane, as the owner would. The only text this
+# relay ever types is CLEAR, hard-coded here; the server only says which member. Enter is pressed only when the input
+# line then holds exactly /clear (an empty line before), else the six characters are taken back ("typed").
+CLEAR = "/clear"
+TMUX_TIMEOUT = 3.0
+PROMPT_CHARS = " \t\u2502|>\u203a\u276f\u25b8\u2771\u00a0"  # box border and prompt glyphs around the input
+
+
+def _environ(pid: int) -> dict[str, str]:
+    try:
+        raw = open(f"/proc/{pid}/environ", "rb").read()
+    except OSError:
+        return {}
+    out = {}
+    for part in raw.split(b"\x00"):
+        k, sep, v = part.partition(b"=")
+        if sep:
+            out[k.decode(errors="replace")] = v.decode(errors="replace")
+    return out
+
+
+def _ppid(pid: int) -> int | None:
+    try:
+        stat = open(f"/proc/{pid}/stat").read()
+        return int(stat[stat.rindex(")") + 2:].split()[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _descends(pid: int, ancestor: int) -> bool:
+    p: int | None = pid
+    for _ in range(64):
+        if p is None or p <= 1:
+            return False
+        if p == ancestor:
+            return True
+        p = _ppid(p)
+    return False
+
+
+def _tmux(socket_path: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["tmux", "-S", socket_path, *args], capture_output=True, text=True, timeout=TMUX_TIMEOUT)
+
+
+def _pane_of(pid: int) -> tuple[str, str] | None:
+    """(tmux socket, pane id) of the pane process pid runs in, verified with tmux: the pane's own process must be
+    an ancestor of pid (an environment can be stale or copied)."""
+    env = _environ(pid)
+    sock, pane = env.get("TMUX", "").split(",", 1)[0], env.get("TMUX_PANE", "")
+    if not sock or not re.fullmatch(r"%\d{1,6}", pane):
+        return None
+    p = _tmux(sock, "display-message", "-p", "-t", pane, "#{pane_pid}")
+    try:
+        pane_pid = int(p.stdout.strip())
+    except ValueError:
+        return None
+    return (sock, pane) if p.returncode == 0 and _descends(pid, pane_pid) else None
+
+
+def _codex_tuis(folder: str) -> list[int]:
+    """Interactive codex processes (not the app-server, exec or queue) running in folder or below it."""
+    out = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            argv = open(f"/proc/{d}/cmdline", "rb").read().split(b"\x00")
+            cwd = os.readlink(f"/proc/{d}/cwd")
+        except OSError:
+            continue
+        if not argv or os.path.basename(argv[0].decode(errors="replace")) != "codex":
+            continue
+        rest = {a.decode(errors="replace") for a in argv[1:]}
+        if rest & {"app-server", "exec", "queue", "mcp", "mcp-server", "proto"}:
+            continue
+        if cwd == folder or cwd.startswith(folder.rstrip("/") + "/"):
+            out.append(int(d))
+    return out
+
+
+def _input_holds_clear(before: str, after: str) -> bool:
+    """The input line holds exactly /clear: of the lines that changed when it was typed, the topmost one that shows
+    /clear (a suggestion list opens below the input) has nothing else once the prompt and box characters are off.
+    Lines that were already on screen (an earlier /clear in the history) never count."""
+    old = before.splitlines()
+    for i, line in enumerate(after.splitlines()):
+        if CLEAR in line and (i >= len(old) or old[i] != line):
+            return line.strip(PROMPT_CHARS) == CLEAR
+    return False
+
+
+def type_clear(sock: str, pane: str) -> str:
+    """Type CLEAR into the pane; Enter only when the input line held nothing else. reset or typed."""
+    before = _tmux(sock, "capture-pane", "-p", "-t", pane).stdout
+    if _tmux(sock, "send-keys", "-t", pane, "-l", CLEAR).returncode != 0:
+        return "not_found"
+    time.sleep(0.4)
+    after = _tmux(sock, "capture-pane", "-p", "-t", pane).stdout
+    if not _input_holds_clear(before, after):
+        _tmux(sock, "send-keys", "-t", pane, *(["BSpace"] * len(CLEAR)))  # take our text back, leave theirs
+        return "typed"
+    _tmux(sock, "send-keys", "-t", pane, "Enter")
+    return "reset"
+
+
+def do_reset(r: dict[str, Any]) -> str:
+    """Clear the context of the member in r ({kind, pid, pid_start, folder, shared_process}). Returns the outcome
+    for the server: reset, typed, not_tmux, not_found or gone."""
+    try:
+        pid, start = r.get("pid"), r.get("pid_start")
+        if not isinstance(pid, int) or pid <= 0 or pid_start(pid) is None or pid_start(pid) != str(start):
+            return "gone"
+        if r.get("kind") == "claude":
+            if not _environ(pid).get("TMUX_PANE"):
+                return "not_tmux"
+            found = _pane_of(pid)
+        elif r.get("kind") == "codex":
+            folder = r.get("folder")
+            if not isinstance(folder, str) or not folder.startswith("/"):
+                return "not_found"
+            tuis = [p for p in _codex_tuis(folder) if r.get("shared_process") or _descends(p, pid) or p == pid]
+            in_tmux = [p for p in tuis if _environ(p).get("TMUX_PANE")]
+            if not in_tmux:
+                return "not_tmux" if tuis else "not_found"
+            if len(in_tmux) > 1:
+                return "not_found"  # two windows in one folder: no guess
+            found = _pane_of(in_tmux[0])
+        else:
+            return "not_found"
+        if found is None:
+            return "not_found"
+        return type_clear(*found)
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"reset: {type(e).__name__}")
+        return "not_found"
+
 class Fatal(Exception):
     pass
 
@@ -358,11 +496,20 @@ class Relay:
         return False
 
     def claim_once(self, wait: int) -> bool | None:
-        """Claim and deliver one wake. True: delivered; False: delivery failed; None: nothing to do."""
-        q = urllib.parse.urlencode({"waiter": self.waiter, "wait": wait})
+        """Claim and deliver one wake (or do one context reset). True: done; False: delivery failed; None: nothing
+        to do."""
+        q = urllib.parse.urlencode({"waiter": self.waiter, "wait": wait, "resets": "true"})
         status, wake = self.post(f"/v1/chat/wakes/claim?{q}", None, wait + 15)
         if status == 204:
             return None
+        if status == 200 and isinstance(wake, dict) and wake.get("type") == "reset" and wake.get("reset_id"):
+            outcome = do_reset(wake)
+            rid = urllib.parse.quote(str(wake["reset_id"]), safe="")
+            qs = urllib.parse.urlencode({"waiter": self.waiter})
+            status, _ = self.post(f"/v1/chat/resets/{rid}/done?{qs}", {"outcome": outcome}, 15)
+            log(f"reset {wake['reset_id']}: {outcome} (member {wake.get('member_id')})"
+                + ("" if status == 204 else f"; report answered HTTP {status}"))
+            return True
         if status != 200 or not isinstance(wake, dict) or not wake.get("wake_id"):
             raise RuntimeError(f"claim failed: HTTP {status}")
         wid = urllib.parse.quote(str(wake["wake_id"]), safe="")
