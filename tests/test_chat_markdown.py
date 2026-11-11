@@ -260,7 +260,7 @@ def test_composer_draws_the_marks_behind_the_textarea():
     css = (UI / "app.css").read_text()
     assert '<div class="chat-field"><div class="chat-marks" id="chat-marks" aria-hidden="true"></div><textarea id="chat-text"' in js
     i = js.index("const grow = () =>")
-    assert "chatMarksSync(ta, marks)" in js[i:js.index("\n", i)], "every change of the text goes through grow()"
+    assert "chatMarksSync(ta, marks)" in js[i:js.index("\n  };", i)], "every change of the text goes through grow()"
     # the layer copies the textarea's text box: one rule for both, also in the narrow-screen override
     assert ".chat-compose textarea, .chat-compose .chat-marks {" in css
     assert ".chat-compose textarea, .chat-compose .chat-marks { font-size: 16px; }" in css
