@@ -2,6 +2,12 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.22.4
+
+No configuration change, no database change. A chat read further up shows a floating "3 new messages, click to
+view" pill when messages arrive out of view; clicking it scrolls to the newest. Sending a message from the admin page
+always scrolls the thread to the bottom.
+
 ## Upgrading to 0.22.3
 
 No configuration change, no database change. In a chat's member list the claims count is a small line under the

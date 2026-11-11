@@ -623,6 +623,11 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
    foot with Reply on the left and the time and read dot on the right. */
 /* contain (size too): the thread lays out on its own, and its height comes from the page, never from its messages,
    so typing in the composer never makes the browser lay out every message to ask how tall the thread wants to be */
+/* new messages below the fold: a pill floating over the thread's foot (its bottom is set from the composer height) */
+.chat-newer { all: unset; box-sizing: border-box; position: absolute; z-index: 6; left: 50%; transform: translateX(-50%); padding: .35rem .85rem; border-radius: 999px; font-size: .8rem; font-weight: 600; color: var(--action-ink); background: var(--action); box-shadow: var(--shadow-float); cursor: pointer; white-space: nowrap; }
+.chat-newer[hidden] { display: none; }
+.chat-newer:hover { filter: brightness(1.08); }
+.chat-newer:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
 .chat-msgs { contain: layout paint style; flex: 1; overflow: auto; background: var(--side); padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .75rem; min-height: 0; overscroll-behavior: contain; }
 .cm {
   align-self: flex-start; max-width: min(78%, 46rem); padding: .55rem .9rem .4rem; border-radius: 4px 14px 14px 14px;

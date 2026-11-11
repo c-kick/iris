@@ -2501,6 +2501,7 @@ async function chatOpenThread(el, key, keep = false) {
       <div class="chat-roster" id="chat-roster" role="region" aria-label="Members" hidden></div>
       <div class="chat-paused" id="chat-paused" role="status" hidden></div></div>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
+    <button type="button" class="chat-newer" id="chat-newer" hidden></button>
     <form class="chat-compose" id="chat-compose" hidden>
       <div class="chat-replying" id="chat-replying" hidden><span class="rq"></span><button type="button" class="btn quiet" id="chat-reply-cancel" aria-label="Cancel reply">✕</button></div>
       <label class="sr" for="chat-text">Message this group</label>
@@ -2581,7 +2582,13 @@ async function chatOpenThread(el, key, keep = false) {
   box.scrollTop = box.scrollHeight;
   // reading the newest message stays that way when the list gets shorter (keyboard, a longer draft, the reply bar)
   let stick = true;
-  box.onscroll = () => { stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40; };
+  chats.unseen = 0;
+  chatNewerShow(el);
+  box.onscroll = () => {
+    stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    if (stick && chats.unseen) { chats.unseen = 0; chatNewerShow(el); }
+  };
+  pane.querySelector("#chat-newer").onclick = () => chatToBottom(el);
   if (window.ResizeObserver) {
     new ResizeObserver(() => { if (stick) box.scrollTop = box.scrollHeight; }).observe(box);
     // the floating "Paused" banner: the thread keeps exactly its height free at the top (it wraps on a phone),
@@ -2686,6 +2693,7 @@ async function chatOpenThread(el, key, keep = false) {
       files.sent(going);
       grow();
       await chatTick(el);
+      chatToBottom(el); // you see what you sent, wherever you were reading
     } catch (ex) {
       err.textContent = ex.message;
       if (ex.status === 422 && /attach it again/i.test(ex.message)) files.gone();
@@ -2813,6 +2821,24 @@ function chatPendingSave(gid, list) {
   const ok = list.filter((p) => p.state === "ok").map(({ name, size, at, file }) => ({ name, size, at, file }));
   try { if (ok.length) localStorage.setItem(PENDING_KEY + gid, JSON.stringify(ok)); else localStorage.removeItem(PENDING_KEY + gid); }
   catch { chatDrafts.stored = false; }
+}
+// "3 new messages": floats over the bottom of the thread (nothing moves) while new ones arrived out of view
+function chatNewerShow(el) {
+  const b = el.querySelector("#chat-newer");
+  if (!b) return;
+  const n = chats.unseen || 0;
+  b.hidden = !n;
+  if (!n) return;
+  b.textContent = `${n} new message${n === 1 ? "" : "s"}, click to view`;
+  const form = el.querySelector("#chat-compose");
+  b.style.bottom = `${(form && !form.hidden ? form.offsetHeight : 0) + 12}px`;
+}
+function chatToBottom(el) {
+  const box = el.querySelector("#chat-msgs");
+  if (!box) return;
+  box.scrollTop = box.scrollHeight;
+  chats.unseen = 0;
+  chatNewerShow(el);
 }
 // the room under the pending strip goes once nothing is pending and it is out of view, or with a new message
 function chatDropRoom(el) {
@@ -2974,11 +3000,12 @@ async function chatTickOnce(el) {
       let added = false;
       for (const m of data.messages) {
         const old = box.querySelector(`:scope > [data-id="${CSS.escape(m.id)}"]`);
-        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else { box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open")); added = true; }
+        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else { box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open")); added = true; if (!stick) chats.unseen = (chats.unseen || 0) + 1; }
       }
       chats.lastId = data.messages[data.messages.length - 1].id;
       if (added && !(chats.pendingFiles?.[chats.currentId] || []).length) chatDropRoom(el); // the room goes with new content
       if (stick) box.scrollTop = box.scrollHeight;
+      chatNewerShow(el);
     }
     // the bell goes once the owner is looking: the chat open and the window focused (coming back runs this too)
     const bell = f.alert && document.hasFocus();
