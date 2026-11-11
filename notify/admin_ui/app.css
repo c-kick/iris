@@ -577,9 +577,15 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-roster .cmem { font-size: .9rem; padding-block: .1rem; }
 .chat-roster .cmem-main { padding-block: .45rem; }
 .chat-roster .cmem .sub { white-space: normal; }
-.cmem-rename { flex: none; font-size: .8rem; padding: .2rem .4rem; margin-top: .1rem; color: var(--faint); opacity: 0; }
-.cmem:hover .cmem-rename, .cmem-rename:focus-visible { opacity: 1; }
-@media (hover: none) { .cmem-rename { opacity: 1; } }
+.cmem-rename, .cmem-reset { flex: none; font-size: .8rem; padding: .2rem .4rem; margin-top: .1rem; color: var(--faint); opacity: 0; }
+.cmem:hover .cmem-rename, .cmem-rename:focus-visible, .cmem:hover .cmem-reset, .cmem-reset:focus-visible { opacity: 1; }
+@media (hover: none) { .cmem-rename, .cmem-reset { opacity: 1; } }
+/* rename above reset, one narrow column: the row keeps its width for the name, the kind and the model */
+.cmem-tools { flex: none; display: flex; flex-direction: column; align-items: center; }
+.cmem-tools .btn { min-height: 0; line-height: 1.1; padding: .1rem .35rem; margin-top: 0; }
+.cmem-reset:disabled { cursor: not-allowed; opacity: .35; }
+.cmem:hover .cmem-reset:disabled { opacity: .5; }
+.cmem .sub .noreset { color: var(--faint); }
 .chat-list-top { padding: .5rem .6rem; border-bottom: 1px solid var(--line-soft); }
 .chat-list-top .btn { width: 100%; justify-content: flex-start; font-size: .8rem; }
 .chat-list-top .btn.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--action); }

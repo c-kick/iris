@@ -2007,14 +2007,19 @@ function chatMembersHtml(g) {
     // the model leads the one-line status of the side list (the ellipsis there cuts the plan text first, so the row
     // keeps one height); the phone roster wraps its status, so there the model sits on the name line instead (.km)
     const sub = (m.model ? `<span class="model"${m.model_id ? ` title="${esc(m.model_id)}"` : ""}>${esc(m.model)} · </span>` : "")
+      + (m.resettable === false ? `<span class="noreset" title="Its context cannot be cleared from here: ${esc(m.reset_note || "")}">no reset · </span>` : "")
       + (m.tmux ? `<span class="tmux" title="tmux session:window.pane">tmux ${esc(m.tmux)} · </span>` : "")
       + [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
         m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
     const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";
     const rename = `<button type="button" class="btn quiet cmem-rename" data-rename="${esc(m.id)}" data-name="${esc(name)}" aria-label="Rename ${esc(name)}" title="Rename">✎</button>`;
+    // clear its context (the relay types /clear in its window); a member that cannot be reset says why
+    const reset = m.resettable === false
+      ? `<button type="button" class="btn quiet cmem-reset" disabled aria-label="Cannot reset ${esc(name)}: ${esc(m.reset_note || "")}" title="Cannot reset: ${esc(m.reset_note || "")}">↺</button>`
+      : `<button type="button" class="btn quiet cmem-reset" data-reset="${esc(m.id)}" data-name="${esc(name)}" aria-label="Clear the context of ${esc(name)}" title="Clear its context">↺</button>`;
     return `<li class="cmem"><button type="button" class="cmem-main" data-mention="${esc(m.name || "")}" title="${m.name ? `Mention ${esc(name)} in your message` : ""}">
       <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chatNameStyle(m)}>${esc(name)}</span> <small>${esc(kind)}${m.model ? `<span class="km"> \u00b7 ${esc(m.model)}</span>` : ""}</small>
-      <span class="sub">${sub}</span></button>${claims}${rename}</li>`;
+      <span class="sub">${sub}</span></button>${claims}<span class="cmem-tools">${rename}${reset}</span></li>`;
   }).join("");
   const others = (g.presences || []).map((p) => `<li class="cmem away"><span class="sdot unknown" aria-hidden="true"></span><span class="nm">${esc(CHAT_WHO[p.kind] || p.kind)}</span> <small>not in the chat</small></li>`).join("");
   return `<div class="chat-members" aria-label="Members"><ul>${rows || `<li class="cmem empty-row">Nobody here</li>`}</ul>${others ? `<div class="also">Also here</div><ul>${others}</ul>` : ""}</div>`;
@@ -2202,6 +2207,14 @@ function chatBindMembers(root, el, after = () => {}) {
   root.querySelectorAll("[data-mention]").forEach((b) => (b.onclick = () => { after(); chatMention(el, b.dataset.mention); }));
   root.querySelectorAll("[data-claim]").forEach((b) => (b.onclick = () => { after(); chatShowMessage(el, b.dataset.claim); }));
   root.querySelectorAll("[data-rename]").forEach((b) => (b.onclick = () => { after(); chatRename(el, b.dataset.rename, b.dataset.name); }));
+  root.querySelectorAll("[data-reset]").forEach((b) => (b.onclick = () => { after(); chatReset(el, b.dataset.reset, b.dataset.name); }));
+}
+
+// the reset button: after a confirm, the member's host relay types /clear in its window; the thread gets the outcome
+async function chatReset(el, id, name) {
+  if (!confirm(`Clear the context of ${name}? Its window gets /clear typed in, as if you did it there.`)) return;
+  try { await api("POST", `/chats/${encodeURIComponent(chats.currentId)}/reset`, { member_ids: [id] }); await chatTick(el); }
+  catch (ex) { toast(ex.message); }
 }
 
 // On a phone the members fold into one line in the header; tapping it opens all of them, as on desktop, in a
@@ -2502,11 +2515,12 @@ async function chatOpenThread(el, key, keep = false) {
     if (e.detail === 0 && !roster.hidden) roster.querySelector(".cmem-main")?.focus(); // opened from the keyboard
   };
   roster.onclick = (e) => {
-    const b = e.target.closest("[data-mention], [data-claim], [data-rename]");
+    const b = e.target.closest("[data-mention], [data-claim], [data-rename], [data-reset]");
     if (!b) return;
     chatRosterToggle(el, false);
     if (b.dataset.claim) chatShowMessage(el, b.dataset.claim);
     else if (b.dataset.rename) chatRename(el, b.dataset.rename, b.dataset.name);
+    else if (b.dataset.reset) chatReset(el, b.dataset.reset, b.dataset.name);
     else chatMention(el, b.dataset.mention);
   };
   pane.querySelector("#chat-back").onclick = () => { chatRosterToggle(el, false); chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };

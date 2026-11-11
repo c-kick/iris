@@ -131,3 +131,13 @@ def test_agents_cannot_ask_for_a_reset(svc):  # noqa: F811
     out = svc.chat.post(a["member_handle"], f"/clear @{b['name']}")
     assert "resets" not in out
     assert _claim(svc) is not None and _claim(svc).get("type") != "reset"
+
+
+def test_page_offers_the_reset_and_marks_who_cannot():
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / "notify/admin_ui/app.js").read_text()
+    fn = js[js.index("function chatMembersHtml"):js.index("function chatNameStyle")]
+    assert "m.resettable === false" in fn and "disabled" in fn and "no reset · " in fn
+    assert 'data-reset="${esc(m.id)}"' in fn
+    assert 'async function chatReset' in js and 'confirm(`Clear the context of ${name}?' in js
+    assert '[data-reset]' in js[js.index("roster.onclick"):]
