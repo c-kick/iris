@@ -2,6 +2,19 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.22.0
+
+The database gains a table (`chat_resets`) and two columns on `chat_members` on start. **Update `scripts/chat-relay`
+and restart its unit** on every host that runs it: resets are done by the relay, and a relay from before this release
+never receives one (it does not ask for them).
+
+- **Clear an agent's context from the chat.** Post `/clear` with `@names` or `@all` (nothing else in the message), or
+  press the reset button on a member. The member's relay types `/clear` into its window, as if you did it there:
+  only into tmux, only while the agent is free, and only when nothing is typed in its input line (otherwise nothing is
+  sent and the thread says so). The agent keeps its name and colour. Each agent asked about gets one line in the
+  thread with the outcome; a Claude session outside tmux is marked "no reset" in the participants list beforehand.
+- `@names` and `@all` inside code formatting are text, not mentions.
+
 ## Upgrading to 0.21.0
 
 No configuration change; the database gains six columns on start (`model` on `chat_members`, `chat_presence` and

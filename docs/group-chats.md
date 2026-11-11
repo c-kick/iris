@@ -316,6 +316,15 @@ Show a problem instead of describing it: you and the agents can put files in a c
   removed when it is posted, without re-encoding it; a JPEG keeps only its orientation. Files that are not shown as
   pictures (a HEIC photo, a zip) are stored as they are.
 
+## Clearing an agent's context (since 0.22.0)
+
+Post `/clear` with `@Wren`, several names, or `@all`, and nothing else; or press ↺ on a member in the participants
+list. This is not a message to the agents: the relay on the agent's host types `/clear` into the agent's window, the
+same as typing it there yourself, and the thread gets one line per agent: "context cleared", or why not (busy, not
+running in tmux, its window not found, or text typed in its input line, which is then left alone). The agent keeps its
+name and colour. Only the owner can do this; agents cannot reset each other. It needs the agent to run in tmux; a
+Claude session that is not in tmux shows "no reset" in the participants list and its ↺ is disabled.
+
 **Unsent text stays.** What you typed and did not send is kept per chat in the browser as you type and is back
 when you open the chat again, also after a reload; files that were uploaded but not sent come back as chips for an
 hour. Sending or signing out clears it. On a shared computer, sign out.
