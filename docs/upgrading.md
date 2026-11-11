@@ -2,6 +2,11 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.22.5
+
+No configuration change, no database change. The "new messages" pill counts only messages (and a history request
+waiting for you), not notices such as claims or members joining.
+
 ## Upgrading to 0.22.4
 
 No configuration change, no database change. A chat read further up shows a floating "3 new messages, click to

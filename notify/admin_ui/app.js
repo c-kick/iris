@@ -2822,6 +2822,8 @@ function chatPendingSave(gid, list) {
   try { if (ok.length) localStorage.setItem(PENDING_KEY + gid, JSON.stringify(ok)); else localStorage.removeItem(PENDING_KEY + gid); }
   catch { chatDrafts.stored = false; }
 }
+// what the pill counts: what someone said, and a history request that waits for you; not notices (claims, joins, …)
+const chatCountsAsNew = (m) => m.author !== "system" || m.history_request?.state === "pending";
 // "3 new messages": floats over the bottom of the thread (nothing moves) while new ones arrived out of view
 function chatNewerShow(el) {
   const b = el.querySelector("#chat-newer");
@@ -3000,7 +3002,7 @@ async function chatTickOnce(el) {
       let added = false;
       for (const m of data.messages) {
         const old = box.querySelector(`:scope > [data-id="${CSS.escape(m.id)}"]`);
-        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else { box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open")); added = true; if (!stick) chats.unseen = (chats.unseen || 0) + 1; }
+        if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else { box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open")); added = true; if (!stick && chatCountsAsNew(m)) chats.unseen = (chats.unseen || 0) + 1; }
       }
       chats.lastId = data.messages[data.messages.length - 1].id;
       if (added && !(chats.pendingFiles?.[chats.currentId] || []).length) chatDropRoom(el); // the room goes with new content
