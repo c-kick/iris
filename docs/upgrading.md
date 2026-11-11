@@ -2,6 +2,11 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.22.3
+
+No configuration change, no database change. In a chat's member list the claims count is a small line under the
+member's status ("holds 3 claims · show oldest") instead of a button beside the name, so the tmux pane keeps the width.
+
 ## Upgrading to 0.22.2
 
 No configuration change, no database change. Typing and deleting in a long chat cost the same as in an empty one: the

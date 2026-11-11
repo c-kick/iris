@@ -2015,7 +2015,7 @@ function chatMembersHtml(g) {
       + (m.tmux ? `<span class="tmux" title="tmux session:window.pane">tmux ${esc(m.tmux)} · </span>` : "")
       + [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
         m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
-    const claims = m.claims ? `<button type="button" class="btn quiet cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest">${m.claims} claim${m.claims === 1 ? "" : "s"}</button>` : "";
+    const claims = m.claims ? `<span class="cmem-break"></span><button type="button" class="cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest request it holds">holds ${m.claims} claim${m.claims === 1 ? "" : "s"} · show oldest</button>` : "";
     const rename = `<button type="button" class="btn quiet cmem-rename" data-rename="${esc(m.id)}" data-name="${esc(name)}" aria-label="Rename ${esc(name)}" title="Rename">✎</button>`;
     // clear its context (the relay types /clear in its window); a member that cannot be reset says why
     const reset = m.resettable === false
