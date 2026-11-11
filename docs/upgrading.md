@@ -5,7 +5,8 @@ Newest first. Take a database backup before every upgrade (see [operations](oper
 ## Upgrading to 0.22.5
 
 No configuration change, no database change. The "new messages" pill counts only messages (and a history request
-waiting for you), not notices such as claims or members joining.
+waiting for you), not notices such as claims or members joining. The member list's rename and reset buttons are back at the
+right of each member (0.22.3 had pushed them under it, leaving a gap).
 
 ## Upgrading to 0.22.4
 
