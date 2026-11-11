@@ -76,15 +76,22 @@ MESSAGE_KINDS = ("request", "fyi", "all")
 FYI_WITH_MENTIONS = "a heads-up is for everyone and asks nothing: drop fyi, or drop the @mentions"
 # @Name at the start, after whitespace or an opening bracket/quote; not inside a word (email@Wren is no mention)
 MENTION_RE = re.compile(r"(?<![^\s(\[{<\"'])@([A-Za-z][A-Za-z0-9]{0,19})(?![A-Za-z0-9])")
+CODE_SPAN_RE = re.compile(r"`[^`\n]{1,2000}`")
 
 
 def find_mentions(text: str) -> list[str]:
     """@names in a message, in order, without repeats (case-insensitive). Quoted lines (> or |) are not scanned:
     a quoted mention is someone else's."""
     seen: dict[str, str] = {}
+    fence = None  # inside a ``` or ~~~ block: code, not mentions
     for line in text.split("\n"):
-        if line.lstrip().startswith((">", "|")):
+        mark = line.lstrip()[:3]
+        if mark in ("```", "~~~"):
+            fence = None if fence == mark else (fence or mark)
             continue
+        if fence or line.lstrip().startswith((">", "|")):
+            continue
+        line = CODE_SPAN_RE.sub(" ", line)  # `@all` in a code span is an example, not a mention
         for m in MENTION_RE.finditer(line):
             seen.setdefault(m.group(1).casefold(), m.group(1))
     return list(seen.values())
