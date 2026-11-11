@@ -108,12 +108,26 @@ def _pane_of(pid: int) -> tuple[str, str] | None:
     sock, pane = env.get("TMUX", "").split(",", 1)[0], env.get("TMUX_PANE", "")
     if not sock or not re.fullmatch(r"%\d{1,6}", pane):
         return None
-    p = _tmux(sock, "display-message", "-p", "-t", pane, "#{pane_pid}")
+    p = _tmux(sock, "display-message", "-p", "-t", pane, "#{pane_pid} #{pane_tty}")
     try:
-        pane_pid = int(p.stdout.strip())
+        pane_pid_s, pane_tty = p.stdout.split()
+        pane_pid = int(pane_pid_s)
     except ValueError:
         return None
-    return (sock, pane) if p.returncode == 0 and _descends(pid, pane_pid) else None
+    if p.returncode != 0 or not _descends(pid, pane_pid):
+        return None
+    # the process must own the pane's terminal, in its foreground: a session started from inside another agent's
+    # pane (its shell running claude or codex) has the same TMUX_PANE but is not what the owner sees there
+    try:
+        if os.readlink(f"/proc/{pid}/fd/0") != pane_tty:
+            return None
+        stat = open(f"/proc/{pid}/stat").read()
+        fields = stat[stat.rindex(")") + 2:].split()
+        if int(fields[2]) != int(fields[5]):  # pgrp != tpgid: not the foreground process group
+            return None
+    except (OSError, ValueError, IndexError):
+        return None
+    return sock, pane
 
 
 def _codex_tuis(folder: str) -> list[int]:
@@ -132,24 +146,35 @@ def _codex_tuis(folder: str) -> list[int]:
         rest = {a.decode(errors="replace") for a in argv[1:]}
         if rest & {"app-server", "exec", "queue", "mcp", "mcp-server", "proto"}:
             continue
-        if cwd == folder or cwd.startswith(folder.rstrip("/") + "/"):
+        if cwd == folder:  # exactly the chat's folder: a subfolder can be another chat
             out.append(int(d))
     return out
 
 
+BORDER_CHARS = " \t\u2500\u2501\u2550\u256d\u256e\u2570\u256f\u250c\u2510\u2514\u2518\u2502\u2503|-_=\u00a0"
+
+
 def _input_holds_clear(before: str, after: str) -> bool:
-    """The input line holds exactly /clear: of the lines that changed when it was typed, the topmost one that shows
-    /clear (a suggestion list opens below the input) has nothing else once the prompt and box characters are off.
-    Lines that were already on screen (an earlier /clear in the history) never count."""
+    """The input line holds exactly /clear and nothing else is in the input: of the lines that changed when it was
+    typed, the topmost one that shows /clear (a suggestion list opens below the input) has nothing else once the
+    prompt and box characters are off, and the line above it is the box's edge or empty (so it is not the second
+    line of a draft, nor the rest of a draft that wrapped). Lines already on screen (an earlier /clear in the
+    history) never count. When unsure: False, and nothing is sent."""
     old = before.splitlines()
-    for i, line in enumerate(after.splitlines()):
+    new = after.splitlines()
+    for i, line in enumerate(new):
         if CLEAR in line and (i >= len(old) or old[i] != line):
-            return line.strip(PROMPT_CHARS) == CLEAR
+            if line.strip(PROMPT_CHARS) != CLEAR:
+                return False
+            above = new[i - 1] if i > 0 else ""
+            return not above.strip(BORDER_CHARS)
     return False
 
 
 def type_clear(sock: str, pane: str) -> str:
     """Type CLEAR into the pane; Enter only when the input line held nothing else. reset or typed."""
+    if _tmux(sock, "display-message", "-p", "-t", pane, "#{pane_in_mode}").stdout.strip() != "0":
+        return "not_found"  # copy mode or similar: keys would go to tmux, not to the agent
     before = _tmux(sock, "capture-pane", "-p", "-t", pane).stdout
     if _tmux(sock, "send-keys", "-t", pane, "-l", CLEAR).returncode != 0:
         return "not_found"
@@ -177,12 +202,16 @@ def do_reset(r: dict[str, Any]) -> str:
             folder = r.get("folder")
             if not isinstance(folder, str) or not folder.startswith("/"):
                 return "not_found"
+            if r.get("shared_process") and int(r.get("codex_members") or 1) > 1:
+                return "not_found"  # several Codex sessions in this chat share one app-server: no guess which window
             tuis = [p for p in _codex_tuis(folder) if r.get("shared_process") or _descends(p, pid) or p == pid]
             in_tmux = [p for p in tuis if _environ(p).get("TMUX_PANE")]
+            if not tuis:
+                return "not_found"
+            if len(tuis) > 1:
+                return "not_found"  # two Codex windows in one folder (in tmux or not): no guess
             if not in_tmux:
-                return "not_tmux" if tuis else "not_found"
-            if len(in_tmux) > 1:
-                return "not_found"  # two windows in one folder: no guess
+                return "not_tmux"
             found = _pane_of(in_tmux[0])
         else:
             return "not_found"
@@ -390,6 +419,7 @@ def settings(url: str | None, token_file: str | None) -> tuple[str, str]:
 class Relay:
     def __init__(self, base: str, token: str, codex: str, sock_dir: str, waiter: str) -> None:
         self.base, self.token, self.codex, self.sock_dir, self.waiter = base, token, codex, sock_dir, waiter
+        self.resets_done: dict[str, str] = {}  # reset id -> outcome, so a reset is typed at most once
         self.members: list[dict[str, Any]] | None = None  # open members of this host, from the last heartbeat
         self.codex_closed: set[Any] = set()  # members logged as closed codex sessions (log once)
         self.codex_unknown: set[int] = set()  # app-servers logged as unaskable (log once)
@@ -503,7 +533,9 @@ class Relay:
         if status == 204:
             return None
         if status == 200 and isinstance(wake, dict) and wake.get("type") == "reset" and wake.get("reset_id"):
-            outcome = do_reset(wake)
+            done = self.resets_done.get(str(wake["reset_id"]))  # a report that failed: report again, never type again
+            outcome = done or do_reset(wake)
+            self.resets_done[str(wake["reset_id"])] = outcome
             rid = urllib.parse.quote(str(wake["reset_id"]), safe="")
             qs = urllib.parse.urlencode({"waiter": self.waiter})
             status, _ = self.post(f"/v1/chat/resets/{rid}/done?{qs}", {"outcome": outcome}, 15)

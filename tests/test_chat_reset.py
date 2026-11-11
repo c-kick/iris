@@ -79,7 +79,8 @@ def test_outcomes_become_lines(svc):  # noqa: F811
     r2 = _claim(svc)
     svc.chat.reset_done(AGENT, r2["reset_id"], "relay-a", "reset")
     lines = _lines(svc, gid)
-    assert any(ln.endswith(": not reset (text was typed in its window; nothing was sent)") for ln in lines)
+    assert any(ln.endswith(": not reset (its input line was not empty, or could not be read; nothing was sent)")
+               for ln in lines)
     assert any(ln.endswith(": context cleared") for ln in lines)
     assert _claim(svc) is None
 
@@ -141,3 +142,34 @@ def test_page_offers_the_reset_and_marks_who_cannot():
     assert 'data-reset="${esc(m.id)}"' in fn
     assert 'async function chatReset' in js and 'confirm(`Clear the context of ${name}?' in js
     assert '[data-reset]' in js[js.index("roster.onclick"):]
+
+
+def test_an_existing_session_rejoining_steals_nothing(svc):  # noqa: F811
+    a = svc.chat.join(AGENT, kind="codex", session_id="t1", folder="/srv/app", pid=500, pid_start="srv",
+                      shared_process=True)
+    b = svc.chat.join(AGENT, kind="codex", session_id="t9", folder="/srv/app", pid=500, pid_start="srv",
+                      shared_process=True)
+    _free(svc, "t1", kind="codex")
+    svc.chat.post_owner(a["group_id"], f"/clear @{a['name']}")
+    svc.chat.reset_done(AGENT, _claim(svc)["reset_id"], "relay-a", "reset")
+    again = svc.chat.join(AGENT, kind="codex", session_id="t9", folder="/srv/app", pid=500, pid_start="srv",
+                          shared_process=True)  # b joins again (a resume): it stays b
+    assert again["member_id"] == b["member_id"]
+    assert svc.db.scalar("SELECT session_id FROM chat_members WHERE id=?", (a["member_id"],)) == "t1"
+
+
+def test_a_comma_is_no_clear_message(svc):  # noqa: F811
+    a = join(svc, "s1")
+    _free(svc, "s1")
+    out = svc.chat.post_owner(a["group_id"], f"/clear,@{a['name']}")
+    assert "resets" not in out
+
+
+def test_claim_tells_the_relay_how_many_codex_members_there_are(svc):  # noqa: F811
+    a = svc.chat.join(AGENT, kind="codex", session_id="t1", folder="/srv/app", pid=500, pid_start="srv",
+                      shared_process=True)
+    svc.chat.join(AGENT, kind="codex", session_id="t2", folder="/srv/app", pid=500, pid_start="srv",
+                  shared_process=True)
+    _free(svc, "t1", kind="codex")
+    svc.chat.post_owner(a["group_id"], f"/clear @{a['name']}")
+    assert _claim(svc)["codex_members"] == 2

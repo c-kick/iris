@@ -39,10 +39,10 @@ KINDS = ("claude", "codex")
 LEAVE_REASONS = ("ended", "stale", "left", "replaced")
 # 0.22.0: the owner's context reset (spec 2026-11-11-chat-reset-design.md). A message of only /clear and @names or
 # @all; the host relay types /clear into the member's tmux pane and reports one of these outcomes.
-CLEAR_ONLY_RE = re.compile(r"^\s*(?:@[A-Za-z][A-Za-z0-9]{0,19}[\s,]+)*/clear(?:[\s,]+@[A-Za-z][A-Za-z0-9]{0,19})*[\s,]*$")
+CLEAR_ONLY_RE = re.compile(r"^\s*(?:@[A-Za-z][A-Za-z0-9]{0,19}\s+)*/clear(?:\s+@[A-Za-z][A-Za-z0-9]{0,19})*\s*$")
 RESET_OUTCOMES = {
     "reset": "context cleared",
-    "typed": "not reset (text was typed in its window; nothing was sent)",
+    "typed": "not reset (its input line was not empty, or could not be read; nothing was sent)",
     "not_tmux": "not reset (not running in tmux)",
     "not_found": "not reset (its window was not found)",
     "busy": "not reset (busy; try again when it is free)",
@@ -1326,9 +1326,11 @@ class Chat:
                 return None
             c.execute("UPDATE chat_resets SET state='claimed', waiter_id=?, claimed_at=? WHERE id=?",
                       (waiter, iso(self.now()), r["id"]))
+        codex = c.execute("SELECT COUNT(*) FROM chat_members WHERE group_id=? AND kind='codex' AND left_at IS NULL",
+                          (r["group_id"],)).fetchone()[0]
         return {"type": "reset", "reset_id": r["id"], "member_id": r["member_id"], "kind": r["kind"],
                 "pid": r["pid"], "pid_start": r["pid_start"], "session_id": r["session_id"],
-                "shared_process": bool(r["shared_process"]), "folder": r["folder"]}
+                "shared_process": bool(r["shared_process"]), "folder": r["folder"], "codex_members": codex}
 
     def reset_done(self, client: Client, reset_id: str, waiter: str, outcome: str) -> None:
         """The host relay did (or could not do) a reset it claimed: one line in the thread. A typed /clear marks
@@ -1361,8 +1363,14 @@ class Chat:
             m = c.execute("SELECT m.* FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=?"
                           " AND g.folder=? AND g.state='open' AND m.left_at IS NULL AND m.kind=? AND m.client_id=?"
                           " AND m.reset_at IS NOT NULL AND m.reset_at>=? AND m.session_id<>?"
-                          " AND ((m.shared_process=1 AND ?) OR (m.pid=? AND m.pid_start=?)) ORDER BY m.reset_at LIMIT 1",
-                          (host, folder, kind, client.id, cutoff, session_id, int(bool(shared)), pid, pid_start)).fetchone()
+                          " AND ((m.shared_process=1 AND ?) OR (m.pid=? AND m.pid_start=?))"
+                          # only a session that is new here: an existing member or presence re-joining steals nothing
+                          " AND NOT EXISTS (SELECT 1 FROM chat_members o WHERE o.session_id=? AND o.kind=?"
+                          " AND o.left_at IS NULL)"
+                          " AND NOT EXISTS (SELECT 1 FROM chat_presence p WHERE p.session_id=? AND p.kind=?)"
+                          " ORDER BY m.reset_at LIMIT 1",
+                          (host, folder, kind, client.id, cutoff, session_id, int(bool(shared)), pid, pid_start,
+                           session_id, kind, session_id, kind)).fetchone()
             if m is None:
                 return
             c.execute("UPDATE chat_members SET session_id=?, reset_at=NULL, reset_ended_at=NULL, intent=NULL WHERE id=?",
@@ -1985,8 +1993,9 @@ class Chat:
         with self.db.tx() as c:
             for r in c.execute("SELECT r.id, r.group_id, r.member_id, m.kind, m.name FROM chat_resets r"
                                " JOIN chat_members m ON m.id=r.member_id JOIN chat_groups g ON g.id=r.group_id"
-                               " WHERE g.host=? AND r.state IN ('pending', 'claimed') AND r.created_at<?",
-                               (host, iso(t - RESET_CLAIM_TTL))).fetchall():
+                               " WHERE g.host=? AND ((r.state='pending' AND r.created_at<?)"
+                               " OR (r.state='claimed' AND r.claimed_at<?))",
+                               (host, iso(t - RESET_CLAIM_TTL), iso(t - RESET_CLAIM_TTL))).fetchall():
                 c.execute("UPDATE chat_resets SET state='done', outcome='expired', finished_at=? WHERE id=?",
                           (iso(t), r["id"]))
                 self._add_message(c, r["group_id"], "system", None,

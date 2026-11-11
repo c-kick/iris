@@ -1163,7 +1163,8 @@ async def chat_file_get(file_id: str, request: Request, client: Client = Depends
 
 class ChatResetIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    member_ids: list[Annotated[str, Field(max_length=64)]] | None = Field(default=None, max_length=50)  # None: all
+    member_ids: list[Annotated[str, Field(max_length=64)]] | None = Field(default=None, min_length=1,
+                                                                         max_length=50)  # None: all
 
 
 @router.post("/api/chats/{group_id}/reset")

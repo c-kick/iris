@@ -30,16 +30,36 @@ while True:
 
 
 def test_input_line_check():
+    top = "\u256d" + "\u2500" * 20 + "\u256e"
     box = "\u2502 > {}          \u2502"
-    before = "history\n" + box.format("") + "\n"
-    # Claude: the input line, then a suggestion list under it
-    assert relay._input_holds_clear(before, "history\n" + box.format("/clear") + "\n  /clear  clear the context")
-    assert relay._input_holds_clear("\u203a ", "\u203a /clear")  # Codex
+    before = f"history\n{top}\n" + box.format("") + "\n"
+    # Claude: border above, the input line, then a suggestion list under it
+    assert relay._input_holds_clear(before, f"history\n{top}\n" + box.format("/clear") + "\n  /clear  clear the context")
+    # Claude with a placeholder in the empty line
+    assert relay._input_holds_clear(f"{top}\n" + box.format('Try "fix lint"'), f"{top}\n" + box.format("/clear"))
+    assert relay._input_holds_clear("\u203a ", "\u203a /clear")  # Codex, nothing above
     # text was there: the changed line is "half/clear"
     assert not relay._input_holds_clear("> half", "> half/clear")
     # an earlier /clear in the history is not the input line
     assert not relay._input_holds_clear("> /clear\n> half", "> /clear\n> half/clear")
+    # a two-line draft: /clear alone on its second line, the first line above it is the draft
+    assert not relay._input_holds_clear(f"{top}\n\u2502 > fix the tests \u2502\n\u2502   \u2502",
+                                        f"{top}\n\u2502 > fix the tests \u2502\n\u2502   /clear \u2502")
     assert not relay._input_holds_clear("x", "x")
+
+
+def test_codex_refuses_when_it_cannot_tell_which_window(monkeypatch):
+    me = os.getpid()
+    base = {"kind": "codex", "pid": me, "pid_start": relay.pid_start(me), "folder": "/srv/app", "shared_process": True}
+    monkeypatch.setattr(relay, "_codex_tuis", lambda folder: [111])
+    monkeypatch.setattr(relay, "_environ", lambda pid: {"TMUX_PANE": "%1", "TMUX": "/tmp/x,1,0"})
+    monkeypatch.setattr(relay, "_pane_of", lambda pid: None)
+    assert relay.do_reset({**base, "codex_members": 2}) == "not_found", "two Codex members on one app-server"
+    monkeypatch.setattr(relay, "_codex_tuis", lambda folder: [111, 222])
+    assert relay.do_reset({**base, "codex_members": 1}) == "not_found", "two windows in the folder"
+    monkeypatch.setattr(relay, "_codex_tuis", lambda folder: [111])
+    monkeypatch.setattr(relay, "_environ", lambda pid: {})
+    assert relay.do_reset({**base, "codex_members": 1}) == "not_tmux"
 
 
 def test_the_only_text_the_relay_types_is_hard_coded():
