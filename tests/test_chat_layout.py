@@ -360,3 +360,6 @@ def test_typing_stays_cheap_with_a_long_thread():
     marks = JS[JS.index("function chatMarksSync"):JS.index("function chatMention(")]
     assert 'text.includes("@")' in marks and "marks.dataset.size !== size" in marks
     assert "contain: layout paint style" in _rule(".chat-msgs")
+    # the box is a layout boundary (an edit inside never reaches the page), its height measured on a hidden copy
+    assert "contain: strict" in _rule(".chat-compose textarea#chat-text")
+    assert "mirror.scrollHeight" in fn and 'if (ta.style.height !== h) ta.style.height = h;' in fn

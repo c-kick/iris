@@ -2600,13 +2600,33 @@ async function chatOpenThread(el, key, keep = false) {
   // Typing must stay cheap with a long thread: the box's height and the mention layer are brought up to date once
   // per frame, not per key; the height is only reset (a full layout) when text was removed, else only read; the
   // mention layer is redrawn only when the text has or had an @, and measured only when the box changed size.
+  // The box's height follows its text without ever resizing the real box just to measure it (that resized the
+  // composer, so the thread above, so every message was laid out again on each Backspace): a hidden copy outside
+  // the layout is measured, and the real box only changes when the number of lines does. The box itself is
+  // size-contained (app.css), so an edit inside it never reaches the rest of the page. (Not field-sizing: that
+  // makes the box's size depend on its text, and every edit would reach the page again.)
+  let mirror = null;
   let shrink = true;
   let queued = 0;
+  const measure = () => {
+    if (!mirror) {
+      mirror = ta.cloneNode(false);
+      mirror.removeAttribute("id"); mirror.removeAttribute("name");
+      mirror.setAttribute("aria-hidden", "true"); mirror.tabIndex = -1;
+      mirror.className = "chat-measure";
+      form.append(mirror);
+    }
+    mirror.style.width = `${ta.offsetWidth}px`;
+    mirror.value = ta.value;
+    return mirror.scrollHeight;
+  };
   const grow = () => {
     queued = 0;
-    if (!ta.value) { ta.style.height = ""; }
-    else if (shrink) { ta.style.height = "auto"; ta.style.height = `${ta.scrollHeight + 2}px`; }
-    else if (ta.scrollHeight > ta.clientHeight) ta.style.height = `${ta.scrollHeight + 2}px`;
+    if (!ta.value) ta.style.height = "";
+    else { // always the copy: the box itself is size-contained, so its own scrollHeight says nothing
+      const h = `${measure() + 2}px`;
+      if (ta.style.height !== h) ta.style.height = h;
+    }
     shrink = false;
     chatMarksSync(ta, marks);
   };

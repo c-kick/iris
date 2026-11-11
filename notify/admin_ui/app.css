@@ -616,7 +616,8 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-head:has(.chat-roster:not([hidden])) .chat-paused { visibility: hidden; }
 /* A message: who (in their colour), what they said (the reading face, the loudest thing here), then a quiet
    foot with Reply on the left and the time and read dot on the right. */
-/* contain: the thread lays out on its own, so typing in the composer never re-lays out every message */
+/* contain (size too): the thread lays out on its own, and its height comes from the page, never from its messages,
+   so typing in the composer never makes the browser lay out every message to ask how tall the thread wants to be */
 .chat-msgs { contain: layout paint style; flex: 1; overflow: auto; background: var(--side); padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .75rem; min-height: 0; overscroll-behavior: contain; }
 .cm {
   align-self: flex-start; max-width: min(78%, 46rem); padding: .55rem .9rem .4rem; border-radius: 4px 14px 14px 14px;
@@ -750,6 +751,11 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
   position: relative; display: block; width: 100%; margin: 0;
   color: var(--ink); background: transparent; resize: vertical; min-height: 78px; max-height: 40vh;
 }
+/* the hidden copy that measures the box's height (outside the layout) */
+/* the box is a layout boundary: its height is set from the hidden copy, so an edit inside it never reaches the
+   composer, the thread or anything else on the page (typing costs the same in a long chat as in an empty one) */
+.chat-compose textarea#chat-text { contain: strict; }
+.chat-compose .chat-measure { position: absolute; left: -9999px; top: 0; visibility: hidden; height: auto !important; min-height: 0; max-height: none; overflow: hidden; pointer-events: none; contain: layout paint style; }
 .chat-compose textarea:focus-visible { outline: 2px solid var(--action); outline-offset: 0; border-color: var(--action); background: transparent; }
 .chat-compose .chat-marks {
   position: absolute; top: 0; left: 0; margin: 0; overflow: hidden; pointer-events: none; user-select: none;

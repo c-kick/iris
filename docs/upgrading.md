@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.22.2
+
+No configuration change, no database change. Typing and deleting in a long chat cost the same as in an empty one: the
+message field is a layout boundary now (its height is measured on a hidden copy), so an edit never makes the browser
+lay out the thread again. Measured in Chrome with 420 messages at a 4x slowed CPU: layout per key 5.8 to 0.4 ms
+typing, 16 to about 2.5 ms for Backspace.
+
 ## Upgrading to 0.22.1
 
 No configuration change, no database change. Typing in a chat with a long history is fast again: per keystroke the
