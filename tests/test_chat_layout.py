@@ -287,7 +287,11 @@ def test_unsent_text_survives_leaving_and_stays_with_its_chat():
     assert "chatPendingLoad(gid)" in JS and "chatPendingSave(gid, list)" in JS, "uploaded but unsent files come back after a reload"
     # kept in memory on every key, written to storage within 400 ms and at once on blur, hide or leave
     assert "chatDrafts.mem[draftFor] = ta.value;" in JS and "setTimeout(saveNow, 400)" in JS
-    assert 'ta.addEventListener("blur", saveNow)' in JS and 'addEventListener("pagehide", saveNow)' in JS
+    assert 'ta.addEventListener("blur", saveNow)' in JS
+    # one page-wide flush for the open composer only, cancelled by sign-out (no listener per thread)
+    assert JS.count('addEventListener("pagehide"') == 1 and 'addEventListener("pagehide", () => chats.flushDraft?.())' in JS
+    assert "if (chats.flushDraft === saveNow && ta.isConnected)" in JS
+    assert "chats.flushDraft = null;" in JS[JS.index("function chatDraftsForget"):]
 
 
 def test_composer_sits_above_the_floating_ios_keyboard_bar():

@@ -1896,10 +1896,14 @@ function chatDraftSet(gid, text) {
   } catch { chatDrafts.stored = false; }
 }
 function chatDraftsForget() {
+  chats.flushDraft = null; // a save still pending from the composer writes nothing after sign-out
   chatDrafts.mem = {};
   chats.pendingFiles = {};
   try { Object.keys(localStorage).filter((k) => k.startsWith(DRAFT_KEY) || k.startsWith("iris-pending:")).forEach((k) => localStorage.removeItem(k)); } catch { /* blocked */ }
 }
+// leaving or hiding the page saves the draft of the composer that is open (once, here: not one listener per thread)
+addEventListener("pagehide", () => chats.flushDraft?.());
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") chats.flushDraft?.(); });
 addEventListener("beforeunload", (e) => {
   const unsavedText = !chatDrafts.stored && Object.values(chatDrafts.mem).some((t) => t.trim());
   // files still uploading cannot be kept; uploaded ones can, unless storage is blocked
@@ -2610,7 +2614,12 @@ async function chatOpenThread(el, key, keep = false) {
   // the draft goes to the browser's storage at most every 400 ms while typing, and at once when the box loses
   // focus or the page is hidden or left, so nothing typed is lost and a keystroke never waits on storage
   let saveTimer = 0;
-  const saveNow = () => { clearTimeout(saveTimer); saveTimer = 0; chatDraftSet(draftFor, ta.value); };
+  // only the composer that is open saves (chats.flushDraft): an earlier thread's, or one after sign-out, never does
+  const saveNow = () => {
+    clearTimeout(saveTimer); saveTimer = 0;
+    if (chats.flushDraft === saveNow && ta.isConnected) chatDraftSet(draftFor, ta.value);
+  };
+  chats.flushDraft = saveNow;
   ta.oninput = (e) => {
     if (!e || !e.inputType || e.inputType.startsWith("delete") || e.inputType === "historyUndo") shrink = true;
     chatDrafts.mem[draftFor] = ta.value;
@@ -2618,8 +2627,6 @@ async function chatOpenThread(el, key, keep = false) {
     later();
   };
   ta.addEventListener("blur", saveNow);
-  addEventListener("pagehide", saveNow);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") saveNow(); });
   ta.addEventListener("scroll", () => { marks.scrollTop = ta.scrollTop; }, { passive: true });
   if (window.ResizeObserver) new ResizeObserver(() => { if (marks) marks.dataset.size = ""; later(); }).observe(ta);
   grow();
