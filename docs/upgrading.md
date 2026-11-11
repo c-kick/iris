@@ -2,6 +2,14 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.22.1
+
+No configuration change, no database change. Typing in a chat with a long history is fast again: per keystroke the
+page did three full layouts (the message field's height, then the mention colours, then once more), now one; the
+thread lays out on its own (CSS containment), and the draft is written to the browser's storage at most every
+400 ms (and at once when you leave the field or the page). Measured in Chrome with 420 messages: layout time per key
+down from 16 to 6.6 ms at a 4x slowed CPU.
+
 ## Upgrading to 0.22.0
 
 The database gains a table (`chat_resets`) and two columns on `chat_members` on start. **Update `scripts/chat-relay`

@@ -133,7 +133,8 @@ def test_refresh_does_not_race_opening_a_thread_and_reports_failures():
 def test_owner_presence_counts_real_input_only():
     line = JS[JS.index('["mousemove"'):JS.index("chatLastInput = Date.now(); }")]
     assert '"scroll"' not in line, "code scrolling the thread is not the owner looking"
-    assert "chatLastInput = Date.now()" in JS[JS.index("const chatOnReturn"):JS.index("document.addEventListener(\"visibilitychange\"")]
+    ret = JS.index("const chatOnReturn")
+    assert "chatLastInput = Date.now()" in JS[ret:JS.index("document.addEventListener(\"visibilitychange\"", ret)]
 
 
 def test_pause_button_keeps_its_width():
@@ -284,7 +285,9 @@ def test_unsent_text_survives_leaving_and_stays_with_its_chat():
     assert 'addEventListener("beforeunload"' in fn, "where storage is blocked, or files are pending, leaving asks first"
     assert "chatDraftsForget(); boot();" in JS, "sign-out removes the drafts"
     assert "chatPendingLoad(gid)" in JS and "chatPendingSave(gid, list)" in JS, "uploaded but unsent files come back after a reload"
-    assert "ta.oninput = () => { chatDraftSet(draftFor, ta.value)" in JS
+    # kept in memory on every key, written to storage within 400 ms and at once on blur, hide or leave
+    assert "chatDrafts.mem[draftFor] = ta.value;" in JS and "setTimeout(saveNow, 400)" in JS
+    assert 'ta.addEventListener("blur", saveNow)' in JS and 'addEventListener("pagehide", saveNow)' in JS
 
 
 def test_composer_sits_above_the_floating_ios_keyboard_bar():
@@ -344,3 +347,12 @@ def test_six_agents_present_at_once_all_differ():
     out = json.loads(subprocess.run([node, "-e", fn + f"; console.log(JSON.stringify(chatColorIndex({json.dumps(members)})));"],
                                     capture_output=True, text=True, timeout=30).stdout)
     assert sorted(out.values()) == [0, 1, 2, 3, 4, 5]
+
+
+def test_typing_stays_cheap_with_a_long_thread():
+    fn = JS[JS.index("let shrink = true;"):JS.index("const at = chatAtPicker(el, ta")]
+    assert "requestAnimationFrame(grow)" in fn, "the box and the mention layer once per frame, not per key"
+    assert 'e.inputType.startsWith("delete")' in fn, "the height is only reset (a full layout) when text was removed"
+    marks = JS[JS.index("function chatMarksSync"):JS.index("function chatMention(")]
+    assert 'text.includes("@")' in marks and "marks.dataset.size !== size" in marks
+    assert "contain: layout paint style" in _rule(".chat-msgs")

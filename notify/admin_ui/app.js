@@ -2416,10 +2416,19 @@ async function chatFolders(el) {
 function chatMarksSync(ta, marks) {
   if (!marks) return;
   const text = ta.value;
-  marks.innerHTML = chatMentionMarks(text, chatMentionColour(chats.names)) + (text.endsWith("\n") ? " " : "");
-  const cs = getComputedStyle(ta);
-  marks.style.width = `${ta.clientWidth + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)}px`;
-  marks.style.height = `${ta.offsetHeight}px`;
+  const has = text.includes("@");
+  if (has || marks.dataset.had === "1") { // no @ now and none before: the layer stays empty, nothing to redraw
+    marks.innerHTML = has ? chatMentionMarks(text, chatMentionColour(chats.names)) + (text.endsWith("\n") ? " " : "") : "";
+    marks.dataset.had = has ? "1" : "";
+  }
+  if (!has) return;
+  const size = `${ta.clientWidth}x${ta.offsetHeight}`;
+  if (marks.dataset.size !== size) { // measuring forces a layout: only when the box changed size
+    const cs = getComputedStyle(ta);
+    marks.style.width = `${ta.clientWidth + parseFloat(cs.borderLeftWidth) + parseFloat(cs.borderRightWidth)}px`;
+    marks.style.height = `${ta.offsetHeight}px`;
+    marks.dataset.size = size;
+  }
   marks.scrollTop = ta.scrollTop;
 }
 
@@ -2584,10 +2593,35 @@ async function chatOpenThread(el, key, keep = false) {
   const draftFor = chats.currentId;
   ta.value = chatDraftGet(draftFor);
   const marks = form.querySelector("#chat-marks");
-  const grow = () => { ta.style.height = "auto"; if (ta.value) ta.style.height = `${ta.scrollHeight + 2}px`; chatMarksSync(ta, marks); };
-  ta.oninput = () => { chatDraftSet(draftFor, ta.value); grow(); };
+  // Typing must stay cheap with a long thread: the box's height and the mention layer are brought up to date once
+  // per frame, not per key; the height is only reset (a full layout) when text was removed, else only read; the
+  // mention layer is redrawn only when the text has or had an @, and measured only when the box changed size.
+  let shrink = true;
+  let queued = 0;
+  const grow = () => {
+    queued = 0;
+    if (!ta.value) { ta.style.height = ""; }
+    else if (shrink) { ta.style.height = "auto"; ta.style.height = `${ta.scrollHeight + 2}px`; }
+    else if (ta.scrollHeight > ta.clientHeight) ta.style.height = `${ta.scrollHeight + 2}px`;
+    shrink = false;
+    chatMarksSync(ta, marks);
+  };
+  const later = () => { if (!queued) queued = requestAnimationFrame(grow); };
+  // the draft goes to the browser's storage at most every 400 ms while typing, and at once when the box loses
+  // focus or the page is hidden or left, so nothing typed is lost and a keystroke never waits on storage
+  let saveTimer = 0;
+  const saveNow = () => { clearTimeout(saveTimer); saveTimer = 0; chatDraftSet(draftFor, ta.value); };
+  ta.oninput = (e) => {
+    if (!e || !e.inputType || e.inputType.startsWith("delete") || e.inputType === "historyUndo") shrink = true;
+    chatDrafts.mem[draftFor] = ta.value;
+    if (!saveTimer) saveTimer = setTimeout(saveNow, 400);
+    later();
+  };
+  ta.addEventListener("blur", saveNow);
+  addEventListener("pagehide", saveNow);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") saveNow(); });
   ta.addEventListener("scroll", () => { marks.scrollTop = ta.scrollTop; }, { passive: true });
-  if (window.ResizeObserver) new ResizeObserver(() => chatMarksSync(ta, marks)).observe(ta);
+  if (window.ResizeObserver) new ResizeObserver(() => { if (marks) marks.dataset.size = ""; later(); }).observe(ta);
   grow();
   const at = chatAtPicker(el, ta, form.querySelector("#chat-at"));
   const fyi = form.querySelector("#chat-fyi");
