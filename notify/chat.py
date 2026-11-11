@@ -37,6 +37,20 @@ QUOTE = "| "
 FOLDER_MAX = 1024
 KINDS = ("claude", "codex")
 LEAVE_REASONS = ("ended", "stale", "left", "replaced")
+# 0.22.0: the owner's context reset (spec 2026-11-11-chat-reset-design.md). A message of only /clear and @names or
+# @all; the host relay types /clear into the member's tmux pane and reports one of these outcomes.
+CLEAR_ONLY_RE = re.compile(r"^\s*(?:@[A-Za-z][A-Za-z0-9]{0,19}[\s,]+)*/clear(?:[\s,]+@[A-Za-z][A-Za-z0-9]{0,19})*[\s,]*$")
+RESET_OUTCOMES = {
+    "reset": "context cleared",
+    "typed": "not reset (text was typed in its window; nothing was sent)",
+    "not_tmux": "not reset (not running in tmux)",
+    "not_found": "not reset (its window was not found)",
+    "busy": "not reset (busy; try again when it is free)",
+    "gone": "not reset (no longer running)",
+    "expired": "not reset (its host's relay did not answer)",
+}
+RESET_WINDOW = timedelta(minutes=3)  # a reset member's new session takes it over within this time
+RESET_CLAIM_TTL = timedelta(minutes=2)  # a reset no relay took within this time expires
 STALE_REJOIN_SECONDS = 3600  # a member swept as stale whose process turns out alive within this is taken back
 STALE_GROUP_SECONDS = 7 * 86400  # an open group in which nobody was seen for this long is closed
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
@@ -666,6 +680,7 @@ class Chat:
              pid: int | None, pid_start: str | None, shared_process: bool = False) -> dict[str, Any]:
         """Join the folder's group, opening it if needed. Callers decide whether the folder takes part (presence())."""
         host, folder = self._session_args(client, kind, session_id, folder)
+        self._take_over_reset(client, host, folder, kind, session_id, pid, pid_start, shared_process)
         self._leave_other_folder(client, host, folder, kind, session_id)
         self._replace_same_process(client, host, folder, kind, session_id, pid, pid_start, shared_process)
         now = iso(self.now())
@@ -1064,6 +1079,11 @@ class Chat:
             pres = self.presence_from_handle(member_handle)  # a session that never joined ends: forget it
             self.remove_presence(pres["id"])
             return
+        if reason == "ended" and member["reset_at"] and member["reset_at"] >= iso(self.now() - RESET_WINDOW):
+            # the session ends because its context was cleared: its next session takes the member over
+            with self.db.tx() as c:
+                c.execute("UPDATE chat_members SET reset_ended_at=? WHERE id=?", (iso(self.now()), member["id"]))
+            return
         self.remove_member(member["id"], reason)
 
     def remove_presence(self, presence_id: str) -> None:
@@ -1224,8 +1244,131 @@ class Chat:
     def post_owner(self, group_id: str, text: str, in_reply_to: str | None = None, fyi: bool = False,
                    files: list[str] | None = None) -> dict[str, Any]:
         """The owner's message from the admin page (the only API that names a group id). files: ids of the
-        owner's pending uploads in this group; the text may then be empty."""
+        owner's pending uploads in this group; the text may then be empty. A message of only /clear and @names or
+        @all is no message: it asks for a context reset of those members (request_reset)."""
+        if isinstance(text, str) and not files and not in_reply_to and CLEAR_ONLY_RE.match(text):
+            everyone = False
+            names: list[str] = []
+            for n in find_mentions(text):
+                if n.casefold() == "all":
+                    everyone = True
+                else:
+                    names.append(n)
+            if everyone or names:
+                return self.request_reset(group_id, None if everyone else names)
         return self._post(group_id, None, "owner", text, in_reply_to, fyi, pending=files or None)
+
+    # ------------------------------------------------------------------ context reset (owner only)
+    def request_reset(self, group_id: str, names: list[str] | None = None,
+                      member_ids: list[str] | None = None) -> dict[str, Any]:
+        """The owner asks to clear the context of these members (names, ids, or everyone when both are None).
+        One request per member for its host relay; a member that is not free, or a Claude session that never
+        reported a tmux place, is answered at once. Every member asked about gets a line in the thread."""
+        now = iso(self.now())
+        out: list[dict[str, Any]] = []
+        unknown: list[str] = []
+        with self.db.tx() as c:
+            g = c.execute("SELECT * FROM chat_groups WHERE id=?", (group_id,)).fetchone()
+            if g is None:
+                raise NotFound("group not found")
+            if g["state"] != "open":
+                raise Invalid("group is closed")
+            open_members = c.execute("SELECT * FROM chat_members WHERE group_id=? AND left_at IS NULL"
+                                     " ORDER BY joined_at, rowid", (group_id,)).fetchall()
+            if names is not None:
+                by_name = {m["name"].casefold(): m for m in open_members if m["name"]}
+                targets = []
+                for n in names:
+                    m = by_name.get(n.casefold())
+                    if m is None:
+                        unknown.append(n)
+                    elif m not in targets:
+                        targets.append(m)
+            elif member_ids is not None:
+                targets = [m for m in open_members if m["id"] in member_ids]
+            else:
+                targets = list(open_members)
+            if not targets:
+                raise Invalid("nobody to reset: " + (", ".join(f"@{n}" for n in unknown) + " is not here"
+                                                     if unknown else "no open members"))
+            label = {m["id"]: who(m["kind"], m["name"], m["id"]) for m in targets}
+            self._add_message(c, group_id, "system", None,
+                              "You asked to reset: " + ", ".join(m["name"] or m["id"] for m in targets))
+            for m in targets:
+                if m["status"] != "free":
+                    state = "busy"
+                elif m["kind"] == "claude" and not m["tmux"]:
+                    state = "not_tmux"
+                else:
+                    state = "pending"
+                if state == "pending":
+                    busy = c.execute("SELECT 1 FROM chat_resets WHERE member_id=? AND state IN ('pending', 'claimed')",
+                                     (m["id"],)).fetchone()
+                    if busy is None:
+                        c.execute("INSERT INTO chat_resets(id, group_id, member_id, state, created_at)"
+                                  " VALUES (?, ?, ?, 'pending', ?)", (new_id("rst"), group_id, m["id"], now))
+                else:
+                    self._add_message(c, group_id, "system", None, f"{label[m['id']]}: {RESET_OUTCOMES[state]}")
+                out.append({"member_id": m["id"], "name": m["name"], "state": state})
+            self._event(c, "group.reset_requested", "owner", {"group_id": group_id,
+                                                              "members": [m["id"] for m in targets]})
+        self.svc._after_commit()
+        return {"resets": out, "unknown_mentions": unknown}
+
+    def _claim_reset(self, c: sqlite3.Connection, host: str, waiter: str) -> dict[str, Any] | None:
+        base = ("SELECT r.*, m.kind, m.pid, m.pid_start, m.session_id, m.shared_process, g.folder FROM chat_resets r"
+                " JOIN chat_members m ON m.id=r.member_id JOIN chat_groups g ON g.id=r.group_id"
+                " WHERE g.host=? AND m.left_at IS NULL AND ")
+        r = c.execute(base + "r.state='claimed' AND r.waiter_id=? ORDER BY r.rowid LIMIT 1", (host, waiter)).fetchone()
+        if r is None:
+            r = c.execute(base + "r.state='pending' ORDER BY r.rowid LIMIT 1", (host,)).fetchone()
+            if r is None:
+                return None
+            c.execute("UPDATE chat_resets SET state='claimed', waiter_id=?, claimed_at=? WHERE id=?",
+                      (waiter, iso(self.now()), r["id"]))
+        return {"type": "reset", "reset_id": r["id"], "member_id": r["member_id"], "kind": r["kind"],
+                "pid": r["pid"], "pid_start": r["pid_start"], "session_id": r["session_id"],
+                "shared_process": bool(r["shared_process"]), "folder": r["folder"]}
+
+    def reset_done(self, client: Client, reset_id: str, waiter: str, outcome: str) -> None:
+        """The host relay did (or could not do) a reset it claimed: one line in the thread. A typed /clear marks
+        the member, so its next session takes it over (same name and colour) and its old session's end is not
+        a leave."""
+        if outcome not in RESET_OUTCOMES or outcome == "expired":
+            raise Invalid("unknown outcome")
+        host = self._host(client)
+        now = iso(self.now())
+        with self.db.tx() as c:
+            r = c.execute("SELECT r.*, m.kind, m.name FROM chat_resets r JOIN chat_members m ON m.id=r.member_id"
+                          " JOIN chat_groups g ON g.id=r.group_id WHERE r.id=? AND g.host=?", (reset_id, host)).fetchone()
+            if r is None:
+                raise NotFound("no such reset")
+            if r["state"] != "claimed" or r["waiter_id"] != waiter:
+                raise Conflict("this reset is not claimed by this waiter")
+            c.execute("UPDATE chat_resets SET state='done', outcome=?, finished_at=? WHERE id=?", (outcome, now, reset_id))
+            self._add_message(c, r["group_id"], "system", None,
+                              f"{who(r['kind'], r['name'], r['member_id'])}: {RESET_OUTCOMES[outcome]}")
+            if outcome == "reset":
+                c.execute("UPDATE chat_members SET reset_at=?, reset_ended_at=NULL WHERE id=?", (now, r["member_id"]))
+        self.svc._after_commit()
+
+    def _take_over_reset(self, client: Client, host: str, folder: str, kind: str, session_id: str,
+                         pid: int | None, pid_start: str | None, shared: bool) -> None:
+        """A new session after a typed /clear: the member that was reset (same process, or for a session in a
+        shared app-server the same folder) continues as this session, with its name and colour."""
+        cutoff = iso(self.now() - RESET_WINDOW)
+        with self.db.tx() as c:
+            m = c.execute("SELECT m.* FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=?"
+                          " AND g.folder=? AND g.state='open' AND m.left_at IS NULL AND m.kind=? AND m.client_id=?"
+                          " AND m.reset_at IS NOT NULL AND m.reset_at>=? AND m.session_id<>?"
+                          " AND ((m.shared_process=1 AND ?) OR (m.pid=? AND m.pid_start=?)) ORDER BY m.reset_at LIMIT 1",
+                          (host, folder, kind, client.id, cutoff, session_id, int(bool(shared)), pid, pid_start)).fetchone()
+            if m is None:
+                return
+            c.execute("UPDATE chat_members SET session_id=?, reset_at=NULL, reset_ended_at=NULL, intent=NULL WHERE id=?",
+                      (session_id, m["id"]))
+            self._add_message(c, m["group_id"], "system", None,
+                              f"{who(m['kind'], m['name'], m['id'])} started a fresh context")
 
     @staticmethod
     def _resolve_mentions(c: sqlite3.Connection, group_id: str, member_id: str | None,
@@ -1711,12 +1854,19 @@ class Chat:
         return {"wake_id": w["id"], "message_id": w["message_id"], "member_id": w["member_id"], "kind": m["kind"],
                 "session_id": m["session_id"], "pid": m["pid"], "pid_start": m["pid_start"]}
 
-    async def claim_host(self, client: Client, waiter: str, wait: float) -> dict[str, Any] | None:
+    async def claim_host(self, client: Client, waiter: str, wait: float, resets: bool = False) -> dict[str, Any] | None:
         """Long-poll for the host relay: the wake this waiter already holds, else the oldest pending wake of any
-        open member on the client's host. None on timeout."""
+        open member on the client's host. None on timeout. resets: the relay can do context resets (0.22.0); only
+        then does it get them, before wakes ({"type": "reset", ...}, no text)."""
         host = self._host(client)
         deadline = time.monotonic() + max(0.0, min(wait, 55.0))
         while True:
+            if resets:
+                with self.db.tx() as c:
+                    r = self._claim_reset(c, host, waiter)
+                if r is not None:
+                    self.svc._after_commit()
+                    return r
             got = self._claim_once(host, waiter)
             if got is not None:
                 out, message_id = got
@@ -1829,9 +1979,32 @@ class Chat:
                           " retry_after=? WHERE id=?", (attempts, iso(now + timedelta(seconds=delay)), wake_id))
         self.svc._after_commit()
 
+    def _sweep_resets(self, host: str) -> None:
+        """Resets nobody took expire with a line; a member reset without a new session within RESET_WINDOW leaves."""
+        t = self.now()
+        with self.db.tx() as c:
+            for r in c.execute("SELECT r.id, r.group_id, r.member_id, m.kind, m.name FROM chat_resets r"
+                               " JOIN chat_members m ON m.id=r.member_id JOIN chat_groups g ON g.id=r.group_id"
+                               " WHERE g.host=? AND r.state IN ('pending', 'claimed') AND r.created_at<?",
+                               (host, iso(t - RESET_CLAIM_TTL))).fetchall():
+                c.execute("UPDATE chat_resets SET state='done', outcome='expired', finished_at=? WHERE id=?",
+                          (iso(t), r["id"]))
+                self._add_message(c, r["group_id"], "system", None,
+                                  f"{who(r['kind'], r['name'], r['member_id'])}: {RESET_OUTCOMES['expired']}")
+            gone = [r[0] for r in c.execute(
+                "SELECT m.id FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.host=?"
+                " AND m.left_at IS NULL AND m.reset_ended_at IS NOT NULL AND m.reset_ended_at<?",
+                (host, iso(t - RESET_WINDOW)))]
+            c.execute("UPDATE chat_members SET reset_at=NULL WHERE reset_at IS NOT NULL AND reset_at<?"
+                      " AND reset_ended_at IS NULL", (iso(t - RESET_WINDOW),))
+        for mid in gone:
+            self.remove_member(mid, "ended")
+        self.svc._after_commit()
+
     def heartbeat(self, client: Client, alive: list[dict[str, Any]]) -> dict[str, Any]:
         """The relay reports which members' processes are alive; returns every open member of its host."""
         host = self._host(client)
+        self._sweep_resets(host)
         t = self.now()
         now = iso(t)
         since, last = self.relay_seen.get(host, (t, t))

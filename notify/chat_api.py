@@ -104,10 +104,25 @@ async def heartbeat(body: HeartbeatIn, request: Request, client: Client = Depend
 @router.post("/wakes/claim")
 @_errors
 async def claim(request: Request, waiter: str = Query(min_length=1, max_length=100),
-                wait: float = Query(default=25.0, ge=0, le=55),
+                wait: float = Query(default=25.0, ge=0, le=55), resets: bool = Query(default=False),
                 client: Client = Depends(require(Scope.chat))) -> Any:
-    got = await service(request).chat.claim_host(client, waiter, wait)
+    """resets=true: this relay can clear a session's context (0.22.0); it then also gets {"type": "reset", ...}."""
+    got = await service(request).chat.claim_host(client, waiter, wait, resets=resets)
     return Response(status_code=204) if got is None else got
+
+
+class ResetDoneIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    outcome: str = Field(max_length=20)
+
+
+@router.post("/resets/{reset_id}/done", status_code=204)
+@_errors
+async def reset_done(reset_id: str, body: ResetDoneIn, request: Request,
+                     waiter: str = Query(min_length=1, max_length=100),
+                     client: Client = Depends(require(Scope.chat))) -> Response:
+    service(request).chat.reset_done(client, reset_id[:64], waiter, body.outcome)
+    return Response(status_code=204)
 
 
 @router.post("/wakes/{wake_id}/release", status_code=204)

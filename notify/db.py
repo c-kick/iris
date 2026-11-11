@@ -371,6 +371,12 @@ class Database:
                                    "chat_messages": {"model": "TEXT"}})
         # 0.21.0: where the session runs in tmux (session:window.pane), from its hook
         self._add_missing_columns({"chat_members": {"tmux": "TEXT"}, "chat_presence": {"tmux": "TEXT"}})
+        # 0.22.0: context resets the owner asked for (the host relay types /clear), and a member being reset
+        self.conn.execute("CREATE TABLE IF NOT EXISTS chat_resets (id TEXT PRIMARY KEY, group_id TEXT NOT NULL,"
+                          " member_id TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT, waiter_id TEXT,"
+                          " created_at TEXT NOT NULL, claimed_at TEXT, finished_at TEXT)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS ix_chat_resets_state ON chat_resets(state, created_at)")
+        self._add_missing_columns({"chat_members": {"reset_at": "TEXT", "reset_ended_at": "TEXT"}})
         if not had_adhoc:  # 0.14.0: a group open at the upgrade stays open as an ad-hoc group until it empties
             self.conn.execute("UPDATE chat_groups SET adhoc=1 WHERE state='open'")
         self._name_open_members()

@@ -902,7 +902,10 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
                         "claims": len(claims.get(m["id"], [])), "oldest_claim": (claims.get(m["id"]) or [None])[0],
                         "intent": m["intent"] if show_text else None,
                         "model": model_label(m["model"]), "model_id": m["model"],
-                        "tmux": m["tmux"] if show_text else None})  # a session name can name a project
+                        "tmux": m["tmux"] if show_text else None,  # a session name can name a project
+                        # 0.22.0: can the owner clear its context from here (needs tmux; Codex: its window's)
+                        "resettable": m["kind"] != "claude" or bool(m["tmux"]),
+                        "reset_note": None if (m["kind"] != "claude" or m["tmux"]) else "not running in tmux"})
     presences = ([{"kind": p["kind"], "since": p["started_at"]} for p in svc.db.query(
         "SELECT kind, started_at FROM chat_presence WHERE host=? AND folder=? ORDER BY rowid", (g["host"], g["folder"]))]
         if g["state"] == "open" else [])
@@ -1156,6 +1159,28 @@ async def chat_file_get(file_id: str, request: Request, client: Client = Depends
         "Content-Disposition": disp, "X-Content-Type-Options": "nosniff", "Content-Security-Policy": FILE_CSP,
         "Cache-Control": "private, no-cache", "ETag": etag, "Cross-Origin-Resource-Policy": "same-origin"},
         background=BackgroundTask(release))
+
+
+class ChatResetIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    member_ids: list[Annotated[str, Field(max_length=64)]] | None = Field(default=None, max_length=50)  # None: all
+
+
+@router.post("/api/chats/{group_id}/reset")
+async def chat_reset(group_id: str, body: ChatResetIn, request: Request,
+                     client: Client = Depends(admin)) -> dict[str, Any]:
+    """The owner clears agents' context (the reset button; a /clear message in the thread does the same)."""
+    require_session(client)
+    _check_browser_mutation(request)
+    svc = _svc(request)
+    _chat_group(svc, group_id)
+    try:
+        return svc.chat.request_reset(group_id, None, body.member_ids) if body.member_ids \
+            else svc.chat.request_reset(group_id)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Invalid as e:
+        raise HTTPException(409 if "closed" in str(e) else 422, str(e)) from e
 
 
 @router.post("/api/chats/{group_id}/seen")
