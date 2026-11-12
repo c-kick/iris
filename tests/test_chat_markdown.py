@@ -273,3 +273,19 @@ def test_earlier_sessions_use_their_own_members_and_offer_no_reply():
     js = (UI / "app.js").read_text()
     assert "d.messages.map((m) => chatMessageHtml(m, false, names))" in js
     assert "d.messages.map(chatMessageHtml)" not in js
+
+
+@needs_node
+def test_the_owner_mention_takes_the_owner_colour():
+    script = ('import { chatMarkdown, chatMentionMarks } from "./chatmd.js";'
+              'const colour = (n) => ["klaas", "owner"].includes(n.toLowerCase()) ? "owner" : undefined;'
+              'console.log(JSON.stringify([chatMarkdown("@Klaas look, @owner too, @Nobody", colour),'
+              ' chatMentionMarks("@Klaas x", colour), chatMarkdown("> @Klaas quoted", colour)]));')
+    out = subprocess.run([NODE, "--input-type=module", "-e", script], capture_output=True, text=True, timeout=30, cwd=UI)
+    assert out.returncode == 0, out.stderr
+    md, mk, quoted = json.loads(out.stdout)
+    assert '<span class="mention owner" style="--who: var(--action)">@Klaas</span>' in md
+    assert '<span class="mention owner" style="--who: var(--action)">@owner</span>' in md
+    assert md.count('class="mention') == 2
+    assert '<mark class="mention owner" style="--who: var(--action)">@Klaas</mark>' in mk
+    assert 'class="mention' not in quoted

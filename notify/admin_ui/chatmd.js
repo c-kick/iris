@@ -33,12 +33,15 @@ function headingText(line) {
 // not on a quoted line (starting with > or |), whose mentions are someone else's
 const QUOTED = /^\s*[>|]/;
 const MENTION = /(?<![^\s(\[{<"'])@([A-Za-z][A-Za-z0-9]{0,19})(?![A-Za-z0-9])/g;
-// colour(name) -> the agent colour index of the member called name (0..15), or undefined: then it stays plain text
+// colour(name) -> the agent colour index of the member called name (0..15), "owner" for the owner's name (0.23.1),
+// or undefined: then it stays plain text
 const mentionIndex = (colour, name) => {
   const ci = colour ? colour(name) : undefined;
-  return Number.isInteger(ci) && ci >= 0 && ci < 16 ? ci : undefined;
+  return ci === "owner" || (Number.isInteger(ci) && ci >= 0 && ci < 16) ? ci : undefined;
 };
-const mentionHtml = (tag, ci, name) => `<${tag} class="mention" style="--who: var(--a${ci})">@${esc(name)}</${tag}>`;
+const mentionHtml = (tag, ci, name) => ci === "owner"
+  ? `<${tag} class="mention owner" style="--who: var(--action)">@${esc(name)}</${tag}>`
+  : `<${tag} class="mention" style="--who: var(--a${ci})">@${esc(name)}</${tag}>`;
 
 const linkHtml = (url, label) => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label)}</a>`;
 

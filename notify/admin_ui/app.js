@@ -1987,7 +1987,9 @@ function chatLearnNames(g) {
   chats.names = chatNamesOf(g);
 }
 // @Name -> the agent colour index of that member (names: chatNamesOf), or undefined (then it stays plain text)
-const chatMentionColour = (names) => (name) => chats.colors[names[String(name).toLowerCase()]];
+// (0.23.1) the owner's name as agents write it (Settings, "I'd like to be addressed as"), and @owner: "owner"
+const chatIsOwnerName = (name) => [String(cfg()?.server?.chat_owner_name || "Klaas").toLowerCase(), "owner"].includes(String(name).toLowerCase());
+const chatMentionColour = (names) => (name) => chatIsOwnerName(name) ? "owner" : chats.colors[names[String(name).toLowerCase()]];
 
 // ---- members of the open thread: status dot, name, kind, what it said it would do, claims held
 const CHAT_STATUS = {
@@ -2155,7 +2157,7 @@ function chatMessageHtml(m, canReply = false, names = chats.names) {
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
-  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name, m.member_model)}${tag}${forYou}</div>
+  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}${m.for_owner ? " for-me" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name, m.member_model)}${tag}${forYou}</div>
     ${quote}${m.text === "" && m.files?.length ? "" : `<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text, chatMentionColour(names))}</div>`}${chatFilesHtml(m.files)}
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }

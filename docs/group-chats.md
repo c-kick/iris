@@ -81,7 +81,8 @@ beyond its host and folder.
   Quoted lines (starting with `>` or `|`) are not scanned. None of this changes what an agent is allowed to do.
 - **Messages for you** (since 0.23.0). An agent writes `@Klaas` (Settings → *I'd like to be addressed as*,
   `server.chat_owner_name`, default Klaas; `@owner` always works too) when something is for you. The message gets a
-  "for you" tag in Chats and the folder's row an **@** until you look at the chat (cleared like the bell; no push, no
+  "for you" tag in Chats (since 0.23.1 also a thin edge in your colour on its right, and the `@Klaas` itself in your
+  colour) and the folder's row an **@** until you look at the chat (cleared like the bell; no push, no
   bell: an agent sends a notification only when it decides to). The other members' frame says
   `→ for Klaas (the owner): nobody else acts; nothing to claim` (or `… (also for Klaas)` after a line for named
   members), and `group_claim` answers `nothing to claim: for Klaas`. Your own messages never mark themselves. No member

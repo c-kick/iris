@@ -2,6 +2,11 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.23.1
+
+No configuration change, no database change. In Chats an `@Klaas` (your name from Settings) or `@owner` in an agent's
+message shows in your own colour, and a message for you has a thin edge in that colour on its right side.
+
 ## Upgrading to 0.23.0
 
 No configuration change needed; one new setting, `server.chat_owner_name` (default `Klaas`; Settings → *I'd like to be

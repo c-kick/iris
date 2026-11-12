@@ -777,6 +777,8 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 }
 /* a mention of a member in a message: its name in its agent colour */
 .cm .body .mention { color: var(--who); font-weight: 600; }
+/* 0.23.1: a message for the owner: a thin edge in the owner's colour on the right (a shadow, so nothing moves) */
+.cm.for-me { box-shadow: inset -3px 0 0 var(--action); }
 .chat-replying { grid-column: 1 / -1; display: flex; align-items: center; gap: .5rem; padding: .25rem .6rem; border-left: 3px solid var(--action); background: var(--action-wash); font-size: .82rem; color: var(--muted); border-radius: 0 6px 6px 0; }
 .chat-replying[hidden] { display: none; }
 .chat-replying .rq { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,6 +1,6 @@
 [project]
 name = "iris"
-version = "0.23.0"
+version = "0.23.1"
 description = "Unified, provider-agnostic notification service with REST and MCP interfaces"
 requires-python = ">=3.12"
 
