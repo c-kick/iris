@@ -48,6 +48,24 @@ def test_input_line_check():
     assert not relay._input_holds_clear("x", "x")
 
 
+def test_input_line_check_suggestions_above_the_box():
+    """Claude Code 2.1.322 (captured 2026-11-12): the suggestion list opens above the input box, so the first changed
+    line with /clear is the suggestion row, not the input line."""
+    rule = "─" * 40
+    sugg = "  ❯ /clear                     Start a new session with empty context; previous sess"
+    before = "\n".join(["history", "", rule, "❯ Try \"how do I log an error?\"", rule,
+                        "  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents"])
+    after = "\n".join(["history", sugg, rule, "❯ /clear", rule,
+                       "  ⏵⏵ auto mode on (shift+tab to cycle)"])
+    assert relay._input_holds_clear(before, after)
+    # the same screen with a draft in the input: never sent
+    assert not relay._input_holds_clear(before.replace("Try \"how do I log an error?\"", "half"),
+                                        after.replace(" /clear", " half/clear"))
+    # a two-line draft under the suggestions: the line above the input's /clear is the draft
+    assert not relay._input_holds_clear("\n".join(["", rule, "❯ fix", rule]),
+                                        "\n".join([sugg, rule, "❯ fix", "  /clear", rule]))
+
+
 def test_codex_refuses_when_it_cannot_tell_which_window(monkeypatch):
     me = os.getpid()
     base = {"kind": "codex", "pid": me, "pid_start": relay.pid_start(me), "folder": "/srv/app", "shared_process": True}

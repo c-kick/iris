@@ -156,15 +156,19 @@ BORDER_CHARS = " \t\u2500\u2501\u2550\u256d\u256e\u2570\u256f\u250c\u2510\u2514\
 
 def _input_holds_clear(before: str, after: str) -> bool:
     """The input line holds exactly /clear and nothing else is in the input: of the lines that changed when it was
-    typed, the topmost one that shows /clear (a suggestion list opens below the input) has nothing else once the
-    prompt and box characters are off, and the line above it is the box's edge or empty (so it is not the second
-    line of a draft, nor the rest of a draft that wrapped). Lines already on screen (an earlier /clear in the
+    typed, the topmost one that shows /clear has nothing else once the prompt and box characters are off, and the
+    line above it is the box's edge or empty (so it is not the second line of a draft, nor the rest of a draft that
+    wrapped). A suggestion row ("/clear   Start a new session…") is passed over: Claude Code opens that list below
+    the input in older versions and above it since 2.1.3xx. Lines already on screen (an earlier /clear in the
     history) never count. When unsure: False, and nothing is sent."""
     old = before.splitlines()
     new = after.splitlines()
     for i, line in enumerate(new):
         if CLEAR in line and (i >= len(old) or old[i] != line):
-            if line.strip(PROMPT_CHARS) != CLEAR:
+            text = line.strip(PROMPT_CHARS)
+            if text.startswith(CLEAR) and text[len(CLEAR):len(CLEAR) + 1] in (" ", "\t"):
+                continue  # a suggestion row: the command and its description
+            if text != CLEAR:
                 return False
             above = new[i - 1] if i > 0 else ""
             return not above.strip(BORDER_CHARS)

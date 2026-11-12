@@ -2,6 +2,13 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.22.6
+
+No configuration change, no database change; only the host relay changed: restart it (`systemctl --user restart
+chat-relay`). Clearing an agent's context works again with Claude Code 2.1.3xx, which opens the `/clear` suggestion
+list above the input box: the relay took that row for the input line and answered "not reset (its input line was not
+empty …)". A draft in the input is still never sent.
+
 ## Upgrading to 0.22.5
 
 No configuration change, no database change. The "new messages" pill counts only messages (and a history request
