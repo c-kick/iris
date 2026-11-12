@@ -732,6 +732,7 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .kind-tag { font: 500 .68rem var(--font); letter-spacing: .02em; padding: .05rem .4rem; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
 .kind-tag.fyi { color: var(--waiting); border-color: color-mix(in srgb, var(--waiting) 40%, var(--line)); }
 .kind-tag.all { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.chat-at-mark { color: var(--action); }
 .kind-tag.for { color: var(--action); border-color: color-mix(in srgb, var(--action) 40%, var(--line)); }
 .chat-compose[hidden], .chat-paused[hidden], .chat-watch[hidden], #chat-pausebtn[hidden], #chat-limitbtn[hidden], .chat-readonly[hidden] { display: none; }
 #chat-limitbtn { font-size: .76rem; color: var(--muted); }

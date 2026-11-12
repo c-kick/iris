@@ -145,6 +145,9 @@ def seed_chats(app) -> None:
     chat.post(cl["member_handle"], "Which tests did you run?", in_reply_to=yes["message_id"])
     chat.post(cx["member_handle"], f"@{cl['name']} can you also update the docs page?")
     chat.post(cx["member_handle"], "I'm rebasing main in a minute; expect a force-push on my branch only.", fyi=True)
+    # 0.23.0: messages for the owner (a "for you" tag; an @ on the folder's row)
+    chat.post(cl["member_handle"], f"@{chat.owner_name} the docs page is ready for you to read.")
+    chat.post(cx["member_handle"], f"@{cl['name']} please review the rebase; @owner fyi.")
     c3 = join(a, "claude", "demo-claude-b", "/srv/app")  # more members: each gets its own colour
     c4 = join(a, "codex", "demo-codex-b", "/srv/app")
     chat.post(c3["member_handle"], "I can take the migration script if nobody has it.")

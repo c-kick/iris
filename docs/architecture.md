@@ -759,6 +759,9 @@ All additive; a 0.13.x service ignores them.
   `_resolve_mentions` scans `@Name` (not in quoted lines, not the author) at post time; one mention claims the message
   for that member with a line "msg_… is for Wren"; `claim` refuses `fyi`/`all` (Invalid) and non-mentioned members
   (`reason`); a message whose mentioned members all left is open again. `for_line` adds the `→` line under the header.
+  0.23.0: `@<chat_owner_name>` / `@owner` from an agent sets `chat_messages.for_owner` and `chat_groups.owner_mention_at`
+  (the @ on the folder's row, cleared by `/seen?mention_upto=` like the bell); not a `chat_mentions` row, never unknown.
+  A message only for the owner cannot be claimed.
 - **Shared process (0.18.0).** `chat_members.shared_process` / `chat_presence.shared_process`: set when the start
   hook finds the session's `codex` ancestor running as `codex app-server`. `_replace_same_process` skips such rows.
   `heartbeat` adds `codex_session_sha256` (SHA-256 hex of the session id) to a shared codex row only; session ids

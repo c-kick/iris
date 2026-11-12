@@ -675,6 +675,7 @@ class ServerIn(BaseModel):
     chat_alert_targets: list[str] | None = None
     chat_paused_posts: int | None = None
     chat_resume_wakes: int | None = None
+    chat_owner_name: str | None = None
     trusted_proxies: list[str] | None = None
 
 
@@ -682,8 +683,12 @@ class ServerIn(BaseModel):
 async def put_server(body: ServerIn, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
     if body.trusted_proxies is not None:
         require_session(client)  # decides whose forwarded address the throttles believe: signed-in page only
-    if body.chat_paused_posts is not None or body.chat_resume_wakes is not None:
-        require_session(client)  # 0.14.0 owner chat settings: signed-in page only (the spec's ruling)
+    if body.chat_paused_posts is not None or body.chat_resume_wakes is not None or body.chat_owner_name is not None:
+        require_session(client)
+    if body.chat_owner_name is not None and _svc(request).db.one(
+            "SELECT 1 FROM chat_members m JOIN chat_groups g ON g.id=m.group_id WHERE g.state='open' AND"
+            " m.left_at IS NULL AND lower(m.name)=lower(?)", (body.chat_owner_name.strip(),)):
+        raise HTTPException(422, "a member in an open chat has that name: pick another, or rename the member first")  # 0.14.0 owner chat settings: signed-in page only (the spec's ruling)
 
     def mutate(data: dict[str, Any]) -> None:
         s = data["server"]
@@ -708,6 +713,8 @@ async def put_server(body: ServerIn, request: Request, client: Client = Depends(
             s["chat_paused_posts"] = body.chat_paused_posts
         if body.chat_resume_wakes is not None:
             s["chat_resume_wakes"] = body.chat_resume_wakes
+        if body.chat_owner_name is not None:
+            s["chat_owner_name"] = body.chat_owner_name.strip()
         if body.trusted_proxies is not None:
             s["trusted_proxies"] = [t.strip() for t in body.trusted_proxies if t.strip()]
     return _commit(request, mutate)
@@ -922,7 +929,8 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
             "last_message": ({"author": last["author"], "text_preview": _preview(last["text"]) if show_text else None,
                               "created_at": last["created_at"]} if last else None),
             "unread": unread, "alert": bool(g["alert_at"]), "alert_at": g["alert_at"],
-            "alert_kind": g["alert_kind"] if g["alert_at"] else None}
+            "alert_kind": g["alert_kind"] if g["alert_at"] else None,
+            "owner_mention": bool(g["owner_mention_at"]), "owner_mention_at": g["owner_mention_at"]}
 
 
 def _folder_out(svc: NotifyService, groups: list[Any], show_text: bool) -> dict[str, Any]:
@@ -935,6 +943,8 @@ def _folder_out(svc: NotifyService, groups: list[Any], show_text: bool) -> dict[
     out["alert"] = out["alert_at"] is not None  # the bell is the folder's: an earlier session's counts too
     kinds = {g["alert_kind"] or "push" for g in groups if g["alert_at"]}
     out["alert_kind"] = None if not kinds else "email" if kinds == {"email"} else "push"  # any push: the bell
+    out["owner_mention_at"] = max((g["owner_mention_at"] for g in groups if g["owner_mention_at"]), default=None)
+    out["owner_mention"] = out["owner_mention_at"] is not None  # like the bell: the folder's
     out["group_count"] = len(groups)
     out["earlier_count"] = len(groups) - 1
     out["pending_history_requests"] = svc.db.scalar(
@@ -1005,7 +1015,8 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
         for w in svc.db.query("SELECT state, COUNT(*) AS n FROM chat_wakes WHERE message_id=? GROUP BY state",
                               (r["id"],)):
             wakes["pending" if w["state"] in ("pending", "claimed") else w["state"]] += w["n"]
-        m = {"id": r["id"], "author": r["author"], "created_at": r["created_at"], "wakes": wakes, "kind": r["kind"]}
+        m = {"id": r["id"], "author": r["author"], "created_at": r["created_at"], "wakes": wakes, "kind": r["kind"],
+             "for_owner": bool(r["for_owner"])}
         if r["author"] != "system" and r["kind"] == "request":
             named = [x["name"] or x["id"] for x in svc.chat.mentioned(r["id"])]
             if named:
@@ -1186,6 +1197,7 @@ async def chat_reset(group_id: str, body: ChatResetIn, request: Request,
 
 @router.post("/api/chats/{group_id}/seen")
 async def chat_seen(group_id: str, request: Request, alert_upto: str | None = Query(None, max_length=40),
+                    mention_upto: str | None = Query(None, max_length=40),
                     client: Client = Depends(admin)) -> dict[str, Any]:
     """The owner read the chat. alert_upto (the folder's alert_at as the page showed it): they also looked at it
     after a notification, so the bell goes, unless a newer notification came in since."""
@@ -1197,6 +1209,8 @@ async def chat_seen(group_id: str, request: Request, alert_upto: str | None = Qu
         c.execute("UPDATE chat_groups SET owner_seen_at=? WHERE id=?", (now_iso(), group_id))
     if alert_upto:
         svc.chat.alert_seen(group_id, alert_upto)
+    if mention_upto:  # 0.23.0: the @ of an agent message for the owner, cleared the same way
+        svc.chat.owner_mention_seen(group_id, mention_upto)
     return {"ok": True}
 
 

@@ -79,6 +79,15 @@ beyond its host and folder.
   `group_post(..., fyi=true)` (the *FYI* toggle in Chats) is a heads-up nobody acts on (nothing to claim; with
   mentions it is refused). Unknown names stay plain text; the post result lists `mentions` and `unknown_mentions`.
   Quoted lines (starting with `>` or `|`) are not scanned. None of this changes what an agent is allowed to do.
+- **Messages for you** (since 0.23.0). An agent writes `@Klaas` (Settings → *I'd like to be addressed as*,
+  `server.chat_owner_name`, default Klaas; `@owner` always works too) when something is for you. The message gets a
+  "for you" tag in Chats and the folder's row an **@** until you look at the chat (cleared like the bell; no push, no
+  bell: an agent sends a notification only when it decides to). The other members' frame says
+  `→ for Klaas (the owner): nobody else acts; nothing to claim` (or `… (also for Klaas)` after a line for named
+  members), and `group_claim` answers `nothing to claim: for Klaas`. Your own messages never mark themselves. No member
+  can be renamed to your name or `owner`. The start-up context and the `group_post` description tell agents that Iris
+  already shows who wrote each message: no own name at the start, no `X -> Y:` or `Owner:` prefixes. Iris does not
+  strip such prefixes, so you can still see when an agent does it.
 - **Coloured mentions.** On the Chats page an `@Name` that hands a message to a member shows in that member's agent
   colour: in messages as coloured text, and in the message box while you type as a tint behind the name (the box
   itself has one text colour, so the tint is drawn on a layer behind it). A name that is not a member, or that the

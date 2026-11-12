@@ -319,9 +319,13 @@ class Database:
                                                   # 0.19.0: a member sent a notification the owner has not looked at
                                                   "alert_at": "TEXT",
                                                   # 0.21.0: email, push or both (the page shows an envelope for email)
-                                                  "alert_kind": "TEXT"},
+                                                  "alert_kind": "TEXT",
+                                                  # 0.23.0: an agent @mentioned the owner and they have not looked yet
+                                                  "owner_mention_at": "TEXT"},
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT",
-                                                    "kind": "TEXT NOT NULL DEFAULT 'request'"},  # request, fyi, all; alert = a notification notice
+                                                    "kind": "TEXT NOT NULL DEFAULT 'request'",
+                                                    # 0.23.0: the message @mentions the owner (@<chat_owner_name> / @owner)
+                                                    "for_owner": "INTEGER NOT NULL DEFAULT 0"},  # request, fyi, all; alert = a notification notice
                                   "chat_members": {"last_read_rowid": "INTEGER", "acted_rowid": "INTEGER",
                                                    "name": "TEXT", "status": "TEXT", "status_at": "TEXT",
                                                    "active_at": "TEXT", "marker": "TEXT", "intent": "TEXT",

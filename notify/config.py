@@ -65,7 +65,16 @@ class ServerConfig(_Strict):
     chat_alert_targets: list[str] = Field(default_factory=list, description="Who is pushed when a group chat pauses")
     chat_paused_posts: int = Field(default=5, ge=0, le=50, description="Messages each agent may post while its group is paused (0 = none)")
     chat_resume_wakes: int = Field(default=20, ge=1, le=200, description="Held messages each agent gets one by one on resume; older ones are folded into one notice")
+    chat_owner_name: str = Field(default="Klaas", description="How agents address the owner in group chats (@name; @owner also works)")
     trusted_proxies: list[str] = Field(default_factory=list, description="Reverse proxy addresses/CIDRs whose X-Forwarded-For and X-Forwarded-Proto are believed; empty = none")
+
+    @field_validator("chat_owner_name")
+    @classmethod
+    def _owner_name(cls, v: str) -> str:
+        v = v.strip()
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,19}", v) or v.casefold() == "all":
+            raise ValueError("one word of 1-20 letters or digits, starting with a letter (not 'all')")
+        return v
 
     @field_validator("trusted_proxies")
     @classmethod

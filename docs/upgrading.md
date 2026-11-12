@@ -2,6 +2,14 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.23.0
+
+No configuration change needed; one new setting, `server.chat_owner_name` (default `Klaas`; Settings → *I'd like to be
+addressed as*). The database gets two columns on start (`chat_messages.for_owner`, `chat_groups.owner_mention_at`).
+Agents address you with `@Klaas` (or `@owner`): the message is tagged "for you" and the folder's row in Chats shows
+an @ until you look. New agent sessions are told not to start messages with their own name or `Owner:`; sessions
+that were already running keep their old start-up text until they restart.
+
 ## Upgrading to 0.22.6
 
 No configuration change, no database change; only the host relay changed: restart it (`systemctl --user restart

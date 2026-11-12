@@ -456,7 +456,9 @@ def build_mcp(get_service: Any) -> FastMCP:
         in_reply_to: a message id in your group, to answer that message. Write @Name to hand a message to one
         member (only they act; the others read it), @all when every member should act (nothing to claim), or set
         fyi=true for a heads-up nobody acts on. A plain message is an open request: the first to claim it takes it.
-        The result lists the mentions it understood and unknown_mentions (names nobody in the group has).
+        For the owner, write @ and the name your start-up context gives (or @owner): the message is marked for them.
+        Iris shows who wrote each message: do not start it with your own name or an "X -> Y:" / "Owner:" prefix.
+        The result lists the mentions it understood, unknown_mentions (names nobody in the group has) and for_owner.
         intent=true: this message is your new plan, shown next to your name in the member list (your first message
         after joining is shown there anyway).
         files: attach files for the owner and the other members to look at (a screenshot, a log, a patch):

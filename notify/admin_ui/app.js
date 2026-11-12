@@ -844,6 +844,8 @@ const VIEWS = {
                         help: "How many messages each agent may still post while its group is paused (0–50; 0: none). A group can override it." })}
           ${fieldHtml({ name: "chat_resume_wakes", label: "Messages delivered on resume", kind: "int", value: s.chat_resume_wakes ?? 20,
                         help: "On resume each agent gets at most this many held messages one by one (1–200); older ones arrive as one notice and stay unread." })}
+          ${fieldHtml({ name: "chat_owner_name", label: "I'd like to be addressed as", kind: "text", value: s.chat_owner_name ?? "Klaas",
+                        help: "Agents write @ and this name (or @owner) when a message is for you; the chat marks it with @. One word." })}
           ${fieldHtml({ name: "chat_alert_targets", label: "Group chat alerts", kind: "checks", value: s.chat_alert_targets || [],
                         options: [...targetOptions(), ...Object.keys(cfg().channels).map((n) => [`channel:${n}`, `${n} (channel)`])],
                         help: "Who is pushed when a group pauses, e.g. user:alex. Nothing ticked: nobody." })}
@@ -900,7 +902,7 @@ const VIEWS = {
                                 { name: "attachment_retention_days", kind: "int" }, { name: "attachment_url_hosts", kind: "textarea" },
                                 { name: "chat_cap", kind: "int" }, { name: "chat_alert_targets", kind: "checks" },
                                 { name: "chat_paused_posts", kind: "int" }, { name: "chat_resume_wakes", kind: "int" },
-                                { name: "trusted_proxies", kind: "textarea" }]);
+                                { name: "chat_owner_name" }, { name: "trusted_proxies", kind: "textarea" }]);
       v.attachment_url_hosts = v.attachment_url_hosts.split("\n").map((x) => x.trim()).filter(Boolean);
       v.trusted_proxies = v.trusted_proxies.split("\n").map((x) => x.trim()).filter(Boolean);
       try { await mutate("PUT", "/server", v, "Settings saved"); } catch (ex) { err.textContent = ex.message; }
@@ -2047,6 +2049,7 @@ function chatMembersMini(g) {
 // the bell on a folder's row: an agent there sent a notification the owner has not looked at yet. Not drawn on the
 // chat the owner is looking at right now (open, window focused): that one is cleared in the same refresh.
 const chatBellShown = (g) => !!g.alert && !(chatKey(g) === chats.selected && document.hasFocus());
+const chatAtShown = (g) => !!g.owner_mention && !(chatKey(g) === chats.selected && document.hasFocus());
 
 function chatGroupRow(g) {
   const lm = g.last_message;
@@ -2054,10 +2057,11 @@ function chatGroupRow(g) {
   const mail = g.alert_kind === "email";
   const what = mail ? "An agent sent an email" : "An agent sent a notification";
   const bell = chatBellShown(g) ? `<svg class="chat-bell" viewBox="0 0 16 16" role="img" aria-label="${what}" focusable="false"><title>${what}</title>${mail ? CHAT_ENVELOPE : CHAT_BELL}</svg>` : "";
+  const atMark = chatAtShown(g) ? `<svg class="chat-bell chat-at-mark" viewBox="0 0 16 16" role="img" aria-label="An agent wrote to you" focusable="false"><title>An agent wrote to you</title>${CHAT_AT}</svg>` : "";
   const preview = lm ? `${CHAT_WHO[lm.author] || "Notice"}: ${chatPlain(lm.text_preview)}` : "No messages yet";
   return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
-      <span class="r">${bell}${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span></span>
+      <span class="r">${atMark}${bell}${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span></span>
     <span class="p">${esc(g.host)} · ${g.state === "open" ? `${g.adhoc ? "open on demand" : "open"} · ${chatAgentCount(g)}` : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
     <span class="p">${esc(preview)}</span></button>`;
 }
@@ -2090,6 +2094,8 @@ function chatTicksHtml(id, r, author) {
 
 // join and leave lines get an icon (the words stay: the icon is for scanning, screen readers read the text)
 const CHAT_BELL = '<path d="M4 11.500V7.500a4 4 0 0 1 8 0v4l1.200 1.500H2.800z"/><path d="M6.700 14.200a1.400 1.400 0 0 0 2.600 0"/>';
+// an agent @mentioned the owner: an @ on the folder's row (0.23.0), drawn like the bell
+const CHAT_AT = '<circle cx="8" cy="8" r="2.600"/><path d="M10.600 5.400v3.700a1.700 1.700 0 0 0 3.400 0V8a6 6 0 1 0-2.400 4.800"/>';
 const CHAT_ENVELOPE = '<rect x="2" y="3.5" width="12" height="9" rx="1.2"/><path d="M2.5 4.5 8 9l5.5-4.5"/>';
 const CHAT_NOTICE_ICONS = {
   alert: CHAT_BELL,
@@ -2142,12 +2148,14 @@ function chatMessageHtml(m, canReply = false, names = chats.names) {
     : "";
   const tag = m.kind === "fyi" ? `<span class="kind-tag fyi" title="Everyone reads it, nobody acts on it">heads-up</span>`
     : m.kind === "all" ? `<span class="kind-tag all" title="Each member acts on it">for everyone</span>`
-    : m.mentions && m.mentions.length ? `<span class="kind-tag for" title="Only they act; the others read it">for ${esc(m.mentions.join(", "))}</span>` : "";
+    : m.mentions && m.mentions.length ? `<span class="kind-tag for" title="Only they act; the others read it">for ${esc([...m.mentions, ...(m.for_owner ? ["you"] : [])].join(", "))}</span>` : "";
+  const forYou = m.for_owner && !(m.kind === "request" && m.mentions && m.mentions.length)
+    ? `<span class="kind-tag for you" title="An agent wrote this to you">for you</span>` : "";
   const w = m.wakes || {};
   const notes = [];
   if (w.skipped) notes.push(`not delivered to ${w.skipped}`);
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
-  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name, m.member_model)}${tag}</div>
+  return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name, m.member_model)}${tag}${forYou}</div>
     ${quote}${m.text === "" && m.files?.length ? "" : `<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text, chatMentionColour(names))}</div>`}${chatFilesHtml(m.files)}
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }
@@ -2701,8 +2709,11 @@ async function chatOpenThread(el, key, keep = false) {
     finally { btn.disabled = false; ta.focus({ preventScroll: true }); }
   };
   // picking the chat clears its bell; a thread that only reloaded (keep) clears it when the window has focus
-  const bell = f.alert && (!keep || document.hasFocus());
-  if (g.unread || bell) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen${bell ? `?alert_upto=${encodeURIComponent(f.alert_at)}` : ""}`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
+  const look = !keep || document.hasFocus();
+  const bell = f.alert && look;
+  const atSeen = f.owner_mention && look;  // the @ goes the same way as the bell
+  const q = [bell ? `alert_upto=${encodeURIComponent(f.alert_at)}` : "", atSeen ? `mention_upto=${encodeURIComponent(f.owner_mention_at)}` : ""].filter(Boolean).join("&");
+  if (g.unread || bell || atSeen) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen${q ? `?${q}` : ""}`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
 }
 
 // Attaching files in the composer: the paperclip, pasting an image, dropping files on the thread. Each file is sent
@@ -3011,6 +3022,8 @@ async function chatTickOnce(el) {
     }
     // the bell goes once the owner is looking: the chat open and the window focused (coming back runs this too)
     const bell = f.alert && document.hasFocus();
-    if ((data.messages.length && data.group.unread) || bell) { await api("POST", `/chats/${encodeURIComponent(id)}/seen${bell ? `?alert_upto=${encodeURIComponent(f.alert_at)}` : ""}`); await chatsLoadList(el); }
+    const atSeen = f.owner_mention && document.hasFocus();  // the @ of a message for the owner goes the same way
+    const q = [bell ? `alert_upto=${encodeURIComponent(f.alert_at)}` : "", atSeen ? `mention_upto=${encodeURIComponent(f.owner_mention_at)}` : ""].filter(Boolean).join("&");
+    if ((data.messages.length && data.group.unread) || bell || atSeen) { await api("POST", `/chats/${encodeURIComponent(id)}/seen${q ? `?${q}` : ""}`); await chatsLoadList(el); }
   } catch (ex) { chats.tickError = ex; console.error("chat refresh failed (retried in 5 s)", ex); } // sign-out: api()
 }

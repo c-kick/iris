@@ -54,7 +54,7 @@ def test_enabled_folder_joins_with_report_in(svc):
     assert r["state"] == "joined" and r["name"] and r["marker"]
     c = r["context"]
     assert r["member_handle"] in c and r["marker"] in c and "Before you start, post one line" in c
-    assert "at most about 15 words" in c and "If a member objects" in c
+    assert "at most 15 words" in c and "If a member objects" in c
     other = pres(svc, "s2", kind="codex")
     assert f"{r['name']} (Claude, unknown)" in other["context"]
 
