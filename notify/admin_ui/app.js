@@ -2237,7 +2237,7 @@ function chatMessageHtml(m, canReply = false, names = chats.names) {
   }
   chats.msgs[m.id] = { author: m.author, member_id: m.member_id, name: m.member_name, text: m.text === "" && m.files?.length ? chatFilesSummary(m.files) : m.text };
   const quote = m.in_reply_to
-    ? `<div class="quote" data-quote="${esc(m.in_reply_to)}">${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(chatPlain(m.reply_excerpt))}`}</div>`
+    ? `<button type="button" class="quote" data-quote="${esc(m.in_reply_to)}"><span class="sr">Go to original message: </span>${m.reply_excerpt == null ? `Reply to ${esc(m.in_reply_to)}` : `<b>${chatAuthorHtml(m.reply_author, m.reply_member_name)}</b> ${esc(chatPlain(m.reply_excerpt))}`}</button>`
     : "";
   const tag = m.kind === "fyi" ? `<span class="kind-tag fyi" title="Everyone reads it, nobody acts on it">heads-up</span>`
     : m.kind === "all" ? `<span class="kind-tag all" title="Each member acts on it">for everyone</span>`
@@ -2691,12 +2691,13 @@ function chatMention(el, name) {
 }
 
 function chatShowMessage(el, id) {
-  const m = id && el.querySelector(`#chat-msgs > [data-id="${CSS.escape(id)}"]`);
-  if (!m) return;
+  const m = id && el.querySelector(`#chat-msgs [data-id="${CSS.escape(id)}"]`);
+  if (!m) return false;
   m.scrollIntoView({ block: "center", behavior: "smooth" });
   m.classList.remove("flash");
   void m.offsetWidth;
   m.classList.add("flash");
+  return true;
 }
 
 // Opening a thread replaces the pane; the poll skips its turn meanwhile (it would see no current group and open
@@ -2805,6 +2806,11 @@ async function chatOpenThread(el, key, keep = false, version = chats.openVersion
   };
   replying.querySelector("#chat-reply-cancel").onclick = () => { setReply(null); pane.querySelector("#chat-text").focus({ preventScroll: true }); };
   box.onclick = async (e) => {
+    const quote = e.target.closest("[data-quote]");
+    if (quote) {
+      if (!chatShowMessage(el, quote.dataset.quote)) toast("Original message is not available in this chat.");
+      return;
+    }
     const rel = e.target.closest("[data-release]");
     if (rel) {
       rel.disabled = true;

@@ -826,7 +826,8 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-replying { grid-column: 1 / -1; display: flex; align-items: center; gap: .5rem; padding: .25rem .6rem; border-left: 3px solid var(--action); background: var(--action-wash); font-size: .82rem; color: var(--muted); border-radius: 0 6px 6px 0; }
 .chat-replying[hidden] { display: none; }
 .chat-replying .rq { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cm .quote { font: 400 .84rem/1.4 var(--read); color: var(--muted); border-left: 3px solid var(--line); padding-left: .55rem; margin: .3rem 0 .1rem; }
+.cm .quote { appearance: none; display: block; box-sizing: border-box; width: 100%; background: transparent; border: 0; border-left: 3px solid var(--line); text-align: left; cursor: pointer; font: 400 .84rem/1.4 var(--read); color: var(--muted); padding: 0 0 0 .55rem; margin: .3rem 0 .1rem; }
+.cm .quote:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .cm .quote b { font-family: var(--font); font-weight: 600; font-size: .78rem; }
 .cm .reply-btn { font-size: .78rem; padding: .15rem .4rem; min-height: 0; margin: 0 0 0 -.4rem; color: var(--muted); }
 .cm .reply-btn:hover { color: var(--action); }
