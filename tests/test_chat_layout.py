@@ -2,6 +2,8 @@
 import re
 from pathlib import Path
 
+import pytest
+
 UI = Path(__file__).resolve().parent.parent / "notify" / "admin_ui"
 JS = (UI / "app.js").read_text()
 CSS = (UI / "app.css").read_text()
@@ -203,17 +205,15 @@ def test_viewport_debug_overlay_only_on_request():
     assert "vv.offsetTop" in block and "innerHeight" in block and "keyboardOpen" in block
 
 
-def test_keyboard_correction_does_not_guess_from_window_sizes():
-    # iPhone (2026-11-09, ?vvdebug): with the keyboard up iOS reported inner 402x384 = visual 402x384, offsetTop 330,
-    # scrollY 330. innerHeight shrinks with the keyboard there, so "vv.height < innerHeight - 80" said no keyboard and
-    # the page stayed 330 px above the view. While a field has focus: undo iOS's scroll, else follow its offset.
-    fit = JS[JS.index("const fit = () => {"):JS.index("// ?vvdebug=1")]
-    # window sizes never decide whether the keyboard is up (focus does); 0.20.1 uses them only once the keyboard is
-    # known to be up, to tell the floating iOS bar (window unchanged) from the docked one (window shrinks)
-    uses = [ln.strip() for ln in fit.splitlines() if "innerHeight" in ln and not ln.strip().startswith("//")]
-    assert uses == ["const floatingBar = keyboardOpen && IOS && innerHeight - vv.height > 120;"], uses
-    assert "window.scrollTo(0, 0)" in fit
-    assert "keyboardOpen = !!typing" in fit
+def test_keyboard_fitter_handles_measured_viewports():
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    result = subprocess.run([node, "--test", str(Path(__file__).with_name("chat-viewport.test.mjs"))],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_scroll_reset_only_on_the_chats_page():
@@ -293,14 +293,6 @@ def test_unsent_text_survives_leaving_and_stays_with_its_chat():
     assert "if (chats.flushDraft === saveNow && ta.isConnected)" in JS
     assert "chats.flushDraft = null;" in JS[JS.index("function chatDraftsForget"):]
 
-
-def test_composer_sits_above_the_floating_ios_keyboard_bar():
-    fit = JS[JS.index("if (window.visualViewport) {"):JS.index("const chatUnread")]
-    assert "const floatingBar = keyboardOpen && IOS && innerHeight - vv.height > 120;" in fit, \
-        "only while typing on an iPhone with a window that did not shrink (the bar floats inside the viewport)"
-    assert "const IOS = /iPhone|iPod/.test(navigator.userAgent);" in fit, "iPad has no floating bar over its keyboard"
-    assert '`${Math.round(vv.height) - (floatingBar ? IOS_BAR : 0)}px`' in fit
-    assert "const IOS_BAR = 60;" in fit, "measured: the bar covers the viewport's last ~57 px"
 
 
 def test_agents_present_together_never_share_a_colour():

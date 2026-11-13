@@ -2,6 +2,18 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.25.5
+
+The chat fills the measured visual viewport without an additional fixed Safari toolbar deduction. On the reported
+iPhone layout, a 384 px visual viewport previously produced a 324 px app and left a 60 px gap above Safari's URL
+pill. The composer now ends at 384 px. Focus/scroll correction, retained viewport offsets and pinch-zoom behavior
+are preserved. No safe-area padding change, schema change or relay change. Rebuild and restart, then reload the tab.
+
+Compatibility caveat: earlier iOS measurements described a form toolbar overlapping the visual viewport. Window
+and visual-viewport height alone cannot distinguish that layout from the reported one. Removing the estimate fixes
+the measured gap, but that older configuration may expose toolbar overlap; verify the result on the actual device.
+The automated browser geometry check models the supplied metrics and does not emulate Safari's keyboard UI.
+
 ## Upgrading to 0.25.4
 
 When a pending confirmation first becomes sticky, its decision buttons are visible at the bottom. Subsequent polls

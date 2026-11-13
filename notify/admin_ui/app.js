@@ -1835,8 +1835,7 @@ const chats = { colors: {}, names: {}, folders: [], selected: null, currentId: n
 // field; the page is pinned to that area (top + height), so the composer sits right above the keyboard.
 if (window.visualViewport) {
   const vv = window.visualViewport;
-  const IOS = /iPhone|iPod/.test(navigator.userAgent); // the floating bar is the iPhone's; iPad's keyboard has none
-  const IOS_BAR = 60;
+  const IOS = /iPhone|iPod/.test(navigator.userAgent); // diagnostics only; sizing follows the measured viewport
   const fit = () => {
     if (vv.scale > 1.01) return; // pinch zoom: keep the layout as it was
     const s = document.documentElement.style;
@@ -1848,12 +1847,9 @@ if (window.visualViewport) {
     // only the Chats page is pinned to the view; other pages scroll normally and are left alone
     const onChats = !!document.getElementById("chats");
     const keyboardOpen = !!typing && onChats;
-    // The bar with up/down/done that Safari shows over a focused field: older iOS docks it on the keyboard (outside
-    // the visual viewport; the window shrinks with the keyboard), newer iOS floats it inside the visual viewport,
-    // over the page's last ~57 px (measured: viewport 484 tall ending at the keyboard, window still 714, bar over
-    // 427..474). Then the page ends that much higher, so the composer sits above the bar instead of under it.
-    const floatingBar = keyboardOpen && IOS && innerHeight - vv.height > 120;
-    s.setProperty("--app-h", `${Math.round(vv.height) - (floatingBar ? IOS_BAR : 0)}px`);
+    // The visual viewport already ends above the keyboard in the measured iPhone layout. A fixed toolbar
+    // deduction makes a visible gap there; use the viewport itself rather than guessing from window sizes.
+    s.setProperty("--app-h", `${Math.round(vv.height)}px`);
     // nothing on Chats scrolls the page itself (html and body are overflow: hidden), so a leftover scroll is iOS's
     if (onChats && (window.scrollY > 0 || (keyboardOpen && vv.offsetTop > 0))) window.scrollTo(0, 0);
     s.setProperty("--app-top", `${keyboardOpen ? Math.max(0, Math.round(vv.offsetTop)) : 0}px`);
