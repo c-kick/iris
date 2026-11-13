@@ -2224,7 +2224,7 @@ function chatMessageHtml(m, canReply = false, names = chats.names) {
     const cr = m.confirm_request;
     if (cr && cr.action != null) {
       const controls = cr.state === "pending" ? `<span class="req-actions"><button type="button" class="btn primary" data-creq="${esc(cr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-creq="${esc(cr.id)}" data-act="deny">Deny</button></span>` : `<span>Status: ${esc(cr.state)}</span>`;
-      return `<div class="cm sys ask confirm-request" data-id="${esc(m.id)}" data-confirm="${esc(cr.id)}">${esc(when(m.created_at))} · ${esc(m.text ?? "Confirmation requested")}<dl><dt>Action</dt><dd><pre>${esc(cr.action)}</pre></dd><dt>Target</dt><dd><pre>${esc(cr.target)}</pre></dd><dt>Details</dt><dd><pre>${esc(cr.details)}</pre></dd></dl><p>Expires ${esc(when(cr.expires_at))}. Owner consent applies only to this exact action; runtime permissions still apply.</p>${controls}</div>`;
+      return `<div class="cm sys ask confirm-request" data-id="${esc(m.id)}" data-confirm="${esc(cr.id)}">${m.created_at ? `${esc(when(m.created_at))} · ` : ""}${esc(m.text ?? "Confirmation requested")}<dl><dt>Action</dt><dd><pre>${esc(cr.action)}</pre></dd><dt>Target</dt><dd><pre>${esc(cr.target)}</pre></dd><dt>Details</dt><dd><pre>${esc(cr.details)}</pre></dd></dl><p>Expires ${esc(when(cr.expires_at))}. Owner consent applies only to this exact action; runtime permissions still apply.</p>${controls}</div>`;
     }
     const ask = hr && hr.state === "pending"
       ? `<span class="req-reason">Reason: ${esc(hr.reason ?? "hidden")}</span><span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
@@ -2253,23 +2253,22 @@ function chatMessageHtml(m, canReply = false, names = chats.names) {
     ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">${m.claim_accepted ? "claimed by" : "assigned to"} ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
 }
 
-// Keep complete, immutable pending requests above the independently scrolling transcript. Preserve existing
-// nodes across polls so a refresh cannot interrupt an owner pressing an approval button.
-function chatPinnedConfirmations(pane, cards) {
-  const region = pane.querySelector("#chat-confirm-pins");
-  if (!region) return;
-  const list = region.querySelector(".pinned-confirm-list");
-  const wanted = new Set(cards.map((card) => card.confirm_request.id));
-  list.querySelectorAll("[data-confirm]").forEach((node) => {
-    if (!wanted.has(node.dataset.confirm)) node.remove();
-  });
+// Keep only the newest pending confirmation sticky, so multiple requests never stack over the chat.
+function chatSyncConfirmations(box, pendingIds) {
+  const cards = [...box.querySelectorAll(':scope > [data-confirm]')];
+  const pending = new Set(pendingIds);
+  const waitingCards = cards.filter((card) => pending.has(card.dataset.confirm));
+  const newest = waitingCards.at(-1);
   for (const card of cards) {
-    if (!list.querySelector(`[data-confirm="${CSS.escape(card.confirm_request.id)}"]`)) {
-      list.insertAdjacentHTML("beforeend", chatMessageHtml(card));
-    }
+    const waiting = pending.has(card.dataset.confirm);
+    card.classList.toggle("confirm-sticky", waiting && card === newest);
+    let more = card.querySelector(".confirm-more");
+    if (card === newest && waitingCards.length > 1) {
+      if (!more) { more = document.createElement("button"); more.type = "button"; more.className = "confirm-more"; card.prepend(more); }
+      more.dataset.confirmJump = waitingCards.at(-2).dataset.id;
+      more.textContent = `+${waitingCards.length - 1} more pending`;
+    } else if (more) more.remove();
   }
-  region.hidden = cards.length === 0;
-  region.querySelector(".pinned-confirm-title").textContent = cards.length === 1 ? "Confirmation awaiting your decision" : `${cards.length} confirmations awaiting your decision`;
 }
 
 // an earlier session of the folder: one bar (expandable), or one small line when nobody said anything
@@ -2747,7 +2746,6 @@ async function chatOpenThread(el, key, keep = false, version = chats.openVersion
       <button type="button" class="btn" id="chat-pausebtn" hidden></button>
       <div class="chat-roster" id="chat-roster" role="region" aria-label="Members" hidden></div>
       <div class="chat-paused" id="chat-paused" role="status" hidden></div></div>
-    <section class="pinned-confirmations" id="chat-confirm-pins" aria-label="Pending confirmations" tabindex="0" hidden><strong class="pinned-confirm-title"></strong><div class="pinned-confirm-list"></div></section>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
     <button type="button" class="chat-newer" id="chat-newer" hidden></button>
     <form class="chat-compose" id="chat-compose" hidden>
@@ -2806,6 +2804,8 @@ async function chatOpenThread(el, key, keep = false, version = chats.openVersion
   };
   replying.querySelector("#chat-reply-cancel").onclick = () => { setReply(null); pane.querySelector("#chat-text").focus({ preventScroll: true }); };
   box.onclick = async (e) => {
+    const more = e.target.closest("[data-confirm-jump]");
+    if (more) { chatShowMessage(el, more.dataset.confirmJump); return; }
     const quote = e.target.closest("[data-quote]");
     if (quote) {
       if (!chatShowMessage(el, quote.dataset.quote)) toast("Original message is not available in this chat.");
@@ -2839,8 +2839,7 @@ async function chatOpenThread(el, key, keep = false, version = chats.openVersion
     try { await api("POST", `/chats/history-requests/${encodeURIComponent(b.dataset.hreq)}/${b.dataset.act}`); await chatTick(el); }
     catch (ex) { toast(ex.message); await chatTick(el); }
   };
-  pane.querySelector("#chat-confirm-pins").onclick = box.onclick;
-  chatPinnedConfirmations(pane, data.pending_confirm_cards || []);
+  chatSyncConfirmations(box, data.pending_confirm_requests || []);
   chats.lastId = data.messages.length ? data.messages[data.messages.length - 1].id : null;
   chatHeader(el, g, f);
   box.scrollTop = box.scrollHeight;
@@ -3259,16 +3258,9 @@ async function chatTickOnce(el) {
     if (draft?.value.includes("@")) chatMarksSync(draft, el.querySelector("#chat-marks")); // a name may be new
     chatHeader(el, data.group, f);
     const box = el.querySelector("#chat-msgs");
-    chatPinnedConfirmations(el.querySelector("#chat-pane"), data.pending_confirm_cards || []);
     // a request decided elsewhere (phone link, expiry) loses its buttons
     box.querySelectorAll("[data-req]").forEach((n) => {
       if (!data.pending_history_requests.includes(n.dataset.req)) { n.querySelector(".req-actions")?.remove(); n.removeAttribute("data-req"); n.classList.remove("ask"); }
-    });
-    box.querySelectorAll("[data-confirm]").forEach((n) => {
-      if (!(data.pending_confirm_requests || []).includes(n.dataset.confirm)) {
-        const buttons = n.querySelector(".req-actions");
-        if (buttons) { buttons.textContent = "Decision recorded or request no longer pending."; }
-      }
     });
     for (const [mid, r] of Object.entries(data.receipts || {})) {
       const t = box.querySelector(`:scope > [data-id="${CSS.escape(mid)}"] [data-ticks]`);
@@ -3280,6 +3272,7 @@ async function chatTickOnce(el) {
       let added = false;
       for (const m of data.messages) {
         const old = box.querySelector(`:scope > [data-id="${CSS.escape(m.id)}"]`);
+        if (old && old.dataset.confirm && (data.pending_confirm_requests || []).includes(old.dataset.confirm)) continue;
         if (old) old.outerHTML = chatMessageHtml(m, data.group.state === "open"); else { box.insertAdjacentHTML("beforeend", chatMessageHtml(m, data.group.state === "open")); added = true; if (!stick && chatCountsAsNew(m)) chats.unseen = (chats.unseen || 0) + 1; }
       }
       chats.lastId = data.messages[data.messages.length - 1].id;
@@ -3287,6 +3280,14 @@ async function chatTickOnce(el) {
       if (stick) box.scrollTop = box.scrollHeight;
       chatNewerShow(el);
     }
+    // A pending request decided elsewhere loses its controls once. Already-decided cards keep their rendered status.
+    box.querySelectorAll(':scope > [data-confirm]').forEach((card) => {
+      if (!(data.pending_confirm_requests || []).includes(card.dataset.confirm)) {
+        const actions = card.querySelector('.req-actions');
+        if (actions?.querySelector('[data-creq]')) actions.textContent = "Decision recorded or request no longer pending.";
+      }
+    });
+    chatSyncConfirmations(box, data.pending_confirm_requests || []);
     // the bell goes once the owner is looking: the chat open and the window focused (coming back runs this too)
     const bell = f.alert && document.hasFocus();
     const atSeen = f.owner_mention && document.hasFocus();  // the @ of a message for the owner goes the same way

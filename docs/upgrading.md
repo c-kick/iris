@@ -2,6 +2,12 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.25.3
+
+Pending confirmation balloons remain in the chat and stick to the transcript edge when scrolled past. The newest
+pending balloon has a bounded scroll; when others are waiting, its count links to the next older request. Decided
+balloons scroll normally. Rebuild and restart Iris, then refresh the browser. No schema or relay change.
+
 ## Upgrading to 0.25.2
 
 Clicking or keyboard-activating a quoted reply scrolls to the original message and briefly highlights it; when the

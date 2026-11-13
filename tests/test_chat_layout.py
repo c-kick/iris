@@ -156,10 +156,9 @@ def test_chats_page_never_pans_or_bounces():
 
 def test_paused_banner_floats_over_the_thread():
     # the last child of the header (position: relative), so showing it moves nothing under it
-    assert re.search(r'<div class="chat-paused" id="chat-paused" role="status" hidden></div></div>\s*<section class="pinned-confirmations"', JS)
+    assert re.search(r'<div class="chat-paused" id="chat-paused" role="status" hidden></div></div>\s*<div class="chat-msgs"', JS)
     rule = _rule(".chat-paused")
     assert "position: absolute" in rule and "top: 100%" in rule
-    assert ".chat-pane:has(.chat-paused:not([hidden])) .pinned-confirmations:not([hidden])" in CSS
 
 
 def test_a_phone_on_its_side_gets_the_phone_layout():

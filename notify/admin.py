@@ -1070,6 +1070,7 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
         "SELECT id FROM chat_history_requests WHERE group_id=? AND state='pending'", (group_id,))]
     confirmations = [r["id"] for r in svc.db.query(
         "SELECT id FROM chat_confirm_requests WHERE group_id=? AND state='pending' AND expires_at>?", (group_id, iso(svc.chat.now())))]
+    # Retained for owner API compatibility; the chat UI now displays cards in the transcript.
     confirmation_cards = []
     if client.via_session:
         for r in svc.db.query("SELECT r.*, m.text, m.created_at AS message_created FROM chat_confirm_requests r"

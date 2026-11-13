@@ -29,7 +29,7 @@ test('decision failure re-enables retry and refreshes authoritative state', asyn
   const context = {box, pane: box, el:{}, CSS:{escape:x=>x}, api:async()=>{throw Error('connection failed');},
     chatTick:async()=>{refreshed += 1;}, toast() {}};
   const start = source.indexOf('  box.onclick = async (e) => {');
-  const end = source.indexOf('  pane.querySelector("#chat-confirm-pins").onclick', start);
+  const end = source.indexOf('  chatSyncConfirmations(box, data.pending_confirm_requests || []);', start);
   vm.runInNewContext(source.slice(start, end), context);
   await box.onclick({target:{closest:selector=>selector==='[data-creq]'?buttons[0]:null}});
   assert.equal(buttons[0].disabled, false);
@@ -44,9 +44,14 @@ test('successful decision keeps buttons disabled until refresh reconciles', asyn
   const context = {box, pane: box, el:{}, CSS:{escape:x=>x}, api:async()=>{},
     chatTick:async()=>{refreshed += 1;}, toast() {}};
   const start = source.indexOf('  box.onclick = async (e) => {');
-  const end = source.indexOf('  pane.querySelector("#chat-confirm-pins").onclick', start);
+  const end = source.indexOf('  chatSyncConfirmations(box, data.pending_confirm_requests || []);', start);
   vm.runInNewContext(source.slice(start, end), context);
   await box.onclick({target:{closest:selector=>selector==='[data-creq]'?buttons[0]:null}});
   assert.equal(buttons[0].disabled, true);
   assert.equal(refreshed, 1);
+});
+
+test('confirmation without a timestamp has no stray separator', () => {
+  const html=render({author:'system',id:'msg',text:'Agent requests owner confirmation',confirm_request:{id:'rqc',state:'pending',action:'Deploy',target:'host',details:''}});
+  assert.ok(!html.includes(' · Agent requests'));
 });

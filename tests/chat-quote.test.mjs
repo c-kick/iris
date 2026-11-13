@@ -24,7 +24,7 @@ test('message navigation finds nested earlier messages and reports unavailable t
 
 test('delegated quote activation jumps or explains a missing original', async () => {
   const start = source.indexOf('  box.onclick = async (e) => {');
-  const end = source.indexOf('  pane.querySelector("#chat-confirm-pins").onclick', start);
+  const end = source.indexOf('  chatSyncConfirmations(box, data.pending_confirm_requests || []);', start);
   const box = {}, el = {};
   let seen, message, found = true;
   const context = { box, el, chatShowMessage: (_el, id) => { seen = id; return found; }, toast: text => { message = text; } };
