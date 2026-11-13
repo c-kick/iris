@@ -2261,6 +2261,7 @@ function chatSyncConfirmations(box, pendingIds) {
   const newest = waitingCards.at(-1);
   for (const card of cards) {
     const waiting = pending.has(card.dataset.confirm);
+    const becomingSticky = waiting && card === newest && !card.classList.contains("confirm-sticky");
     card.classList.toggle("confirm-sticky", waiting && card === newest);
     let more = card.querySelector(".confirm-more");
     if (card === newest && waitingCards.length > 1) {
@@ -2268,6 +2269,7 @@ function chatSyncConfirmations(box, pendingIds) {
       more.dataset.confirmJump = waitingCards.at(-2).dataset.id;
       more.textContent = `+${waitingCards.length - 1} more pending`;
     } else if (more) more.remove();
+    if (becomingSticky) card.scrollTop = card.scrollHeight;
   }
 }
 
