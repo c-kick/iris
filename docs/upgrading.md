@@ -2,6 +2,12 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.25.2
+
+Clicking or keyboard-activating a quoted reply scrolls to the original message and briefly highlights it; when the
+original is not in the chat, a short notice says so. Rebuild and restart Iris, then refresh the browser. No schema or
+relay change.
+
 ## Upgrading to 0.25.1
 
 Pending confirmation cards remain above the scrolling transcript until decided, cancelled or expired. The area
