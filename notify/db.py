@@ -313,8 +313,18 @@ class Database:
         had_adhoc = "adhoc" in {r[1] for r in self.conn.execute("PRAGMA table_info(chat_groups)")}
         self._add_chat()
         self._add_chat_history()
+        with self.tx() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS chat_confirm_requests (id TEXT PRIMARY KEY, group_id TEXT NOT NULL"
+                      " REFERENCES chat_groups(id), member_id TEXT NOT NULL REFERENCES chat_members(id),"
+                      " session_id TEXT NOT NULL, context_generation INTEGER NOT NULL, request_key TEXT NOT NULL, action TEXT NOT NULL,"
+                      " target TEXT NOT NULL, details TEXT NOT NULL, state TEXT NOT NULL, message_id TEXT NOT NULL,"
+                      " created_at TEXT NOT NULL, decided_at TEXT, expires_at TEXT NOT NULL)")
+            c.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_chat_confirm_key ON chat_confirm_requests"
+                      " (member_id, context_generation, request_key)")
+        self._add_missing_columns({"chat_draft_leases": {"sequence": "INTEGER NOT NULL DEFAULT 0", "retain_until": "TEXT"}})
         self._add_missing_columns({"chat_wakes": {"attempts": "INTEGER NOT NULL DEFAULT 0", "retry_after": "TEXT"},
                                   "chat_groups": {"owner_watch_until": "TEXT", "paused_at": "TEXT",
+                                                  "draft_closure_pending": "INTEGER NOT NULL DEFAULT 0",
                                                   "adhoc": "INTEGER NOT NULL DEFAULT 0", "paused_posts": "INTEGER",
                                                   # 0.19.0: a member sent a notification the owner has not looked at
                                                   "alert_at": "TEXT",
@@ -323,6 +333,7 @@ class Database:
                                                   # 0.23.0: an agent @mentioned the owner and they have not looked yet
                                                   "owner_mention_at": "TEXT"},
                                   "chat_messages": {"in_reply_to": "TEXT", "claimed_by_member_id": "TEXT", "claimed_at": "TEXT",
+                                                    "claim_accepted_at": "TEXT",
                                                     "kind": "TEXT NOT NULL DEFAULT 'request'",
                                                     # 0.23.0: the message @mentions the owner (@<chat_owner_name> / @owner)
                                                     "for_owner": "INTEGER NOT NULL DEFAULT 0"},  # request, fyi, all; alert = a notification notice
@@ -380,7 +391,10 @@ class Database:
                           " member_id TEXT NOT NULL, state TEXT NOT NULL, outcome TEXT, waiter_id TEXT,"
                           " created_at TEXT NOT NULL, claimed_at TEXT, finished_at TEXT)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS ix_chat_resets_state ON chat_resets(state, created_at)")
-        self._add_missing_columns({"chat_members": {"reset_at": "TEXT", "reset_ended_at": "TEXT"}})
+        self._add_missing_columns({"chat_members": {"reset_at": "TEXT", "reset_ended_at": "TEXT",
+                                                   "context_generation": "INTEGER NOT NULL DEFAULT 0"}})
+        self._add_missing_columns({"chat_members": {"is_lead": "INTEGER NOT NULL DEFAULT 0"}})
+        self.conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_chat_one_lead ON chat_members(group_id) WHERE is_lead=1")
         if not had_adhoc:  # 0.14.0: a group open at the upgrade stays open as an ad-hoc group until it empties
             self.conn.execute("UPDATE chat_groups SET adhoc=1 WHERE state='open'")
         self._name_open_members()
@@ -435,6 +449,8 @@ class Database:
                       " state TEXT NOT NULL CHECK(state IN ('pending','approved','denied','expired','used')),"
                       " decision_sha256 TEXT, message_id TEXT, created_at TEXT NOT NULL, decided_at TEXT, used_at TEXT)")
             c.execute("CREATE INDEX IF NOT EXISTS ix_chat_history_member ON chat_history_requests(member_id, state)")
+            c.execute("CREATE TABLE IF NOT EXISTS chat_draft_leases (group_id TEXT NOT NULL REFERENCES chat_groups(id),"
+                      " browser_id TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(group_id, browser_id))")
 
     def _name_open_members(self) -> None:
         """0.14.0: members still in an open group get a name, with a line in the chat ("Claude mem_... is now Wren")."""

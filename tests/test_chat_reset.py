@@ -138,10 +138,13 @@ def test_page_offers_the_reset_and_marks_who_cannot():
     from pathlib import Path
     js = (Path(__file__).resolve().parent.parent / "notify/admin_ui/app.js").read_text()
     fn = js[js.index("function chatMembersHtml"):js.index("function chatNameStyle")]
-    assert "m.resettable === false" in fn and "disabled" in fn and "no reset · " in fn
-    assert 'data-reset="${esc(m.id)}"' in fn
+    assert "m.resettable === false" in fn and "Context reset unavailable" in fn
+    menu = js[js.index("function chatAgentMenu"):js.index("async function chatReset")]
+    assert "m.resettable === false" in menu and "disabled" in menu
+    assert 'data-action="reset"' in menu
     assert 'async function chatReset' in js and 'confirm(`Clear the context of ${name}?' in js
-    assert '[data-reset]' in js[js.index("roster.onclick"):]
+    assert '[data-agent-menu]' in js[js.index("roster.onclick"):]
+    assert 'if (action === "reset") return chatReset(el, id, name);' in menu
 
 
 def test_an_existing_session_rejoining_steals_nothing(svc):  # noqa: F811

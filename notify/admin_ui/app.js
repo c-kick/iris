@@ -2,6 +2,7 @@
 
 import { watchSun, nextChange, sunTimes, validPlace } from "./sun.js";
 import { chatMarkdown, chatMentionMarks, chatPlain } from "./chatmd.js";
+import { createTabAlerts } from "./tab-alerts.js";
 
 const root = document.getElementById("root");
 const dialog = document.getElementById("dialog");
@@ -11,6 +12,31 @@ let state = null;
 const hashSection = location.hash.slice(1);
 let section = hashSection || sessionStorage.getItem("notify.section") || "overview";
 if (section === "delivery") section = "providers"; // renamed page; old bookmarks still work
+
+const tabAlerts = createTabAlerts({
+  loadFolders: async () => (await api("GET", "/chats")).folders,
+  chatVisible: () => section === "chats" && document.visibilityState === "visible" && !!document.getElementById("chats"),
+  onFolders: (folders) => {
+    chats.folders = folders;
+    chatNavBadge();
+  },
+});
+
+let navCollapsed = false;
+try { navCollapsed = localStorage.getItem("iris.nav-collapsed") === "1"; } catch { /* private browser */ }
+const navToggleIcon = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2"/><path d="M7 3v14m5-10-3 3 3 3"/></svg>';
+const signoutIcon = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 3H3v14h5m4-12 5 5-5 5m-5-5h10"/></svg>';
+
+function navApply() {
+  const shell = root.querySelector(".shell");
+  if (!shell) return;
+  shell.classList.toggle("rail", navCollapsed);
+  const button = shell.querySelector("[data-nav-toggle]");
+  const label = navCollapsed ? "Expand menu" : "Collapse menu";
+  button.setAttribute("aria-expanded", String(!navCollapsed));
+  button.setAttribute("aria-label", label);
+  button.title = label;
+}
 
 const SECTIONS = [
   ["overview", "Overview"],
@@ -84,13 +110,19 @@ const SCOPE_HELP = {
 
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
-async function api(method, path, body) {
+let serverClockOffset = null;
+async function api(method, path, body, signal) {
   const opts = { method, headers: { "X-Notify-Admin": "1" }, credentials: "same-origin" };
+  if (signal) opts.signal = signal;
   if (body !== undefined) {
     opts.headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
   }
+  const startedAt = Date.now();
   const res = await fetch(`/admin/api${path}`, opts);
+  const serverDate = Date.parse(res.headers.get("Date") || "");
+  // HTTP dates have one-second precision. Use the request start as a conservative upper bound.
+  if (Number.isFinite(serverDate) && Date.now() - startedAt <= 5000) serverClockOffset = serverDate + 1000 - startedAt;
   let data = null;
   try { data = await res.json(); } catch { /* empty body */ }
   if (res.status === 401 && path !== "/login" && path !== "/setup") {
@@ -326,6 +358,9 @@ function showToken(title, name, token) {
 // ---------------------------------------------------------------- auth screens
 
 function renderGate(mode, message = "") {
+  tabAlerts.stop();
+  clearInterval(chats.timer);
+  chats.folders = [];
   const setup = mode === "setup";
   root.innerHTML = `
     <main class="gate"><div class="panel">
@@ -373,6 +408,7 @@ async function refresh() {
   state = await api("GET", "/state");
   applyAppearance(state.appearance);
   render();
+  tabAlerts.start();
 }
 
 // Sun-based dark mode (Settings > Appearance, stored with the admin account): while on, the page is dark from sunset
@@ -414,6 +450,7 @@ function sunLine(lat, lon) {
 }
 
 function render() {
+  chats.agentMenu?.close();
   if (!VIEWS[section]) section = "overview";
   const badge = (k) => {
     const n = k === "requests" ? state.pending_registrations : k === "scheduled" ? state.scheduled_count : k === "chats" ? chatUnread() : 0;
@@ -422,16 +459,22 @@ function render() {
   const current = SUBPAGES[section] || section; // a sub-page keeps its parent highlighted
   const label = Object.fromEntries(SECTIONS);
   const nav = NAV_GROUPS.map(([g, keys]) => `<div class="nav-group" role="group" aria-label="${esc(g)}"><div class="nav-label" aria-hidden="true">${esc(g)}</div>${keys.map((k) =>
-    `<button data-nav="${k}" ${k === current ? 'aria-current="page"' : ""}>${icon(k)}<span>${esc(label[k])}</span>${badge(k)}</button>`).join("")}</div>`).join("");
+    `<button data-nav="${k}" aria-label="${esc(label[k])}" title="${esc(label[k])}" ${k === current ? 'aria-current="page"' : ""}>${icon(k)}<span class="nav-text">${esc(label[k])}</span>${badge(k)}</button>`).join("")}</div>`).join("");
   root.innerHTML = `
     <div class="shell">
       <aside class="side">
-        <div class="top"><div class="brand">${logo}<div><h1 class="wordmark" aria-label="Iris">${wordmark}</h1><span class="sub">notification desk</span></div></div><button class="btn quiet signout" data-signout>Sign out</button></div>
+        <div class="top"><div class="brand">${logo}<div class="brand-text"><h1 class="wordmark" aria-label="Iris">${wordmark}</h1><span class="sub">notification desk</span></div></div><button class="btn quiet nav-toggle" data-nav-toggle>${navToggleIcon}</button><button class="btn quiet signout" data-signout>Sign out</button></div>
         <nav class="nav" aria-label="Sections">${nav}</nav>
-        <div class="foot"><span>v${esc(state.version)}</span><button class="btn quiet" data-signout>Sign out</button></div>
+        <div class="foot"><span class="version">v${esc(state.version)}</span><button class="btn quiet nav-signout" data-signout aria-label="Sign out" title="Sign out">${signoutIcon}<span class="nav-text">Sign out</span></button></div>
       </aside>
       <main class="main" id="main"></main>
     </div>`;
+  navApply();
+  root.querySelector("[data-nav-toggle]").onclick = () => {
+    navCollapsed = !navCollapsed;
+    try { localStorage.setItem("iris.nav-collapsed", navCollapsed ? "1" : "0"); } catch { /* private browser */ }
+    navApply();
+  };
   root.querySelectorAll("[data-nav]").forEach((b) => (b.onclick = () => goTo(b.dataset.nav)));
   root.querySelectorAll("[data-signout]").forEach((b) => (b.onclick = async () => { await api("POST", "/logout"); chatDraftsForget(); boot(); }));
   root.querySelector('.nav [aria-current="page"]')?.scrollIntoView({ block: "nearest", inline: "center" });
@@ -1880,6 +1923,52 @@ if (window.visualViewport) {
 const DRAFT_KEY = "iris-draft:";
 const DRAFT_DAYS = 14;
 const chatDrafts = { mem: {}, stored: true };
+// Each document gets its own identity, including a duplicated tab or a reload. An earlier document's lease
+// expires naturally; it is never cleared by another document that might have copied sessionStorage.
+const draftBrowserId = (() => {
+  try {
+    const bytes = new Uint8Array(16); crypto.getRandomValues(bytes);
+    const h = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  } catch { return null; }
+})();
+const draftLeaseQueues = new Map();
+const draftLeaseFailures = new Set();
+let draftLeaseSequence = 0;
+function chatDraftLease(gid, active) {
+  if (!draftBrowserId) {
+    if (active && !draftLeaseFailures.has(gid)) { draftLeaseFailures.add(gid); toast("Could not keep this chat open for your draft."); }
+    return;
+  }
+  if (active && serverClockOffset === null) {
+    if (!draftLeaseFailures.has(gid)) { draftLeaseFailures.add(gid); toast("Could not verify the server time to keep this draft open."); }
+    return;
+  }
+  // The deadline is captured on input, not when a delayed request finally reaches the server.
+  const update = { browser_id: draftBrowserId, active, sequence: ++draftLeaseSequence,
+    expires_ms: active ? Date.now() + serverClockOffset + 600000 : 0 };
+  const pending = draftLeaseQueues.get(gid);
+  if (pending) { pending.next = update; return; }
+  const state = { next: update };
+  draftLeaseQueues.set(gid, state);
+  (async () => {
+    while (state.next !== null) {
+      const value = state.next; state.next = null;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10000);
+      try {
+        await api("POST", `/chats/${encodeURIComponent(gid)}/draft-lease`, value, controller.signal);
+        draftLeaseFailures.delete(gid);
+      } catch {
+        if (value.active && !draftLeaseFailures.has(gid)) {
+          draftLeaseFailures.add(gid);
+          toast("Could not keep this chat open for your draft. Check your connection.");
+        }
+      } finally { clearTimeout(timer); }
+    }
+    draftLeaseQueues.delete(gid);
+  })();
+}
 function chatDraftGet(gid) {
   if (gid in chatDrafts.mem) return chatDrafts.mem[gid];
   try {
@@ -1912,7 +2001,7 @@ addEventListener("beforeunload", (e) => {
   const files = Object.values(chats.pendingFiles || {}).some((l) => l.some((p) => p.state === "up" || (p.state === "ok" && !chatDrafts.stored)));
   if (unsavedText || files) { e.preventDefault(); e.returnValue = ""; }
 });
-const chatUnread = () => chats.folders.reduce((n, g) => n + (g.unread || 0), 0);
+const chatUnread = () => chats.folders.reduce((n, g) => n + Math.max(g.unread || 0, g.pending_confirm_requests ? 1 : 0), 0);
 const CHAT_WHO = { claude: "Claude", codex: "Codex", owner: "You" };
 const CHAT_ACTIVE_MS = 10 * 60 * 1000; // the owner counts as watching this long after the last input
 let chatLastInput = Date.now();
@@ -2012,22 +2101,15 @@ function chatMembersHtml(g) {
     const st = chatStatusOf(m);
     const kind = CHAT_WHO[m.kind] || m.kind;
     const name = m.name || kind;
-    // the model leads the one-line status of the side list (the ellipsis there cuts the plan text first, so the row
-    // keeps one height); the phone roster wraps its status, so there the model sits on the name line instead (.km)
-    const sub = (m.model ? `<span class="model"${m.model_id ? ` title="${esc(m.model_id)}"` : ""}>${esc(m.model)} · </span>` : "")
-      + (m.resettable === false ? `<span class="noreset" title="Its context cannot be cleared from here: ${esc(m.reset_note || "")}">no reset · </span>` : "")
-      + (m.tmux ? `<span class="tmux" title="tmux session:window.pane">tmux ${esc(m.tmux)} · </span>` : "")
-      + [m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text),
-        m.intent ? `<span class="intent" title="${esc(m.intent)}">${esc(m.intent)}</span>` : ""].filter(Boolean).join(" · ");
+    const status = m.status_since ? `${esc(st.text)} since ${esc(when(m.status_since))}` : esc(st.text);
+    const sub = `<span class="cmem-status">${status}</span>`
+      + `<span class="tmux" title="tmux session:window.pane">tmux ${m.tmux ? esc(m.tmux) : "not reported"}</span>`
+      + (m.is_lead ? '<span class="lead-tag">Lead developer</span>' : "")
+      + (m.resettable === false ? `<span class="noreset">Context reset unavailable${m.reset_note ? `: ${esc(m.reset_note)}` : ""}</span>` : "");
     const claims = m.claims ? `<span class="cmem-break"></span><button type="button" class="cmem-claims" data-claim="${esc(m.oldest_claim)}" title="Show the oldest request it holds">holds ${m.claims} claim${m.claims === 1 ? "" : "s"} · show oldest</button>` : "";
-    const rename = `<button type="button" class="btn quiet cmem-rename" data-rename="${esc(m.id)}" data-name="${esc(name)}" aria-label="Rename ${esc(name)}" title="Rename">✎</button>`;
-    // clear its context (the relay types /clear in its window); a member that cannot be reset says why
-    const reset = m.resettable === false
-      ? `<button type="button" class="btn quiet cmem-reset" disabled aria-label="Cannot reset ${esc(name)}: ${esc(m.reset_note || "")}" title="Cannot reset: ${esc(m.reset_note || "")}">↺</button>`
-      : `<button type="button" class="btn quiet cmem-reset" data-reset="${esc(m.id)}" data-name="${esc(name)}" aria-label="Clear the context of ${esc(name)}" title="Clear its context">↺</button>`;
-    return `<li class="cmem"><button type="button" class="cmem-main" data-mention="${esc(m.name || "")}" title="${m.name ? `Mention ${esc(name)} in your message` : ""}">
-      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="nm"${chatNameStyle(m)}>${esc(name)}</span> <small>${esc(kind)}${m.model ? `<span class="km"> \u00b7 ${esc(m.model)}</span>` : ""}</small>
-      <span class="sub">${sub}</span></button>${claims}<span class="cmem-tools">${rename}${reset}</span></li>`;
+    return `<li class="cmem"><button type="button" class="cmem-main" data-agent-menu="${esc(m.id)}" aria-haspopup="menu" aria-expanded="${chats.agentMenu?.id === m.id}" title="Actions for ${esc(name)}">
+      <span class="sdot ${esc(st.cls)}" role="img" aria-label="${esc(st.text)}"></span><span class="cmem-heading"><span class="nm"${chatNameStyle(m)}>${esc(name)}</span> <small>${esc(kind)}${m.model ? `<span class="km"${m.model_id ? ` title="${esc(m.model_id)}"` : ""}> \u00b7 ${esc(m.model)}</span>` : ""}</small></span>
+      <span class="sub">${sub}</span></button>${claims}</li>`;
   }).join("");
   const others = (g.presences || []).map((p) => `<li class="cmem away"><span class="sdot unknown" aria-hidden="true"></span><span class="nm">${esc(CHAT_WHO[p.kind] || p.kind)}</span> <small>not in the chat</small></li>`).join("");
   return `<div class="chat-members" aria-label="Members"><ul>${rows || `<li class="cmem empty-row">Nobody here</li>`}</ul>${others ? `<div class="also">Also here</div><ul>${others}</ul>` : ""}</div>`;
@@ -2064,7 +2146,7 @@ function chatGroupRow(g) {
   return `<button type="button" class="chat-row${chatKey(g) === chats.selected ? " on" : ""}" data-key="${esc(chatKey(g))}">
     <span class="t"><span class="name"><span class="dot${chatPresent(g) ? "" : " off"}" aria-hidden="true"></span>${esc(g.folder)}</span>
       <span class="r">${atMark}${bell}${g.unread ? `<span class="badge" aria-label="${g.unread} unread">${g.unread}</span>` : `<small>${esc(lm ? when(lm.created_at) : "")}</small>`}</span></span>
-    <span class="p">${esc(g.host)} · ${g.state === "open" ? `${g.adhoc ? "open on demand" : "open"} · ${chatAgentCount(g)}` : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}</span>
+    <span class="p">${esc(g.host)} · ${g.state === "open" ? `${g.adhoc ? "open on demand" : "open"} · ${chatAgentCount(g)}` : "closed"}${g.paused ? ` · <span class="paused-tag">paused</span>` : ""}${g.pending_history_requests ? ` · <span class="paused-tag">history request</span>` : ""}${g.pending_confirm_requests ? ` · <span class="paused-tag">confirmation requested</span>` : ""}</span>
     <span class="p">${esc(preview)}</span></button>`;
 }
 
@@ -2085,9 +2167,13 @@ const chatKindModel = (kind, model) => (CHAT_WHO[kind] || kind) + (model ? ` \u0
 const chatAuthorHtml = (author, name, model) => author === "owner" || !name ? esc(CHAT_WHO[author] || author)
   : `${esc(name)} <span class="kind">${esc(chatKindModel(author, model))}</span>`;
 
-// one dot on the owner's own messages: orange until an agent has read or claimed it, then green
+// one dot on the owner's own messages: orange until an agent has read or explicitly accepted it, then green
 // ("read" = it reached the agent's session and the agent made a group call since; Iris cannot see more)
 function chatTicksHtml(id, r, author) {
+  if (r?.failed || r?.retrying) {
+    const text = r.failed ? `delivery failed to ${r.failed}` : `delivery failed to ${r.retrying}; retrying`;
+    return `<span class="ticks unseen" data-ticks="${esc(id)}"><i aria-hidden="true"></i>${esc(text)}</span>`;
+  }
   if (author !== "owner" || !r || r.state === "none") return `<span class="ticks" data-ticks="${esc(id)}"></span>`;
   const done = r.claimed || r.read > 0;
   const text = r.claimed ? "claimed" : r.read > 0 ? (r.read >= r.recipients ? "read" : `read by ${r.read} of ${r.recipients}`) : "not read yet";
@@ -2135,6 +2221,11 @@ function chatFilesHtml(files) {
 function chatMessageHtml(m, canReply = false, names = chats.names) {
   if (m.author === "system") {
     const hr = m.history_request;
+    const cr = m.confirm_request;
+    if (cr && cr.action != null) {
+      const controls = cr.state === "pending" ? `<span class="req-actions"><button type="button" class="btn primary" data-creq="${esc(cr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-creq="${esc(cr.id)}" data-act="deny">Deny</button></span>` : `<span>Status: ${esc(cr.state)}</span>`;
+      return `<div class="cm sys ask confirm-request" data-id="${esc(m.id)}" data-confirm="${esc(cr.id)}">${esc(when(m.created_at))} · ${esc(m.text ?? "Confirmation requested")}<dl><dt>Action</dt><dd><pre>${esc(cr.action)}</pre></dd><dt>Target</dt><dd><pre>${esc(cr.target)}</pre></dd><dt>Details</dt><dd><pre>${esc(cr.details)}</pre></dd></dl><p>Expires ${esc(when(cr.expires_at))}. Owner consent applies only to this exact action; runtime permissions still apply.</p>${controls}</div>`;
+    }
     const ask = hr && hr.state === "pending"
       ? `<span class="req-reason">Reason: ${esc(hr.reason ?? "hidden")}</span><span class="req-actions"><button type="button" class="btn primary" data-hreq="${esc(hr.id)}" data-act="approve">Approve</button> <button type="button" class="btn" data-hreq="${esc(hr.id)}" data-act="deny">Deny</button></span>`
       : "";
@@ -2159,7 +2250,26 @@ function chatMessageHtml(m, canReply = false, names = chats.names) {
   const ci = m.author !== "owner" ? chats.colors[m.member_id] : undefined;
   return `<div class="cm ${esc(m.author)}${ci !== undefined ? " agent" : ""}${m.for_owner ? " for-me" : ""}" data-id="${esc(m.id)}"${ci !== undefined ? ` style="--who: var(--a${ci})"` : ""}><div class="who">${chatAuthorHtml(m.author, m.member_name, m.member_model)}${tag}${forYou}</div>
     ${quote}${m.text === "" && m.files?.length ? "" : `<div class="body">${m.text == null ? `<em class="hint">hidden</em>` : chatMarkdown(m.text, chatMentionColour(names))}</div>`}${chatFilesHtml(m.files)}
-    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">claimed by ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
+    ${notes.length ? `<div class="act">${esc(notes.join(" · "))}</div>` : ""}${m.claimed_by ? `<div class="act claimed">${m.claim_accepted ? "claimed by" : "assigned to"} ${esc(m.claimed_by)}${canReply ? ` <button type="button" class="btn quiet release-btn" data-release="${esc(m.id)}">release</button>` : ""}</div>` : ""}<div class="cm-foot">${canReply && m.text != null ? `<button type="button" class="btn quiet reply-btn" data-reply="${esc(m.id)}">Reply</button>` : ""}<span class="cm-meta"><span class="cm-time">${esc(when(m.created_at))}</span>${chatTicksHtml(m.id, m.receipt, m.author)}</span></div></div>`;
+}
+
+// Keep complete, immutable pending requests above the independently scrolling transcript. Preserve existing
+// nodes across polls so a refresh cannot interrupt an owner pressing an approval button.
+function chatPinnedConfirmations(pane, cards) {
+  const region = pane.querySelector("#chat-confirm-pins");
+  if (!region) return;
+  const list = region.querySelector(".pinned-confirm-list");
+  const wanted = new Set(cards.map((card) => card.confirm_request.id));
+  list.querySelectorAll("[data-confirm]").forEach((node) => {
+    if (!wanted.has(node.dataset.confirm)) node.remove();
+  });
+  for (const card of cards) {
+    if (!list.querySelector(`[data-confirm="${CSS.escape(card.confirm_request.id)}"]`)) {
+      list.insertAdjacentHTML("beforeend", chatMessageHtml(card));
+    }
+  }
+  region.hidden = cards.length === 0;
+  region.querySelector(".pinned-confirm-title").textContent = cards.length === 1 ? "Confirmation awaiting your decision" : `${cards.length} confirmations awaiting your decision`;
 }
 
 // an earlier session of the folder: one bar (expandable), or one small line when nobody said anything
@@ -2197,12 +2307,49 @@ function chatPaneEmpty(el) {
 async function chatsLoadList(el) {
   const data = await api("GET", "/chats");
   chats.folders = data.folders;
+  tabAlerts.update(data.folders);
   chats.folders.forEach(chatLearnColors); // each entry carries its current group's members, in join order
   chatsRenderList(el);
 }
 
+// Keep native click targets alive from press through release, including Space activation.
+const chatListPresses = new WeakMap();
+function chatListPressState(list, el) {
+  if (chatListPresses.has(list)) return chatListPresses.get(list);
+  const state = { held: false, pending: false, timer: null, controller: null };
+  chatListPresses.set(list, state);
+  const start = (event) => {
+    const pointer = event.type === "pointerdown";
+    if (pointer ? event.button !== 0 : ![" ", "Enter"].includes(event.key)) return;
+    if (!event.target.closest("button")) return;
+    clearTimeout(state.timer);
+    state.controller?.abort();
+    state.controller = new AbortController();
+    state.held = true;
+    const finish = (end) => {
+      if (end.type !== "blur" && (pointer ? end.pointerId !== event.pointerId : end.key !== event.key)) return;
+      state.controller.abort();
+      // The browser dispatches click after pointerup/keyup, before the next task.
+      state.timer = setTimeout(() => {
+        state.held = false;
+        if (state.pending && list.isConnected && el.isConnected) chatsRenderList(el);
+        state.pending = false;
+      }, 0);
+    };
+    const options = { signal: state.controller.signal };
+    document.addEventListener(pointer ? "pointerup" : "keyup", finish, options);
+    if (pointer) document.addEventListener("pointercancel", finish, options);
+    window.addEventListener("blur", finish, options);
+  };
+  list.addEventListener("pointerdown", start);
+  list.addEventListener("keydown", start);
+  return state;
+}
+
 function chatsRenderList(el) {
   const list = el.querySelector("#chat-list");
+  const press = chatListPressState(list, el);
+  if (press.held) { press.pending = true; chatNavBadge(); return; }
   const top = `<div class="chat-list-top"><button type="button" class="btn quiet${chats.foldersOpen ? " on" : ""}" id="chat-folders-btn">Folders · chats on or off</button></div>`;
   list.innerHTML = top + (chats.folders.map((f) => chatGroupRow(f) + (chatKey(f) === chats.selected ? chatMembersHtml(f) : "")).join("")
     || `<div class="empty">No chats yet.</div>`);
@@ -2210,18 +2357,100 @@ function chatsRenderList(el) {
   chatBindMembers(list, el);
   const fb = list.querySelector("#chat-folders-btn");
   if (fb) fb.onclick = () => chatFolders(el);
+  chatNavBadge();
+}
+
+function chatNavBadge() {
   const nav = document.querySelector('[data-nav="chats"]');
   if (nav) nav.querySelector(".badge")?.remove();
   const n = chatUnread();
   if (nav && n) nav.insertAdjacentHTML("beforeend", ` <span class="badge" aria-label="${n} unread">${n}</span>`);
 }
 
-// what a member row does: tap the name to @mention it, the claims to see the oldest one, ✎ to rename it
-function chatBindMembers(root, el, after = () => {}) {
-  root.querySelectorAll("[data-mention]").forEach((b) => (b.onclick = () => { after(); chatMention(el, b.dataset.mention); }));
-  root.querySelectorAll("[data-claim]").forEach((b) => (b.onclick = () => { after(); chatShowMessage(el, b.dataset.claim); }));
-  root.querySelectorAll("[data-rename]").forEach((b) => (b.onclick = () => { after(); chatRename(el, b.dataset.rename, b.dataset.name); }));
-  root.querySelectorAll("[data-reset]").forEach((b) => (b.onclick = () => { after(); chatReset(el, b.dataset.reset, b.dataset.name); }));
+// A member opens its action menu; its claims link still jumps to the oldest held request.
+function chatBindMembers(root, el) {
+  root.querySelectorAll("[data-agent-menu]").forEach((b) => (b.onclick = () => chatAgentMenu(el, b)));
+  root.querySelectorAll("[data-claim]").forEach((b) => (b.onclick = () => chatShowMessage(el, b.dataset.claim)));
+}
+
+// A top-layer popover stays clear of the roster's scrolling and works with a click, tap or keyboard.
+function chatAgentMenu(el, trigger) {
+  const id = trigger.dataset.agentMenu;
+  const wasOpen = chats.agentMenu?.id === id;
+  chats.agentMenu?.close();
+  if (wasOpen) return;
+  const g = chatFolderOf(chats.selected);
+  const m = g?.members.find((member) => member.id === id && !member.left_at);
+  if (!m) return;
+  const name = m.name || CHAT_WHO[m.kind] || "Agent";
+  const menu = document.createElement("div");
+  menu.className = "agent-menu";
+  menu.setAttribute("popover", "auto");
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", `Actions for ${name}`);
+  menu.innerHTML = `<div class="agent-menu-name">${esc(name)}</div>
+    <button type="button" role="menuitem" data-action="rename">Rename</button>
+    <button type="button" role="menuitem" data-action="reset" ${m.resettable === false ? `disabled title="${esc(m.reset_note || "Context cannot be cleared here")}"` : ""}>Clear context</button>
+    <button type="button" role="menuitem" data-action="lead" ${m.is_lead ? "disabled" : ""}>${m.is_lead ? "Lead developer" : "Make lead developer"}</button>
+    <button type="button" role="menuitem" class="danger" data-action="remove">Remove from chat</button>
+    <button type="button" role="menuitem" class="agent-menu-mention" data-action="mention">Mention @${esc(name)}</button>`;
+  document.body.append(menu);
+  const close = (restoreFocus = false) => {
+    if (chats.agentMenu?.menu !== menu) return;
+    chats.agentMenu = null;
+    window.removeEventListener("resize", close);
+    window.visualViewport?.removeEventListener("resize", close);
+    trigger.setAttribute("aria-expanded", "false");
+    menu.remove();
+    if (restoreFocus === true && el.isConnected) {
+      const back = trigger.isConnected ? trigger : el.querySelector(`[data-agent-menu="${CSS.escape(id)}"]`);
+      back?.focus({ preventScroll: true });
+    }
+  };
+  chats.agentMenu = { id, menu, close };
+  menu.addEventListener("toggle", (e) => { if (e.newState === "closed") close(); });
+  window.addEventListener("resize", close);
+  window.visualViewport?.addEventListener("resize", close);
+  menu.showPopover();
+  trigger.setAttribute("aria-expanded", "true");
+  const rect = trigger.getBoundingClientRect();
+  const view = window.visualViewport;
+  const left = view?.offsetLeft || 0;
+  const top = view?.offsetTop || 0;
+  const width = view?.width || innerWidth;
+  const height = view?.height || innerHeight;
+  menu.style.maxHeight = `${Math.max(44, height - 16)}px`;
+  menu.style.left = `${Math.max(left + 8, Math.min(rect.left, left + width - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(top + 8, Math.min(rect.bottom + 4, top + height - menu.offsetHeight - 8))}px`;
+  const items = [...menu.querySelectorAll("button:not(:disabled)")];
+  items[0]?.focus();
+  menu.onkeydown = (e) => {
+    const i = items.indexOf(document.activeElement);
+    let next;
+    if (e.key === "ArrowDown") next = (i + 1) % items.length;
+    if (e.key === "ArrowUp") next = (i - 1 + items.length) % items.length;
+    if (e.key === "Home") next = 0;
+    if (e.key === "End") next = items.length - 1;
+    if (next !== undefined) { e.preventDefault(); items[next].focus(); }
+    if (e.key === "Escape") { e.preventDefault(); close(true); }
+    if (e.key === "Tab") close(true);
+  };
+  menu.onclick = async (e) => {
+    const action = e.target.closest("[data-action]")?.dataset.action;
+    if (!action) return;
+    close();
+    if (chats.currentId !== g.id) return;
+    chatRosterToggle(el, false);
+    if (action === "rename") return chatRename(el, id, name);
+    if (action === "reset") return chatReset(el, id, name);
+    if (action === "mention") return chatMention(el, m.name || "");
+    if (action === "remove" && !confirm(`Remove ${name} from this chat? Its session keeps running, but its claims are released and it needs a new session to rejoin.`)) return;
+    try {
+      if (action === "lead") await api("PUT", `/chats/members/${encodeURIComponent(id)}/lead`);
+      if (action === "remove") await api("DELETE", `/chats/members/${encodeURIComponent(id)}`);
+      await chatTick(el);
+    } catch (ex) { toast(ex.message); }
+  };
 }
 
 // the reset button: after a confirm, the member's host relay types /clear in its window; the thread gets the outcome
@@ -2270,9 +2499,10 @@ function chatRosterToggle(el, open) {
   chatRosterSize(el);
   chats.rosterOutside = (e) => {
     if (!roster.isConnected) { chatRosterToggle(el, false); return; }
+    if (chats.agentMenu?.menu.contains(e.target)) return;
     if (!roster.contains(e.target) && !mini.contains(e.target)) chatRosterToggle(el, false);
   };
-  chats.rosterKey = (e) => { if (e.key === "Escape") { chatRosterToggle(el, false); if (mini.isConnected) mini.focus(); } };
+  chats.rosterKey = (e) => { if (e.key === "Escape" && !chats.agentMenu) { chatRosterToggle(el, false); if (mini.isConnected) mini.focus(); } };
   document.addEventListener("pointerdown", chats.rosterOutside, true);
   document.addEventListener("keydown", chats.rosterKey, true);
 }
@@ -2473,13 +2703,15 @@ function chatShowMessage(el, id) {
 // the same thread a second time).
 async function chatOpen(el, key, keep = false) {
   chatRosterToggle(el, false);
+  const version = chats.openVersion = (chats.openVersion || 0) + 1;
   chats.opening = (chats.opening || 0) + 1;
-  try { await chatOpenThread(el, key, keep); } finally { chats.opening -= 1; }
+  try { await chatOpenThread(el, key, keep, version); } finally { chats.opening -= 1; }
 }
 
-async function chatOpenThread(el, key, keep = false) {
+async function chatOpenThread(el, key, keep = false, version = chats.openVersion) {
   const f = chatFolderOf(key);
   if (!f) return;
+  const current = () => chats.openVersion === version && chats.selected === key && el.isConnected;
   chats.foldersOpen = false;
   chats.selected = key;
   chats.lastId = null;
@@ -2493,10 +2725,14 @@ async function chatOpenThread(el, key, keep = false) {
   let data, info;
   try {
     info = await api("GET", `/chats/folder?host=${encodeURIComponent(f.host)}&folder=${encodeURIComponent(f.folder)}`);
+    if (!current()) return;
     const id = info.groups[info.groups.length - 1].id;
     data = await api("GET", `/chats/${encodeURIComponent(id)}/messages`);
-  } catch (ex) { pane.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`; return; }
-  if (chats.selected !== key) return;
+  } catch (ex) {
+    if (current()) pane.innerHTML = `<div class="empty problem">${esc(ex.message)}</div>`;
+    return;
+  }
+  if (!current()) return;
   const g = data.group;
   chatLearnColors(g);
   chatLearnNames(g);
@@ -2510,6 +2746,7 @@ async function chatOpenThread(el, key, keep = false) {
       <button type="button" class="btn" id="chat-pausebtn" hidden></button>
       <div class="chat-roster" id="chat-roster" role="region" aria-label="Members" hidden></div>
       <div class="chat-paused" id="chat-paused" role="status" hidden></div></div>
+    <section class="pinned-confirmations" id="chat-confirm-pins" aria-label="Pending confirmations" tabindex="0" hidden><strong class="pinned-confirm-title"></strong><div class="pinned-confirm-list"></div></section>
     <div class="chat-msgs" id="chat-msgs" tabindex="0" aria-live="polite" aria-label="Messages"></div>
     <button type="button" class="chat-newer" id="chat-newer" hidden></button>
     <form class="chat-compose" id="chat-compose" hidden>
@@ -2539,13 +2776,11 @@ async function chatOpenThread(el, key, keep = false) {
     if (e.detail === 0 && !roster.hidden) roster.querySelector(".cmem-main")?.focus(); // opened from the keyboard
   };
   roster.onclick = (e) => {
-    const b = e.target.closest("[data-mention], [data-claim], [data-rename], [data-reset]");
+    const b = e.target.closest("[data-agent-menu], [data-claim]");
     if (!b) return;
+    if (b.dataset.agentMenu) { chatAgentMenu(el, b); return; }
     chatRosterToggle(el, false);
-    if (b.dataset.claim) chatShowMessage(el, b.dataset.claim);
-    else if (b.dataset.rename) chatRename(el, b.dataset.rename, b.dataset.name);
-    else if (b.dataset.reset) chatReset(el, b.dataset.reset, b.dataset.name);
-    else chatMention(el, b.dataset.mention);
+    chatShowMessage(el, b.dataset.claim);
   };
   pane.querySelector("#chat-back").onclick = () => { chatRosterToggle(el, false); chats.selected = null; el.classList.remove("thread"); chatsRenderList(el); chatPaneEmpty(el); };
   pane.querySelector("#chat-limitbtn").onclick = () => {
@@ -2581,12 +2816,25 @@ async function chatOpenThread(el, key, keep = false) {
     if (rb) { setReply(rb.dataset.reply); pane.querySelector("#chat-text").focus({ preventScroll: true }); return; }
     const bar = e.target.closest(".chat-earlier-bar");
     if (bar) { chatToggleEarlier(bar); return; }
+    const confirm = e.target.closest("[data-creq]");
+    if (confirm) {
+      pane.querySelectorAll(`[data-creq="${CSS.escape(confirm.dataset.creq)}"]`).forEach((x) => { x.disabled = true; });
+      try { await api("POST", `/chats/confirm-requests/${encodeURIComponent(confirm.dataset.creq)}/${confirm.dataset.act}`); await chatTick(el); }
+      catch (ex) {
+        // A failed response may still have committed: a retry is safe because the server accepts one decision only.
+        pane.querySelectorAll(`[data-creq="${CSS.escape(confirm.dataset.creq)}"]`).forEach((x) => { x.disabled = false; });
+        toast(ex.message); await chatTick(el);
+      }
+      return;
+    }
     const b = e.target.closest("[data-hreq]");
     if (!b) return;
     box.querySelectorAll(`[data-hreq="${CSS.escape(b.dataset.hreq)}"]`).forEach((x) => { x.disabled = true; });
     try { await api("POST", `/chats/history-requests/${encodeURIComponent(b.dataset.hreq)}/${b.dataset.act}`); await chatTick(el); }
     catch (ex) { toast(ex.message); await chatTick(el); }
   };
+  pane.querySelector("#chat-confirm-pins").onclick = box.onclick;
+  chatPinnedConfirmations(pane, data.pending_confirm_cards || []);
   chats.lastId = data.messages.length ? data.messages[data.messages.length - 1].id : null;
   chatHeader(el, g, f);
   box.scrollTop = box.scrollHeight;
@@ -2663,6 +2911,7 @@ async function chatOpenThread(el, key, keep = false) {
     if (!e || !e.inputType || e.inputType.startsWith("delete") || ta.value.length < lastLen) shrink = true;
     lastLen = ta.value.length;
     chatDrafts.mem[draftFor] = ta.value;
+    chatDraftLease(draftFor, !!ta.value.trim());
     if (!saveTimer) saveTimer = setTimeout(saveNow, 400);
     later();
   };
@@ -2700,6 +2949,7 @@ async function chatOpenThread(el, key, keep = false) {
       fyi.checked = false;
       ta.value = "";
       chatDraftSet(draftFor, "");
+      chatDraftLease(draftFor, false);
       files.sent(going);
       grow();
       await chatTick(el);
@@ -2715,7 +2965,7 @@ async function chatOpenThread(el, key, keep = false) {
   const bell = f.alert && look;
   const atSeen = f.owner_mention && look;  // the @ goes the same way as the bell
   const q = [bell ? `alert_upto=${encodeURIComponent(f.alert_at)}` : "", atSeen ? `mention_upto=${encodeURIComponent(f.owner_mention_at)}` : ""].filter(Boolean).join("&");
-  if (g.unread || bell || atSeen) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen${q ? `?${q}` : ""}`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
+  if ((g.unread && look) || bell || atSeen) { try { await api("POST", `/chats/${encodeURIComponent(id)}/seen${q ? `?${q}` : ""}`); await chatsLoadList(el); } catch { /* the badge stays; harmless */ } }
 }
 
 // Attaching files in the composer: the paperclip, pasting an image, dropping files on the thread. Each file is sent
@@ -2836,7 +3086,7 @@ function chatPendingSave(gid, list) {
   catch { chatDrafts.stored = false; }
 }
 // what the pill counts: what someone said, and a history request that waits for you; not notices (claims, joins, …)
-const chatCountsAsNew = (m) => m.author !== "system" || m.history_request?.state === "pending";
+const chatCountsAsNew = (m) => m.author !== "system" || m.history_request?.state === "pending" || m.confirm_request?.state === "pending";
 // "3 new messages": floats over the bottom of the thread (nothing moves) while new ones arrived out of view
 function chatNewerShow(el) {
   const b = el.querySelector("#chat-newer");
@@ -2979,7 +3229,9 @@ async function chatTickOnce(el) {
   if (document.visibilityState !== "visible" || chats.opening) return;
   chats.tickError = null;
   try {
+    const selected = chats.selected;
     await chatsLoadList(el);
+    if (chats.opening || chats.selected !== selected || section !== "chats" || !el.isConnected) return;
     const key = chats.selected;
     if (!key) return;
     const f = chatFolderOf(key);
@@ -3001,9 +3253,16 @@ async function chatTickOnce(el) {
     if (draft?.value.includes("@")) chatMarksSync(draft, el.querySelector("#chat-marks")); // a name may be new
     chatHeader(el, data.group, f);
     const box = el.querySelector("#chat-msgs");
+    chatPinnedConfirmations(el.querySelector("#chat-pane"), data.pending_confirm_cards || []);
     // a request decided elsewhere (phone link, expiry) loses its buttons
     box.querySelectorAll("[data-req]").forEach((n) => {
       if (!data.pending_history_requests.includes(n.dataset.req)) { n.querySelector(".req-actions")?.remove(); n.removeAttribute("data-req"); n.classList.remove("ask"); }
+    });
+    box.querySelectorAll("[data-confirm]").forEach((n) => {
+      if (!(data.pending_confirm_requests || []).includes(n.dataset.confirm)) {
+        const buttons = n.querySelector(".req-actions");
+        if (buttons) { buttons.textContent = "Decision recorded or request no longer pending."; }
+      }
     });
     for (const [mid, r] of Object.entries(data.receipts || {})) {
       const t = box.querySelector(`:scope > [data-id="${CSS.escape(mid)}"] [data-ticks]`);
@@ -3026,6 +3285,6 @@ async function chatTickOnce(el) {
     const bell = f.alert && document.hasFocus();
     const atSeen = f.owner_mention && document.hasFocus();  // the @ of a message for the owner goes the same way
     const q = [bell ? `alert_upto=${encodeURIComponent(f.alert_at)}` : "", atSeen ? `mention_upto=${encodeURIComponent(f.owner_mention_at)}` : ""].filter(Boolean).join("&");
-    if ((data.messages.length && data.group.unread) || bell || atSeen) { await api("POST", `/chats/${encodeURIComponent(id)}/seen${q ? `?${q}` : ""}`); await chatsLoadList(el); }
+    if ((data.group.unread && document.hasFocus()) || bell || atSeen) { await api("POST", `/chats/${encodeURIComponent(id)}/seen${q ? `?${q}` : ""}`); await chatsLoadList(el); }
   } catch (ex) { chats.tickError = ex; console.error("chat refresh failed (retried in 5 s)", ex); } // sign-out: api()
 }

@@ -174,6 +174,23 @@ code, .mono { font-family: var(--mono); font-size: .86em; }
   border-top: 1px solid var(--line);
 }
 .side .foot .btn.quiet { font-family: var(--font); }
+.side .top { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; }
+.side .top .brand { flex: 1; }
+.nav-toggle { flex: none; width: 44px; min-height: 44px; padding: .6rem; }
+.nav-toggle svg, .nav-signout svg { width: 20px; height: 20px; stroke: currentColor; stroke-width: 1.5; fill: none; }
+.nav-signout { display: inline-flex; align-items: center; gap: .4rem; }
+.nav-signout svg { width: 17px; }
+.shell.rail { grid-template-columns: 76px minmax(0, 1fr); }
+.rail .side { padding-inline: .65rem; align-items: stretch; }
+.rail .side .top { flex-direction: column; }
+.rail .side .brand { padding: 0; flex: none; }
+.rail .brand-text, .rail .nav-text, .rail .nav-label, .rail .version { display: none; }
+.rail .nav { gap: .65rem; }
+.rail .nav-group + .nav-group { border-top: 1px solid var(--line); padding-top: .65rem; }
+.rail .nav button { position: relative; min-height: 44px; justify-content: center; padding: .7rem; }
+.rail .nav button .badge { position: absolute; right: -3px; top: -1px; margin: 0; font-size: .65rem; }
+.rail .foot { justify-content: center; }
+.rail .nav-toggle svg { transform: rotate(180deg); }
 
 .main { padding: 1.9rem clamp(1rem, 3.5vw, 2.5rem) 4rem; max-width: 980px; width: 100%; }
 .section-head { margin-bottom: 1.3rem; padding-bottom: 1rem; border-bottom: 1px solid var(--line); }
@@ -203,6 +220,19 @@ code, .mono { font-family: var(--mono); font-size: .86em; }
 /* "phone" everywhere below: a narrow screen, or a short touch screen (a phone on its side gets the phone layout) */
 .side .top .signout { display: none; }
 @media (max-width: 760px), (max-height: 500px) and (hover: none) { .side .top .signout { display: inline-flex; } }
+@media (max-width: 760px), (max-height: 500px) and (hover: none) {
+  .shell.rail { grid-template-columns: minmax(0, 1fr); }
+  .rail .side { padding-inline: 1rem; }
+  .rail .side .top { flex-direction: row; }
+  .rail .side .brand { flex: 1; }
+  .rail .brand-text { display: block; }
+  .side .top .brand { min-width: 0; }
+  .side .top .brand .mark { width: 28px; height: 28px; }
+  .rail .nav { gap: .25rem; }
+  .rail .nav-group + .nav-group { border-top: 0; border-left: 1px solid var(--line); padding-top: 0; padding-left: .25rem; }
+  .rail .nav button { min-width: 44px; }
+  .rail .nav button svg { display: block; }
+}
 
 /* ---------- signal path: the one bold element ---------- */
 .path {
@@ -542,18 +572,28 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-members { background: var(--surface); border-bottom: 1px solid var(--line); padding: .3rem 0 .45rem; box-shadow: inset 3px 0 0 var(--action); }
 .chat-members ul { list-style: none; margin: 0; padding: 0; }
 .cmem { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; column-gap: .25rem; padding: 0 .55rem 0 .9rem; font-size: .84rem; }
-.cmem-main { all: unset; grid-column: 1; grid-row: 1; box-sizing: border-box; flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; column-gap: .4rem; padding: .3rem .35rem; border-radius: var(--radius-s); cursor: pointer; }
+.cmem-main { all: unset; grid-column: 1; grid-row: 1; box-sizing: border-box; flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: baseline; column-gap: .4rem; padding: .4rem .35rem; border-radius: var(--radius-s); cursor: pointer; }
 .cmem-main:hover { background: var(--sunken); }
 .cmem-main:focus-visible { outline: 3px solid var(--focus); outline-offset: -1px; }
+.lead-tag { color: var(--action); font-weight: 600; }
+.agent-menu {
+  position: fixed; inset: auto; margin: 0; min-width: 215px; max-width: calc(100vw - 16px);
+  padding: .4rem; border: 1px solid var(--line); border-radius: var(--radius-m); overflow-y: auto;
+  background: var(--surface); color: var(--ink); box-shadow: var(--shadow-float); font-family: var(--font);
+}
+.agent-menu-name { padding: .4rem .7rem .55rem; color: var(--muted); font-size: .8rem; font-weight: 600; }
+.agent-menu button { display: block; width: 100%; text-align: left; min-height: 44px; padding: .6rem .7rem; border: 0; border-radius: var(--radius-s); background: transparent; color: var(--ink); font: inherit; cursor: pointer; }
+.agent-menu button:hover, .agent-menu button:focus-visible { background: var(--action-wash); outline: 2px solid var(--focus); outline-offset: -2px; }
+.agent-menu button:disabled { color: var(--faint); cursor: default; background: transparent; outline: none; }
+.agent-menu button.danger { color: var(--bad); }
+.agent-menu button.agent-menu-mention { border-top: 1px solid var(--line); border-radius: 0; margin-top: .3rem; color: var(--action); }
 .cmem .nm { font-weight: 600; }
 /* one line whatever the label holds ("Claude · Fable 5.2" next to a claims button): the row never grows */
-.cmem small { color: var(--faint); font-size: .72rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cmem .sub .model { color: var(--ink); }
+.cmem-heading { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 .4rem; overflow-wrap: anywhere; }
+.cmem small { color: var(--muted); font-size: .72rem; min-width: 0; white-space: normal; overflow-wrap: anywhere; }
 .cmem .sub .tmux { font-family: var(--mono, ui-monospace, monospace); font-size: .72rem; }
-.cmem small .km { display: none; }
-.chat-roster .cmem small .km { display: inline; }
-.chat-roster .cmem .sub .model { display: none; }
-.cmem .sub { grid-column: 2 / -1; color: var(--muted); font-size: .76rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cmem small .km { display: inline; }
+.cmem .sub { grid-column: 2 / -1; min-width: 0; display: grid; gap: .1rem; color: var(--muted); font-size: .76rem; white-space: normal; overflow-wrap: anywhere; }
 .cmem.away, .cmem.empty-row { padding: .3rem .9rem .3rem 1.25rem; color: var(--faint); display: grid; grid-template-columns: auto auto 1fr; column-gap: .4rem; align-items: baseline; }
 .cmem.away .nm { font-weight: 500; }
 /* claims held: a small line under the status, so the tmux pane and plan keep the row's width */
@@ -581,15 +621,7 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-roster .cmem { font-size: .9rem; padding-block: .1rem; }
 .chat-roster .cmem-main { padding-block: .45rem; }
 .chat-roster .cmem .sub { white-space: normal; }
-.cmem-rename, .cmem-reset { flex: none; font-size: .8rem; padding: .2rem .4rem; margin-top: .1rem; color: var(--faint); opacity: 0; }
-.cmem:hover .cmem-rename, .cmem-rename:focus-visible, .cmem:hover .cmem-reset, .cmem-reset:focus-visible { opacity: 1; }
-@media (hover: none) { .cmem-rename, .cmem-reset { opacity: 1; } }
-/* rename above reset, one narrow column: the row keeps its width for the name, the kind and the model */
-.cmem-tools { grid-column: 2; grid-row: 1 / span 2; flex: none; display: flex; flex-direction: column; align-items: center; }
-.cmem-tools .btn { min-height: 0; line-height: 1.1; padding: .1rem .35rem; margin-top: 0; }
-.cmem-reset:disabled { cursor: not-allowed; opacity: .35; }
-.cmem:hover .cmem-reset:disabled { opacity: .5; }
-.cmem .sub .noreset { color: var(--faint); }
+.cmem .sub .noreset { color: var(--muted); }
 .chat-list-top { padding: .5rem .6rem; border-bottom: 1px solid var(--line-soft); }
 .chat-list-top .btn { width: 100%; justify-content: flex-start; font-size: .8rem; }
 .chat-list-top .btn.on { background: var(--surface); box-shadow: inset 3px 0 0 var(--action); }
@@ -627,6 +659,13 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-newer[hidden] { display: none; }
 .chat-newer:hover { filter: brightness(1.08); }
 .chat-newer:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.pinned-confirmations { flex: 0 1 auto; min-height: 0; max-height: min(40%, 22rem); overflow-y: auto; overscroll-behavior: contain; padding: .5rem .75rem; background: var(--surface); border-bottom: 1px solid var(--line); }
+.pinned-confirmations[hidden] { display: none; }
+.pinned-confirm-title { position: sticky; top: -.5rem; z-index: 1; display: block; color: var(--ink); background: var(--surface); font-size: .85rem; padding: .2rem 0 .4rem; }
+.pinned-confirm-list { display: flex; flex-direction: column; gap: .5rem; }
+.pinned-confirm-list .cm.confirm-request { max-width: 100%; align-self: stretch; }
+.chat-pane:has(.chat-paused:not([hidden])) .pinned-confirmations:not([hidden]) { margin-top: var(--paused-h, 3.6rem); }
+.chat-pane:has(.chat-paused:not([hidden])):has(.pinned-confirmations:not([hidden])) .chat-msgs { padding-top: 1.1rem; }
 .chat-msgs { contain: layout paint style; flex: 1; overflow: auto; background: var(--side); padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .75rem; min-height: 0; overscroll-behavior: contain; }
 .cm {
   align-self: flex-start; max-width: min(78%, 46rem); padding: .55rem .9rem .4rem; border-radius: 4px 14px 14px 14px;
@@ -686,6 +725,11 @@ html:has(.chats), body:has(.chats) { overflow: hidden; height: 100%; overscroll-
 .chat-earlier-body[hidden] { display: none; }
 .cm .req-reason { display: block; color: var(--ink); margin-top: .2rem; }
 .cm .req-actions { display: flex; gap: .5rem; justify-content: center; margin-top: .45rem; }
+.cm.confirm-request { text-align: left; color: var(--ink); font-size: .9rem; }
+.cm.confirm-request dl { margin: .75rem 0; }
+.cm.confirm-request dt { font-weight: 700; margin-top: .5rem; }
+.cm.confirm-request dd { margin: .2rem 0; }
+.cm.confirm-request pre { white-space: pre-wrap; overflow-wrap: anywhere; font: .85rem/1.5 var(--mono); margin: 0; }
 .cm .act { font-size: .76rem; color: var(--warn); margin-top: .15rem; }
 .cm .act.claimed { color: var(--muted); }
 .cm .release-btn { font-size: .76rem; padding: 0 .35rem; min-height: 0; }

@@ -91,3 +91,66 @@ def test_admin_messages_carry_receipts(ctx):  # noqa: F811
         msg = next(x for x in data["messages"] if x["id"] == mid)
         assert msg["receipt"]["state"] == "sent" and msg["receipt"]["recipients"] == 2
         assert data["receipts"][mid] == msg["receipt"]
+
+
+def test_automatic_assignment_is_not_an_acknowledged_claim(svc):
+    a = join(svc, "s1")
+    mid = svc.chat.post_owner(a["group_id"], f"@{a['name']} please look")["message_id"]
+    assert svc.db.scalar("SELECT claimed_by_member_id FROM chat_messages WHERE id=?", (mid,)) == a["member_id"]
+    assert rc(svc, mid)["claimed"] is False
+    assert rc(svc, mid)["read"] == 0
+    svc.chat.claim(a["member_handle"], mid)
+    assert rc(svc, mid)["claimed"] is True
+    svc.chat.unclaim(a["member_handle"], mid)
+    assert svc.db.scalar("SELECT claim_accepted_at FROM chat_messages WHERE id=?", (mid,)) is None
+
+
+def test_retrying_and_exhausted_delivery_are_visible_and_recover(svc):
+    a = join(svc, "s1")
+    mid = svc.chat.post_owner(a["group_id"], f"@{a['name']} please look")["message_id"]
+    for attempt in range(5):
+        w = run(svc.chat.claim_host(AGENT, "w", 0))
+        assert w is not None
+        svc.chat.release(AGENT, w["wake_id"], "w")
+        r = rc(svc, mid)
+        assert not r["claimed"]
+        assert r.get("retrying", 0) == (0 if attempt == 4 else 1)
+        assert r.get("failed", 0) == (1 if attempt == 4 else 0)
+        svc.chat.now.advance(301)
+    svc.chat.read(a["member_handle"])
+    assert not rc(svc, mid).get("failed"), "manually reading a missed message resolves the failed wake"
+
+
+def test_admin_distinguishes_assignment_from_acceptance(ctx):
+    srv, b, _ = ctx
+    a = _join(srv, "host-a", "/srv/one", "s1")
+    mid = srv.service.chat.post_owner(a["group_id"], f"@{a['name']} please look")["message_id"]
+    path = f"/admin/api/chats/{a['group_id']}/messages"
+    msg = next(m for m in b.get(path).json()["messages"] if m["id"] == mid)
+    assert msg["claimed_by"] and msg["claim_accepted"] is False
+    srv.service.chat.claim(a["member_handle"], mid)
+    msg = next(m for m in b.get(path).json()["messages"] if m["id"] == mid)
+    assert msg["claim_accepted"] is True and msg["receipt"]["claimed"] is True
+
+
+def test_status_labels_do_not_turn_unread_assignments_or_failures_green():
+    import shutil
+    import subprocess
+    from pathlib import Path
+    import pytest
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not installed")
+    source = (Path(__file__).parents[1] / "notify/admin_ui/app.js").read_text()
+    fn = source[source.index("function chatTicksHtml"):source.index("// join and leave lines")]
+    script = 'const esc = String;\n' + fn + r'''
+const assert = require('node:assert/strict');
+const r = {state:'sent',claimed:false,read:0,recipients:1};
+assert.match(chatTicksHtml('m',r,'owner'), /ticks unseen/);
+assert.match(chatTicksHtml('m',{...r,claimed:true},'owner'), /ticks seen/);
+assert.match(chatTicksHtml('m',{...r,claimed:true,retrying:1},'owner'), /ticks unseen/);
+assert.match(chatTicksHtml('m',{...r,retrying:1},'owner'), /delivery failed to 1; retrying/);
+assert.match(chatTicksHtml('m',{...r,failed:1},'codex'), /delivery failed to 1/);
+'''
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr

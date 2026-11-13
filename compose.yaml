@@ -4,7 +4,7 @@
 services:
   notify:
     build: .
-    image: iris:0.22.5
+    image: iris:0.25.1
     container_name: iris
     restart: unless-stopped
     stop_grace_period: 130s  # a stop waits for a running mailbox poll/cleanup step (IMAP session limit 120 s)

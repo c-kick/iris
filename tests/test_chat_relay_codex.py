@@ -34,6 +34,38 @@ def _load():
 relay = _load()
 
 
+def test_codex_error_summary_redacts_all_free_text():
+    secret = b"Bearer TOP_SECRET_TOKEN @Heather private-message mem_123:secret-handle"
+    raw = b"Error loading configuration: TOML parse error at line 12, column 4\n" + secret
+    assert relay.codex_error_summary(raw) == "configuration error; TOML line 12, column 4"
+    unknown = relay.codex_error_summary(secret * 10000)
+    assert len(unknown) < 100
+    assert "TOP_SECRET" not in unknown and "private-message" not in unknown and "secret-handle" not in unknown
+    assert relay.codex_error_summary(b"error: unexpected argument '--thread'") == "unsupported Codex CLI arguments"
+
+
+def test_failed_codex_queue_logs_safe_diagnostics_and_caches_version(monkeypatch):
+    import subprocess
+    calls, logs = [], []
+
+    def run(args, **kwargs):
+        calls.append(args)
+        if args[-1] == "--version":
+            return subprocess.CompletedProcess(args, 0, stdout=b"codex-cli 0.169.0\n", stderr=b"")
+        return subprocess.CompletedProcess(args, 1, stdout=b"", stderr=b"TOML parse error at line 7, column 2: SECRET")
+
+    monkeypatch.setattr(relay.subprocess, "run", run)
+    monkeypatch.setattr(relay.shutil, "which", lambda _: "/opt/codex")
+    monkeypatch.setattr(relay, "log", logs.append)
+    client = relay.Relay("http://unused", "SECRET", "codex", "/tmp", "test")
+    wake = {"wake_id": "wak_test", "session_id": "thread-a", "text": "PRIVATE_CHAT_TEXT"}
+    assert not client.deliver_codex(wake)
+    assert not client.deliver_codex(wake)
+    assert len(calls) == 3, "version is inspected once per relay process after a failure"
+    assert all("/opt/codex (codex-cli 0.169.0)" in line and "configuration error" in line for line in logs)
+    assert all("SECRET" not in line and "PRIVATE_CHAT_TEXT" not in line for line in logs)
+
+
 def _frame(text: str, op: int = 0x1) -> bytes:  # server frames are not masked
     data = text.encode()
     n = len(data)

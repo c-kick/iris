@@ -102,7 +102,7 @@ def test_phone_strip_opens_every_member_with_status():
     assert "chatRosterFill(" in toggle
     assert "chatMembersHtml(" in fill, "the same list as on desktop"
     thread = _fn("async function chatOpenThread")
-    assert "roster.onclick" in thread and "chatMention(el" in thread and "chatRename(el" in thread, "and the same actions"
+    assert "roster.onclick" in thread and "chatAgentMenu(el" in thread, "the same action menu as on desktop"
     assert "chatBindMembers(list, el)" in _fn("function chatsRenderList")
     assert "Escape" in toggle
 
@@ -156,9 +156,10 @@ def test_chats_page_never_pans_or_bounces():
 
 def test_paused_banner_floats_over_the_thread():
     # the last child of the header (position: relative), so showing it moves nothing under it
-    assert re.search(r'<div class="chat-paused" id="chat-paused" role="status" hidden></div></div>\s*<div class="chat-msgs"', JS)
+    assert re.search(r'<div class="chat-paused" id="chat-paused" role="status" hidden></div></div>\s*<section class="pinned-confirmations"', JS)
     rule = _rule(".chat-paused")
     assert "position: absolute" in rule and "top: 100%" in rule
+    assert ".chat-pane:has(.chat-paused:not([hidden])) .pinned-confirmations:not([hidden])" in CSS
 
 
 def test_a_phone_on_its_side_gets_the_phone_layout():

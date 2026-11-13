@@ -55,6 +55,24 @@ CODEX_RPC_MAX_MESSAGES = 500  # notifications the server may send before our ans
 CODEX_LOADED_MAX_PAGES = 50
 
 
+def codex_error_summary(stderr: bytes) -> str:
+    """Recognise diagnostics without echoing configuration lines, credentials or chat text."""
+    text = stderr[:16384].decode("utf-8", errors="replace").lower()
+    categories = [label for needles, label in (
+        (("toml parse error", "error loading configuration", "failed to load config", "error parsing config"), "configuration error"),
+        (("unexpected argument", "unrecognized subcommand"), "unsupported Codex CLI arguments"),
+        (("no rollout found", "thread not found", "failed to read thread"), "thread unavailable"),
+        (("connection refused", "failed to connect", "connection reset"), "daemon connection failed"),
+        (("permission denied",), "permission denied"),
+        (("timed out", "timeout"), "operation timed out"),
+    ) if any(needle in text for needle in needles)]
+    location = re.search(r"toml parse error at line (\d{1,6}), column (\d{1,6})", text)
+    if location:
+        categories.append(f"TOML line {location[1]}, column {location[2]}")
+    return "; ".join(categories) or ("empty stderr" if not stderr else
+                                    f"unclassified stderr ({len(stderr)} bytes, sha256={hashlib.sha256(stderr).hexdigest()[:12]})")
+
+
 
 # --- context reset (0.22.0) ----------------------------------------------------------------------------------------
 # The owner asked to clear a session's context: type /clear into its tmux pane, as the owner would. The only text this
@@ -427,6 +445,7 @@ class Relay:
         self.members: list[dict[str, Any]] | None = None  # open members of this host, from the last heartbeat
         self.codex_closed: set[Any] = set()  # members logged as closed codex sessions (log once)
         self.codex_unknown: set[int] = set()  # app-servers logged as unaskable (log once)
+        self.codex_identity: str | None = None
         self.stop = threading.Event()
 
     # --- HTTP -------------------------------------------------------------------------------------------
@@ -484,6 +503,20 @@ class Relay:
         self._heartbeat_call(self.alive_members())
 
     # --- delivery ---------------------------------------------------------------------------------------
+    def _codex_identity(self) -> str:
+        if self.codex_identity is None:
+            path = shutil.which(self.codex) or self.codex
+            version = "unknown version"
+            try:
+                p = subprocess.run([self.codex, "--version"], timeout=2, stdin=subprocess.DEVNULL, capture_output=True)
+                match = re.search(rb"\bcodex-cli (\d{1,4}\.\d{1,4}\.\d{1,4}(?:-[a-zA-Z0-9.]{1,40})?)\b", p.stdout[:256])
+                if match:
+                    version = "codex-cli " + match[1].decode("ascii")
+            except (OSError, subprocess.SubprocessError):
+                pass
+            self.codex_identity = f"{path} ({version})"
+        return self.codex_identity
+
     def deliver_codex(self, wake: dict[str, Any]) -> bool:
         sid = wake.get("session_id")
         if not isinstance(sid, str) or not SESSION_ID_RE.match(sid):
@@ -496,7 +529,8 @@ class Relay:
             log(f"wake {wake.get('wake_id')}: codex queue failed ({type(e).__name__})")
             return False
         if p.returncode != 0:
-            log(f"wake {wake.get('wake_id')}: codex queue exited {p.returncode}")
+            log(f"wake {wake.get('wake_id')}: codex queue exited {p.returncode}; "
+                f"{self._codex_identity()}; stderr: {codex_error_summary(p.stderr)}")
             return False
         return True
 

@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Iris compass hub">
+<path d="M91 64h16M64 91v16M37 64H21M64 37V21" fill="none" stroke="#087F79" stroke-width="9" stroke-linecap="round"/>
+<g fill="#087F79"><circle cx="113" cy="64" r="7"/><circle cx="64" cy="113" r="7"/><circle cx="15" cy="64" r="7"/><circle cx="64" cy="15" r="7"/><circle cx="64" cy="64" r="13"/></g>
+</svg>

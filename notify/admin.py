@@ -904,6 +904,7 @@ def _group_out(svc: NotifyService, g: Any, show_text: bool) -> dict[str, Any]:
     for m in svc.db.query("SELECT * FROM chat_members WHERE group_id=? ORDER BY joined_at, rowid", (gid,)):
         v = status_view(m["kind"], m["status"], m["status_at"], m["active_at"], now) if m["left_at"] is None else {}
         members.append({"id": m["id"], "name": m["name"], "kind": m["kind"], "joined_at": m["joined_at"],
+                        "is_lead": bool(m["is_lead"]),
                         "last_seen_at": m["last_seen_at"], "left_at": m["left_at"], "status": v.get("status"),
                         "status_since": v.get("since"), "quiet_minutes": v.get("quiet_minutes"),
                         "claims": len(claims.get(m["id"], [])), "oldest_claim": (claims.get(m["id"]) or [None])[0],
@@ -950,6 +951,10 @@ def _folder_out(svc: NotifyService, groups: list[Any], show_text: bool) -> dict[
     out["pending_history_requests"] = svc.db.scalar(
         "SELECT COUNT(*) FROM chat_history_requests r JOIN chat_groups g ON g.id=r.group_id"
         " WHERE g.host=? AND g.folder=? AND r.state='pending'", (newest["host"], newest["folder"])) or 0
+    out["pending_confirm_requests"] = svc.db.scalar(
+        "SELECT COUNT(*) FROM chat_confirm_requests r JOIN chat_groups g ON g.id=r.group_id"
+        " WHERE g.host=? AND g.folder=? AND r.state='pending' AND r.expires_at>?",
+        (newest["host"], newest["folder"], iso(svc.chat.now()))) or 0
     return out
 
 
@@ -1026,6 +1031,13 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
             m["history_request"] = {"id": hr["id"], "state": hr["state"]}
             if client.via_session:  # the reason is for the owner only, neutralised like in the push
                 m["history_request"]["reason"] = _clean_desc(" ".join(hr["reason"].split()))
+        cr = svc.db.one("SELECT id, state, action, target, details, expires_at FROM chat_confirm_requests"
+                        " WHERE message_id=?", (r["id"],))
+        if cr is not None:
+            state = "expired" if cr["state"] in ("pending", "approved") and cr["expires_at"] <= iso(svc.chat.now()) else cr["state"]
+            m["confirm_request"] = {"id": cr["id"], "state": state, "expires_at": cr["expires_at"]}
+            if client.via_session:
+                m["confirm_request"].update({k: cr[k] for k in ("action", "target", "details")})
         if r["in_reply_to"]:
             m["in_reply_to"] = r["in_reply_to"]
         if r["claimed_by_member_id"]:  # a member id and kind only, no text: fine for a bearer admin too
@@ -1033,6 +1045,7 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
             if cm is not None:
                 m["claimed_by"] = who(cm["kind"], cm["name"], cm["id"])
                 m["claimed_at"] = r["claimed_at"]
+                m["claim_accepted"] = bool(r["claim_accepted_at"])
         if client.via_session:  # like replies: a bearer admin sees states and times, never what people wrote
             m["text"] = r["text"]
             m["member_id"] = r["author_member_id"]
@@ -1055,12 +1068,24 @@ async def chat_messages(group_id: str, request: Request, after: str | None = Non
                 m["files"] = files[m["id"]]
     pending = [h["id"] for h in svc.db.query(
         "SELECT id FROM chat_history_requests WHERE group_id=? AND state='pending'", (group_id,))]
+    confirmations = [r["id"] for r in svc.db.query(
+        "SELECT id FROM chat_confirm_requests WHERE group_id=? AND state='pending' AND expires_at>?", (group_id, iso(svc.chat.now())))]
+    confirmation_cards = []
+    if client.via_session:
+        for r in svc.db.query("SELECT r.*, m.text, m.created_at AS message_created FROM chat_confirm_requests r"
+                              " JOIN chat_messages m ON m.id=r.message_id WHERE r.group_id=? AND r.state='pending'"
+                              " AND r.expires_at>? ORDER BY r.rowid", (group_id, iso(svc.chat.now()))):
+            confirmation_cards.append({"id": r["message_id"], "author": "system", "text": r["text"],
+                                       "created_at": r["message_created"], "confirm_request": {
+                                           k: r[k] for k in ("id", "state", "action", "target", "details", "expires_at")}})
     # ticks for every message of the group, so ones already on screen update too (counts only, no text)
     receipts = svc.chat.receipts(group_id)
     for m in out:
         if m["id"] in receipts:
             m["receipt"] = receipts[m["id"]]
     return {"messages": out, "group": _group_out(svc, g, client.via_session), "pending_history_requests": pending,
+            "pending_confirm_requests": confirmations,
+            "pending_confirm_cards": confirmation_cards,
             "receipts": receipts}
 
 
@@ -1250,6 +1275,20 @@ async def chat_history_deny(rid: str, request: Request, client: Client = Depends
     return _history_decision(request, rid, client, False)
 
 
+@router.post("/api/chats/confirm-requests/{rid}/{decision}", status_code=204)
+async def chat_confirm_decision(rid: str, decision: Literal["approve", "deny"], request: Request,
+                                client: Client = Depends(admin)) -> Response:
+    require_session(client)
+    _check_browser_mutation(request)
+    try:
+        _svc(request).chat.decide_confirm(rid, decision == "approve")
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+    return Response(status_code=204)
+
+
 @router.post("/api/chats/messages/{message_id}/release", status_code=204)
 async def chat_release_claim(message_id: str, request: Request, client: Client = Depends(admin)) -> Response:
     require_session(client)
@@ -1369,6 +1408,30 @@ async def chat_rename_member(member_id: str, body: ChatRenameIn, request: Reques
         raise HTTPException(422, str(e)) from e
 
 
+@router.put("/api/chats/members/{member_id}/lead")
+async def chat_lead_member(member_id: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _check_browser_mutation(request)
+    try:
+        return _svc(request).chat.lead_owner(member_id)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+
+
+@router.delete("/api/chats/members/{member_id}")
+async def chat_remove_member(member_id: str, request: Request, client: Client = Depends(admin)) -> dict[str, Any]:
+    require_session(client)
+    _check_browser_mutation(request)
+    try:
+        return _svc(request).chat.remove_owner(member_id)
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+
+
 class ChatGroupSettingsIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     paused_posts: int | None = None  # None: the server setting chat_paused_posts
@@ -1392,6 +1455,29 @@ async def chat_group_settings(group_id: str, body: ChatGroupSettingsIn, request:
 @router.post("/api/chats/{group_id}/watching", status_code=204)
 async def chat_watching(group_id: str, request: Request, client: Client = Depends(admin)) -> Response:
     return _chat_owner_action(request, group_id, client, "owner_watching")
+
+
+class ChatDraftLeaseIn(BaseModel):
+    browser_id: str = Field(max_length=36)
+    active: bool
+    sequence: int = Field(ge=1, le=2_147_483_647)
+    expires_ms: int = Field(ge=0, le=9_000_000_000_000)
+
+
+@router.post("/api/chats/{group_id}/draft-lease", status_code=204)
+async def chat_draft_lease(group_id: str, body: ChatDraftLeaseIn, request: Request,
+                           client: Client = Depends(admin)) -> Response:
+    require_session(client)
+    _check_browser_mutation(request)
+    try:
+        _svc(request).chat.draft_lease(group_id, body.browser_id, body.active, body.sequence, body.expires_ms)
+    except Invalid as e:
+        raise HTTPException(422, str(e)) from e
+    except NotFound as e:
+        raise HTTPException(404, str(e)) from e
+    except Conflict as e:
+        raise HTTPException(409, str(e)) from e
+    return Response(status_code=204)
 
 
 @router.post("/api/chats/{group_id}/pause", status_code=204)

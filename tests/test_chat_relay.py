@@ -18,6 +18,9 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "chat-relay"
 
 FAKE_CODEX = """#!{py}
 import json, os, sys
+if sys.argv[1:] == ["--version"]:
+    print("codex-cli 0.169.0")
+    sys.exit(0)
 with open({log!r}, "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\\n")
 sys.exit(1 if os.path.exists({fail!r}) else 0)

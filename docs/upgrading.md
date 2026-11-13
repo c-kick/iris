@@ -2,6 +2,82 @@
 
 Newest first. Take a database backup before every upgrade (see [operations](operations.md)).
 
+## Upgrading to 0.25.1
+
+Pending confirmation cards remain above the scrolling transcript until decided, cancelled or expired. The area
+has its own bounded scroll for multiple requests and full action details, leaving the composer visible. Unchanged
+polls preserve existing cards and buttons. Incremental owner responses include all pending cards; bearer-admin
+responses omit their contents. Rebuild and restart Iris, then refresh the browser. No schema or relay change.
+
+## Upgrading to 0.25.0
+
+Agents can request owner consent for an exact prepared action using `group_confirm_request`. The signed-in owner
+sees the complete action, target and details in a chat card and chooses Approve or Deny. A targeted wake tells the
+requester to retrieve the authenticated result using `group_confirm_status`; chat text itself is not a decision.
+Request keys make retries idempotent, and changed action details require a new request. `group_confirm_cancel`
+abandons a pending or approved request. Pending requests and approvals each expire after thirty minutes.
+
+Consent is bound to the member, session and context generation. Queuing a context reset immediately cancels old
+consent, even if the reset later fails. Resetting, replacing a session or leaving cannot transfer approval to a new
+context. Iris neither executes the action nor grants permissions enforced by an agent runtime. Repeated status
+reads are supported; approval does not prove execution or guarantee exactly-once execution.
+
+The additive migration creates `chat_confirm_requests` and adds `chat_members.context_generation`. Rebuild and
+restart Iris. Refresh the browser; agent clients may need a tool-list refresh or a new session to see the new MCP
+tools. No relay change is required. Agent intent/message text is also removed from the member rail; status and
+session details remain visible.
+
+## Upgrading to 0.24.1
+
+Chat-list refreshes wait for a pressed button's native click or keyboard activation to finish. Superseded thread
+requests cannot overwrite a newer selection, and a pending poll cannot open it a second time. Agent details wrap
+onto separate lines so busy times, model, tmux and lead status remain visible; absent tmux data is explicit.
+
+Draft editing now keeps a chat open for ten minutes after its last edit, including when its final member leaves.
+The database adds `chat_draft_leases` and `chat_groups.draft_closure_pending`; it stores expiry and request ordering,
+never draft text. Each document has its own lease. Clearing or sending releases its lease; after a reload the prior
+document's lease remains until its original deadline. Network failures warn that protection could not be registered.
+Role and claim cleanup still happens immediately when an agent leaves. Rebuild and restart Iris; no relay change.
+
+## Upgrading to 0.24.0
+
+The admin menu collapses to an icon rail; the choice is remembered in each browser. On narrow screens it becomes
+a horizontal icon strip. Click or tap a chat member for Rename, Clear context, Make lead developer, Remove from
+chat and Mention. The menu also supports the keyboard.
+
+The tab favicon now carries the unread count on a transparent Iris logo, using the selected dark green badge,
+white text, 85 px starting font and 16 px padding on a 128 px icon. Labels above 99 become `99+`; the title retains
+the full count. The normal, unbadged favicon is transparent too, including its 16 px and 32 px PNG fallbacks.
+Longer labels shrink to fit, and canvas failures fall back to the amber-dot icon.
+
+The database adds `chat_members.is_lead`, `chat_messages.claim_accepted_at` and an index allowing one lead per chat. Appointing a lead sends all current
+members an Iris protocol notice, even when paused. New members and cleared contexts receive the role at startup;
+reads and message wakes carry its current scope. Replacing a lead supersedes pending older role notices. Leaving
+ends the role; a context reset that continues the same membership keeps it. The lead coordinates implementation
+within the owner's authorized scope; permissions, message addressing and claims still apply.
+
+Removing a member releases its claims, skips its pending wakes and invalidates its chat access. Its session keeps
+running. The same session cannot rejoin that folder; starting a new session can. Removing the last member closes
+the chat. Both new actions require a signed-in browser session.
+
+An automatic `@Name` assignment now shows **assigned to**, with an unread dot until there is evidence of reading
+or an explicit `group_claim`. The green **claimed** status requires the agent to accept the request. Older claims
+start unconfirmed because previous versions did not record acceptance separately. The receipt shows failed delivery
+and retry status as it changes, including after the message is already on screen. Manually reading a missed message
+clears its failure indicator.
+
+Restart the host relay to enable safer Codex failure diagnostics: resolved executable, version and an allowlisted
+stderr summary (for example configuration or connection failure). Arbitrary stderr, configuration values and chat
+text are withheld; unknown errors log only their byte count and a short digest for correlation. These diagnostics
+do not recover errors that earlier relay versions discarded.
+
+## Upgrading to 0.23.2
+
+No configuration or database change. The browser tab shows an unread count and an amber dot on the Iris icon for
+chat messages and outstanding bell, envelope or mention notices, from every admin page. Browser background timer
+limits may delay updates. Reading the messages and notices clears the indicator; signing out restores the normal
+title and icon. An unfocused chat window now keeps its messages unread until you return.
+
 ## Upgrading to 0.23.1
 
 No configuration change, no database change. In Chats an `@Klaas` (your name from Settings) or `@owner` in an agent's

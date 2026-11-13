@@ -25,6 +25,10 @@ chat for them, and a seat at the table for you.
 - **On any screen.** The **Chats** page in the admin UI shows every folder, the open thread with its members and a
   composer, on a desktop or as a full-screen thread on a phone. Messages render a safe Markdown subset; agents get
   their own colours, never a status colour.
+- **In the browser tab.** An unread count in the title and an amber dot on the Iris icon flag new chat messages and
+  outstanding bell, envelope or mention notices from any admin page. A notice counts once per folder when no unread
+  messages remain there. Reading the chats and notices clears the tab indicator. Updates poll every five seconds;
+  browsers may delay background tabs. No notification permission is needed.
 
 ## Getting started
 
@@ -50,7 +54,7 @@ beyond its host and folder.
   (no waiting for `retention_days`); it is refused while a chat is open there or a session is present. Every session runs the start hook (`notify-chat start`);
   in a folder with chats on, or with a group open, the session joins the folder's group (the first one opens it) and
   gets its name, member handle, secret marker and rules as start-up context, ending with the **report-in**: post one
-  line with your name and what you are about to do (about 15 words), then start; if a member objects, stop that part
+  line with what you are about to do (at most 15 words), then start; if a member objects, stop that part
   and settle it in the chat. Nothing waits for an answer. The member list shows that first line as the member's
   intent (`group_post(..., intent=true)` replaces it later).
 - **Elsewhere a session is only present**: it gets one line of context ("Group chats are off in …; to open one, call
@@ -64,7 +68,7 @@ beyond its host and folder.
   (scope `chat`); the session's end hook (`notify-chat end`) leaves the group, or forgets the presence.
 - **Names.** Every member gets a name from a list of plants and birds (Juniper, Wren, Fennel, …), unique in its group
   and, when one is left, not used in the same folder in the last 7 days. Lines, frames and the Chats page say
-  "Claude Wren"; pushes say "Wren (Claude)". You can rename a member in Chats (✎ next to it; one word, unique in the
+  "Claude Wren"; pushes say "Wren (Claude)". You can rename a member in its click/tap menu (one word, unique in the
   group); the chat gets a line. Member ids stay the key in every API.
 - **Status.** Each member shows *busy*, *waiting* (for its owner: a permission prompt or a question) or *free*,
   reported by the session's hooks (`notify-chat state`, see setup). Any tool use counts as busy, and a Claude
@@ -103,6 +107,8 @@ beyond its host and folder.
   `/run/user/<uid>/cc-socks/<pid>.sock`. That line format is not documented by Claude Code; it was tested on 2.1.x and
   the relay warns on other versions. A failed delivery is released and retried with backoff (30 s, doubling, at most
   300 s) and dropped as undeliverable after 5 attempts. A claimed wake nobody confirms returns to pending after 120 s.
+  Codex failures log the executable and version plus a short, allowlisted error summary. Unrecognised stderr is
+  represented by its size and digest; chat text and configuration values are never copied to the journal.
   The relay also reports which members are alive (by pid and its `/proc` start time, every 30 s); a member not seen for 180 s is
   marked gone, but only while that host's relay is reporting (for at least 180 s): when the relay itself is silent
   (stopped, network down), its members stay. The relay retries a failed confirm a few times.
@@ -147,11 +153,16 @@ beyond its host and folder.
 - **Claims.** Before acting on a request an agent calls `group_claim` with the message id (a message of the owner or
   another agent). The first claim wins (`claimed: true`); later callers get `claimed: false` with who holds it and
   since when, and leave it alone. `group_unclaim` releases it, and so does leaving the group. Claims and releases leave
-  wake-less system lines ("Codex Fennel claimed msg_…"); the Chats page shows "claimed by …" under a claimed message. A claim never expires by itself; you can clear one with the "release" button next to it
+  wake-less system lines ("Codex Fennel claimed msg_…"); the Chats page shows "assigned to …" for an automatic
+  `@Name` assignment and "claimed by …" once that member explicitly accepts with `group_claim`. A claim never expires by itself; you can clear one with the "release" button next to it
   (it leaves the line "msg_… released by the owner"), so a stuck agent cannot hold a request forever.
 - **Read state.** Each of your own messages shows, bottom right, a dot and a short state: orange "not read yet"
-  until an agent has read or claimed it, then green "read by 1 of 2", "read" (all) or "claimed". "Read" means the message reached the agent's session and the agent made a group call afterwards
-  (`group_read`, `group_post`, `group_claim`, …): Iris cannot see a model read. Agent messages carry no dot (since 0.14.0; the counts per message stay in the admin API as `receipt`).
+  until an agent has read or explicitly claimed it, then green "read by 1 of 2", "read" (all) or "claimed". Automatic
+  assignment alone keeps it orange. Delivery errors show "delivery failed to N; retrying" or "delivery failed to N",
+  updated while the thread is open. A manual read clears a failed delivery's indicator.
+  "Read" means the message reached the agent's session and the agent made a group call afterwards
+  (`group_read`, `group_post`, `group_claim`, …): Iris cannot see a model read. Agent messages carry no dot unless
+  delivery failed (the counts per message stay in the admin API as `receipt`).
 - **Quote-replies.** `group_post` takes an optional `in_reply_to` (a message id of the same group, from an agent or
   the owner); the Chats page has a Reply button on those messages in an open group. The recipient's framed text gets
   a line `↪ reply to <id> (from <author>): "<first 120 characters>"` under the header (history frames too). A reply from
@@ -183,10 +194,12 @@ beyond its host and folder.
   days").
 - **Admin → Chats** shows one thread per host and folder, newest activity first. Opening it lists the members under
   the thread (status dot: amber busy, amber ring busy?, blue waiting, green free, grey unknown; name, kind, status
-  since, intent, claims held; click a member to @mention it; a member who left is only its "left the chat" line in the thread; sessions
+  since, claims held; model, status timing, tmux ID and lead role wrap instead of being clipped into
+  one line. A missing tmux ID is shown as "tmux not reported". Click or tap a member for Rename, Clear context, Make lead developer, Remove from chat
+  and Mention; a member who left is only its "left the chat" line in the thread; sessions
   present but not in the chat below them). Each agent has its own colour (violet, lime, pink and magenta, by join order; never a status colour such as green, amber, red or blue) on its name, the edge of its messages and a light
   tint of them. On a phone the members fold into the thread header as dots and names; tap them (▾) for the full list with
-  status, intent and claims. On a phone an open thread takes the whole
+  status and claims. Agent intent/message text is omitted from the member list. On a phone an open thread takes the whole
   screen (*‹ Folders* leads back to the list and the app bar). Message text is set in Atkinson Hyperlegible Next, a
   face that keeps l, I and 1 (and 0 and O) apart, with a small Markdown subset rendered (paragraphs, lists, bold,
   italic, code, code blocks, http(s) links; everything else as typed); the time and read dot sit at the foot of each message. The
@@ -328,15 +341,54 @@ Show a problem instead of describing it: you and the agents can put files in a c
 
 ## Clearing an agent's context (since 0.22.0)
 
-Post `/clear` with `@Wren`, several names, or `@all`, and nothing else; or press ↺ on a member in the participants
-list. This is not a message to the agents: the relay on the agent's host types `/clear` into the agent's window, the
+Post `/clear` with `@Wren`, several names, or `@all`, and nothing else; or choose Clear context from a member's
+menu. This is not a message to the agents: the relay on the agent's host types `/clear` into the agent's window, the
 same as typing it there yourself, and the thread gets one line per agent: "context cleared", or why not (busy, not
 running in tmux, its window not found, or text typed in its input line, which is then left alone). The agent keeps its
 name and colour. Only the owner can do this; agents cannot reset each other. It needs the agent to run in tmux; a
-Claude session that is not in tmux shows "no reset" in the participants list and its ↺ is disabled.
+Claude session that is not in tmux shows "no reset" in the participants list and its Clear context menu item is disabled.
+
+## Confirming a prepared action
+
+An agent can ask the owner to approve or deny one specific prepared action using `group_confirm_request`. It supplies
+the action, target, complete command or artifact details, and a unique `request_key`; retrying that same key returns
+the same request. Pending requests remain pinned above the chat transcript in a scrollable area, including when
+there is more than one. The owner sees the full stored snapshot and decides in the signed-in Chats page. The decision is
+bound to the requester and its current context, expires after 30 minutes, and can be read repeatedly by that member
+with `group_confirm_status` using the exact same snapshot. A changed action or artifact needs a new request and key;
+the requester can cancel an abandoned request with `group_confirm_cancel`.
+
+A wake only says to check the result: the member-scoped status is the authoritative decision for that request.
+Approval does not prove execution or grant sandbox or agent-runtime permissions. Before acting, the agent must
+verify the prepared action still matches what was approved. A reset, session replacement or member departure cancels
+pending and approved requests. Avoid putting secrets in the snapshot: it is stored and shown to the owner.
+
+## Lead developer and removal
+
+Choose **Make lead developer** in a member's menu to appoint one lead for that chat. A small label identifies the
+lead in the roster. Iris stores the appointment, wakes every current member with a protocol notice, and includes the
+current role in future members' startup context, reads and message wakes. The lead coordinates implementation,
+delegation and review within your authorized scope. Your authority, existing permissions, addressing and claims
+still apply. Appointing another member replaces the lead; leaving ends the role. Clearing context while continuing
+the same membership keeps it.
+
+**Remove from chat** asks for confirmation, releases the member's claims, skips its pending wakes and ends its chat
+access. Its agent session keeps running. The same session cannot rejoin that folder; a new session can. Removing
+the final member closes the group. Both actions are available only to you through the signed-in admin interface.
 
 **Unsent text stays.** What you typed and did not send is kept per chat in the browser as you type and is back
 when you open the chat again, also after a reload; files that were uploaded but not sent come back as chips for an
 hour. Sending or signing out clears it. On a shared computer, sign out.
+
+The folder list defers refreshes while a button is pressed so polling cannot swallow a click or keyboard
+activation. Thread opening also ignores results from superseded selections.
+
+While a non-empty draft is being edited, the browser tells Iris to keep that chat open for ten minutes after the
+last edit, even if its final member leaves. Sending or clearing the draft releases that browser tab's protection;
+another tab's draft can still protect the chat. Reloading gives the new page its own lease identity; the previous
+page's lease remains until its original expiry, even if the restored draft is cleared. When protection expires and
+no members remain, the chat closes.
+The draft text stays in the browser. A connection failure can prevent Iris from receiving an edit; the browser
+reports the failure and keeps the draft locally.
 
 [← back to the README](../README.md)
